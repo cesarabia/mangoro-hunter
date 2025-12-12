@@ -5,9 +5,12 @@ import {
   updateAiConfig,
   updateAiPrompt,
   updateAdminAiConfig,
+  updateInterviewAiConfig,
   updateWhatsAppConfig,
   DEFAULT_ADMIN_AI_PROMPT,
-  DEFAULT_ADMIN_AI_MODEL
+  DEFAULT_ADMIN_AI_MODEL,
+  DEFAULT_INTERVIEW_AI_PROMPT,
+  DEFAULT_INTERVIEW_AI_MODEL
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
@@ -134,6 +137,34 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       prompt: updated.adminAiPrompt || DEFAULT_ADMIN_AI_PROMPT,
       hasCustomPrompt: Boolean(updated.adminAiPrompt),
       model: updated.adminAiModel || DEFAULT_ADMIN_AI_MODEL
+    };
+  });
+
+  app.get('/interview-ai', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await getSystemConfig();
+    return {
+      prompt: config.interviewAiPrompt || DEFAULT_INTERVIEW_AI_PROMPT,
+      hasCustomPrompt: Boolean(config.interviewAiPrompt),
+      model: config.interviewAiModel || DEFAULT_INTERVIEW_AI_MODEL
+    };
+  });
+
+  app.put('/interview-ai', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const body = request.body as { prompt?: string | null; model?: string | null };
+    const updated = await updateInterviewAiConfig({
+      prompt: typeof body?.prompt === 'undefined' ? undefined : body.prompt,
+      model: typeof body?.model === 'undefined' ? undefined : body.model
+    });
+    return {
+      prompt: updated.interviewAiPrompt || DEFAULT_INTERVIEW_AI_PROMPT,
+      hasCustomPrompt: Boolean(updated.interviewAiPrompt),
+      model: updated.interviewAiModel || DEFAULT_INTERVIEW_AI_MODEL
     };
   });
 

@@ -150,4 +150,25 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'Conversation not found' });
     }
   });
+
+  app.patch('/:id/ai-mode', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { mode?: string };
+    const allowed = ['RECRUIT', 'INTERVIEW', 'OFF'];
+    const nextMode = body.mode?.toUpperCase();
+
+    if (!nextMode || !allowed.includes(nextMode)) {
+      return reply.code(400).send({ error: 'Modo inválido' });
+    }
+
+    try {
+      const updated = await prisma.conversation.update({
+        where: { id },
+        data: { aiMode: nextMode }
+      });
+      return updated;
+    } catch (err) {
+      return reply.code(404).send({ error: 'Conversation not found' });
+    }
+  });
 }

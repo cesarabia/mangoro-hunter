@@ -168,7 +168,10 @@ export async function adminListConversations(options?: {
     where,
     orderBy: { updatedAt: 'desc' },
     take: limit,
-    include: { contact: true }
+    include: {
+      contact: true,
+      messages: { orderBy: { timestamp: 'desc' }, take: 1 }
+    }
   });
 
   const ids = conversations.map(c => c.id);
@@ -183,25 +186,12 @@ export async function adminListConversations(options?: {
     filtered = filtered.filter(item => (unreadMap[item.convo.id] || 0) > 0);
   }
 
-  const lastMessageMap = new Map<string, string>();
-  await Promise.all(
-    filtered.map(async item => {
-      const lastMessage = await prisma.message.findFirst({
-        where: { conversationId: item.convo.id },
-        orderBy: { timestamp: 'desc' }
-      });
-      if (lastMessage) {
-        lastMessageMap.set(item.convo.id, lastMessage.text);
-      }
-    })
-  );
-
   return filtered.map(({ convo, name }) => ({
     waId: convo.contact?.waId || null,
     name,
     status: convo.status,
     unreadCount: unreadMap[convo.id] || 0,
-    lastMessage: lastMessageMap.get(convo.id) || 'Sin mensajes',
+    lastMessage: convo.messages?.[0]?.text || 'Sin mensajes',
     updatedAt: convo.updatedAt.toISOString(),
     isAdmin: convo.isAdmin
   }));

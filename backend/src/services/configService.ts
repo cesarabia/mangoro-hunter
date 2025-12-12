@@ -7,6 +7,9 @@ export const DEFAULT_WHATSAPP_PHONE_ID = '1511895116748404';
 export const DEFAULT_ADMIN_AI_PROMPT =
   'Eres Hunter Admin, un asistente en español para managers de reclutamiento. Da respuestas claras y accionables, usa herramientas cuando te lo pidan.';
 export const DEFAULT_ADMIN_AI_MODEL = 'gpt-4.1-mini';
+export const DEFAULT_INTERVIEW_AI_PROMPT =
+  'Eres Hunter Entrevistador. Haz preguntas de entrevista cortas y profesionales, enfocadas en validar experiencia, motivaciones y disponibilidad.';
+export const DEFAULT_INTERVIEW_AI_MODEL = 'gpt-4.1-mini';
 
 export async function getSystemConfig(): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
@@ -120,6 +123,24 @@ export async function updateAdminAccount(email: string, passwordHash: string): P
   return prisma.systemConfig.update({
     where: { id: config.id },
     data: { adminEmail: email }
+  });
+}
+
+export async function updateInterviewAiConfig(input: {
+  prompt?: string | null;
+  model?: string | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: Record<string, string | null | undefined> = {};
+  if (typeof input.prompt !== 'undefined') {
+    data.interviewAiPrompt = normalizeValue(input.prompt);
+  }
+  if (typeof input.model !== 'undefined') {
+    data.interviewAiModel = normalizeValue(input.model);
+  }
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data
   });
 }
 

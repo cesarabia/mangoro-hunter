@@ -3,9 +3,18 @@ import { env } from '../config/env';
 import { getSystemConfig } from './configService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
 
-export async function getSuggestedReply(conversationContext: string): Promise<string> {
-  const config = await getSystemConfig();
-  const prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
+interface SuggestedOptions {
+  prompt?: string;
+  model?: string;
+  config?: Awaited<ReturnType<typeof getSystemConfig>>;
+}
+
+export async function getSuggestedReply(
+  conversationContext: string,
+  options?: SuggestedOptions
+): Promise<string> {
+  const config = options?.config ?? (await getSystemConfig());
+  const prompt = options?.prompt?.trim() || config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
   const apiKey = getEffectiveOpenAiKey(config);
 
   if (!apiKey) {
@@ -13,9 +22,10 @@ export async function getSuggestedReply(conversationContext: string): Promise<st
   }
 
   const client = new OpenAI({ apiKey });
+  const model = options?.model || 'gpt-4.1-mini';
 
   const completion = await client.chat.completions.create({
-    model: 'gpt-4.1-mini',
+    model,
     messages: [
       {
         role: 'system',

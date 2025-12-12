@@ -33,6 +33,12 @@ interface AdminAiConfigResponse {
   model: string;
 }
 
+interface InterviewAiConfigResponse {
+  prompt: string;
+  hasCustomPrompt: boolean;
+  model: string;
+}
+
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [loading, setLoading] = useState(true);
 
@@ -71,17 +77,23 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [savingAdminAi, setSavingAdminAi] = useState(false);
   const [adminAiStatus, setAdminAiStatus] = useState<string | null>(null);
   const [adminAiError, setAdminAiError] = useState<string | null>(null);
+  const [interviewAiPrompt, setInterviewAiPrompt] = useState('');
+  const [interviewAiModel, setInterviewAiModel] = useState('gpt-4.1-mini');
+  const [savingInterviewAi, setSavingInterviewAi] = useState(false);
+  const [interviewAiStatus, setInterviewAiStatus] = useState<string | null>(null);
+  const [interviewAiError, setInterviewAiError] = useState<string | null>(null);
 
   useEffect(() => {
     const loadAll = async () => {
       setLoading(true);
       try {
-        const [wa, ai, admin, aiPromptRes, adminAi] = await Promise.all([
+        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi] = await Promise.all([
           apiClient.get('/api/config/whatsapp') as Promise<WhatsappConfigResponse>,
           apiClient.get('/api/config/ai') as Promise<AiConfigResponse>,
           apiClient.get('/api/config/admin-account') as Promise<AdminAccountResponse>,
           apiClient.get('/api/config/ai-prompt') as Promise<AiPromptResponse>,
-          apiClient.get('/api/config/admin-ai') as Promise<AdminAiConfigResponse>
+          apiClient.get('/api/config/admin-ai') as Promise<AdminAiConfigResponse>,
+          apiClient.get('/api/config/interview-ai') as Promise<InterviewAiConfigResponse>
         ]);
 
         setWhatsappBaseUrl(wa.whatsappBaseUrl || 'https://graph.facebook.com/v20.0');
@@ -99,6 +111,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setAiPrompt(aiPromptRes.aiPrompt || defaultAiPrompt);
         setAdminAiPrompt(adminAi.prompt || '');
         setAdminAiModel(adminAi.model || 'gpt-4.1-mini');
+        setInterviewAiPrompt(interviewAi.prompt || '');
+        setInterviewAiModel(interviewAi.model || 'gpt-4.1-mini');
       } catch (err) {
         console.error(err);
       } finally {
@@ -220,6 +234,24 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       setAdminAiError(err.message || 'No se pudo guardar la IA admin');
     } finally {
       setSavingAdminAi(false);
+    }
+  };
+
+  const handleSaveInterviewAi = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingInterviewAi(true);
+    setInterviewAiStatus(null);
+    setInterviewAiError(null);
+    try {
+      await apiClient.put('/api/config/interview-ai', {
+        prompt: interviewAiPrompt.trim() || null,
+        model: interviewAiModel
+      });
+      setInterviewAiStatus('IA Entrevistador actualizada');
+    } catch (err: any) {
+      setInterviewAiError(err.message || 'No se pudo guardar la IA entrevistador');
+    } finally {
+      setSavingInterviewAi(false);
     }
   };
 
@@ -488,6 +520,41 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
                 >
                   {savingAdminAi ? 'Guardando...' : 'Guardar IA Admin'}
+                </button>
+              </form>
+            </section>
+
+            <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <h2>IA Entrevistador</h2>
+              <form onSubmit={handleSaveInterviewAi} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label>
+                  <div>Prompt Entrevista</div>
+                  <textarea
+                    value={interviewAiPrompt}
+                    onChange={e => setInterviewAiPrompt(e.target.value)}
+                    placeholder="Define cómo debe entrevistar Hunter."
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 120 }}
+                  />
+                </label>
+                <label>
+                  <div>Modelo</div>
+                  <select
+                    value={interviewAiModel}
+                    onChange={e => setInterviewAiModel(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  >
+                    <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                    <option value="gpt-5-mini">gpt-5-mini</option>
+                  </select>
+                </label>
+                {interviewAiStatus && <p style={{ color: 'green' }}>{interviewAiStatus}</p>}
+                {interviewAiError && <p style={{ color: 'red' }}>{interviewAiError}</p>}
+                <button
+                  type="submit"
+                  disabled={savingInterviewAi}
+                  style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
+                >
+                  {savingInterviewAi ? 'Guardando...' : 'Guardar IA Entrevista'}
                 </button>
               </form>
             </section>

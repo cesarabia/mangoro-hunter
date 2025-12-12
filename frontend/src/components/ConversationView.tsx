@@ -10,6 +10,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const [text, setText] = useState('');
   const [loadingSend, setLoadingSend] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
+  const [modeSaving, setModeSaving] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const previousCountRef = useRef(0);
@@ -19,6 +20,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     setAutoScrollEnabled(true);
     scrollToBottom();
     previousCountRef.current = conversation.messages?.length ?? 0;
+    setModeSaving(false);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -64,6 +66,19 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     }
   };
 
+  const handleModeChange = async (mode: 'RECRUIT' | 'INTERVIEW' | 'OFF') => {
+    if (!conversation || conversation.aiMode === mode || modeSaving) return;
+    setModeSaving(true);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/ai-mode`, { mode });
+      onMessageSent();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setModeSaving(false);
+    }
+  };
+
   const handleSuggest = async () => {
     if (!conversation) return;
     setLoadingAi(true);
@@ -87,11 +102,42 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const displayName = isAdmin
     ? 'Administrador'
     : conversation.contact?.name || conversation.contact?.phone || conversation.contact?.waId;
+  const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation.aiMode || 'RECRUIT';
+  const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'OFF'; label: string }> = [
+    { key: 'RECRUIT', label: 'Reclutamiento' },
+    { key: 'INTERVIEW', label: 'Entrevista' },
+    { key: 'OFF', label: 'Manual' }
+  ];
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee' }}>
         <strong>{displayName}</strong>
+        {!isAdmin && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 13, marginBottom: 4 }}>Modo del candidato:</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {modeOptions.map(option => (
+                <button
+                  key={option.key}
+                  onClick={() => handleModeChange(option.key)}
+                  disabled={modeSaving || aiMode === option.key}
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: 999,
+                    border: aiMode === option.key ? '1px solid #111' : '1px solid #ccc',
+                    background: aiMode === option.key ? '#111' : '#fff',
+                    color: aiMode === option.key ? '#fff' : '#333',
+                    cursor: modeSaving ? 'not-allowed' : 'pointer',
+                    fontSize: 12
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       <div
         ref={messagesRef}

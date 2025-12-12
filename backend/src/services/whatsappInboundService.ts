@@ -1,7 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { SystemConfig } from '@prisma/client';
 import { prisma } from '../db/client';
-import { getSystemConfig } from './configService';
+import { getSystemConfig, DEFAULT_INTERVIEW_AI_PROMPT, DEFAULT_INTERVIEW_AI_MODEL } from './configService';
+import { DEFAULT_AI_PROMPT } from '../constants/ai';
 import { serializeJson } from '../utils/json';
 import { getSuggestedReply } from './aiService';
 import { sendWhatsAppText, SendResult } from './whatsappMessageService';
@@ -118,13 +119,23 @@ export async function maybeSendAutoReply(
       }
     });
 
-    if (!conversation) return;
+    if (!conversation || conversation.isAdmin) return;
+
+    const mode = conversation.aiMode || 'RECRUIT';
+    if (mode === 'OFF') return;
 
     const context = conversation.messages
       .map(m => (m.direction === 'INBOUND' ? `Candidato: ${m.text}` : `Agente: ${m.text}`))
       .join('\n');
 
-    const suggestion = await getSuggestedReply(context);
+    let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
+    let model: string | undefined;
+    if (mode === 'INTERVIEW') {
+      prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
+      model = config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL;
+    }
+
+    const suggestion = await getSuggestedReply(context, { prompt, model, config });
     if (!suggestion?.trim()) {
       return;
     }
@@ -194,7 +205,8 @@ async function ensureAdminConversation(waId: string, normalizedAdmin: string) {
         contactId: contact.id,
         status: 'OPEN',
         channel: 'admin',
-        isAdmin: true
+        isAdmin: true,
+        aiMode: 'OFF'
       }
     });
   }
