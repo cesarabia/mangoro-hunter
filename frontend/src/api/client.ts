@@ -14,11 +14,42 @@ export const apiClient = {
       }
     });
 
-    if (!res.ok) {
-      throw new Error(`Error HTTP ${res.status}`);
+    if (res.status === 204) {
+      if (!res.ok) {
+        throw new Error(`Error HTTP ${res.status}`);
+      }
+      return null;
     }
 
-    return res.json();
+    const text = await res.text();
+    if (!res.ok) {
+      let errorMessage = `Error HTTP ${res.status}`;
+      if (text) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed?.error) {
+            errorMessage = parsed.error;
+          } else if (typeof parsed === 'string') {
+            errorMessage = parsed;
+          }
+        } catch {
+          errorMessage = text;
+        }
+      }
+      const error = new Error(errorMessage);
+      (error as any).status = res.status;
+      throw error;
+    }
+
+    if (!text) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
   },
 
   get(path: string) {

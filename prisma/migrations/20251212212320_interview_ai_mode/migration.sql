@@ -1,6 +1,8 @@
 -- AlterTable
 ALTER TABLE "SystemConfig" ADD COLUMN "interviewAiModel" TEXT;
 ALTER TABLE "SystemConfig" ADD COLUMN "interviewAiPrompt" TEXT;
+ALTER TABLE "SystemConfig" ADD COLUMN "templateGeneralFollowup" TEXT;
+ALTER TABLE "SystemConfig" ADD COLUMN "templateInterviewInvite" TEXT;
 
 -- RedefineTables
 PRAGMA defer_foreign_keys=ON;

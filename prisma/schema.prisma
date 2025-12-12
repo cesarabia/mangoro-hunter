@@ -111,6 +111,8 @@ model SystemConfig {
   adminAiModel    String?
   interviewAiPrompt String?
   interviewAiModel  String?
+  templateInterviewInvite String?
+  templateGeneralFollowup String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }

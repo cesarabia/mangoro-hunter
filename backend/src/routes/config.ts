@@ -6,6 +6,7 @@ import {
   updateAiPrompt,
   updateAdminAiConfig,
   updateInterviewAiConfig,
+  updateTemplateConfig,
   updateWhatsAppConfig,
   DEFAULT_ADMIN_AI_PROMPT,
   DEFAULT_ADMIN_AI_MODEL,
@@ -165,6 +166,34 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       prompt: updated.interviewAiPrompt || DEFAULT_INTERVIEW_AI_PROMPT,
       hasCustomPrompt: Boolean(updated.interviewAiPrompt),
       model: updated.interviewAiModel || DEFAULT_INTERVIEW_AI_MODEL
+    };
+  });
+
+  app.get('/templates', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await getSystemConfig();
+    return {
+      templateInterviewInvite: config.templateInterviewInvite || '',
+      templateGeneralFollowup: config.templateGeneralFollowup || ''
+    };
+  });
+
+  app.put('/templates', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const body = request.body as { templateInterviewInvite?: string | null; templateGeneralFollowup?: string | null };
+    const updated = await updateTemplateConfig({
+      templateInterviewInvite:
+        typeof body?.templateInterviewInvite === 'undefined' ? undefined : body.templateInterviewInvite,
+      templateGeneralFollowup:
+        typeof body?.templateGeneralFollowup === 'undefined' ? undefined : body.templateGeneralFollowup
+    });
+    return {
+      templateInterviewInvite: updated.templateInterviewInvite || '',
+      templateGeneralFollowup: updated.templateGeneralFollowup || ''
     };
   });
 

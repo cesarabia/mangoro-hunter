@@ -144,6 +144,24 @@ export async function updateInterviewAiConfig(input: {
   });
 }
 
+export async function updateTemplateConfig(input: {
+  templateInterviewInvite?: string | null;
+  templateGeneralFollowup?: string | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: Record<string, string | null | undefined> = {};
+  if (typeof input.templateInterviewInvite !== 'undefined') {
+    data.templateInterviewInvite = normalizeValue(input.templateInterviewInvite);
+  }
+  if (typeof input.templateGeneralFollowup !== 'undefined') {
+    data.templateGeneralFollowup = normalizeValue(input.templateGeneralFollowup);
+  }
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data
+  });
+}
+
 async function ensureConfigRecord(): Promise<SystemConfig> {
   let existing = await prisma.systemConfig.findUnique({ where: { id: SINGLETON_ID } });
   if (!existing) {

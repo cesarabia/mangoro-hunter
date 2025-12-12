@@ -11,6 +11,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const [loadingSend, setLoadingSend] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [templateSending, setTemplateSending] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const previousCountRef = useRef(0);
@@ -21,6 +23,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     scrollToBottom();
     previousCountRef.current = conversation.messages?.length ?? 0;
     setModeSaving(false);
+    setSendError(null);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -59,8 +62,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       }
       setText('');
       onMessageSent();
-    } catch (err) {
-      console.error(err);
+      setSendError(null);
+    } catch (err: any) {
+      setSendError(err.message || 'No se pudo enviar el mensaje');
     } finally {
       setLoadingSend(false);
     }
@@ -80,10 +84,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   };
 
   const handleSuggest = async () => {
-    if (!conversation) return;
+    if (!conversation || conversation.aiMode === 'OFF') return;
     setLoadingAi(true);
     try {
-      const res = await apiClient.post(`/api/conversations/${conversation.id}/ai-suggest`, {});
+      const res = await apiClient.post(`/api/conversations/${conversation.id}/ai-suggest`, { draft: text });
       if (res.suggestion) {
         setText(res.suggestion);
       }
@@ -103,11 +107,29 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     ? 'Administrador'
     : conversation.contact?.name || conversation.contact?.phone || conversation.contact?.waId;
   const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation.aiMode || 'RECRUIT';
+  const within24h = conversation.within24h !== false;
+  const templateInterviewInvite = conversation.templates?.interviewInvite || null;
   const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'OFF'; label: string }> = [
     { key: 'RECRUIT', label: 'Reclutamiento' },
     { key: 'INTERVIEW', label: 'Entrevista' },
     { key: 'OFF', label: 'Manual' }
   ];
+
+  const handleSendTemplate = async () => {
+    if (!conversation || !templateInterviewInvite) return;
+    setTemplateSending(true);
+    setSendError(null);
+    try {
+      await apiClient.post(`/api/conversations/${conversation.id}/send-template`, {
+        templateName: templateInterviewInvite
+      });
+      onMessageSent();
+    } catch (err: any) {
+      setSendError(err.message || 'No se pudo enviar la plantilla');
+    } finally {
+      setTemplateSending(false);
+    }
+  };
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -168,27 +190,52 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
           </div>
         ))}
       </div>
-      <div style={{ padding: 12, borderTop: '1px solid #eee', display: 'flex', gap: 8, flexShrink: 0, background: '#fff' }}>
-        <textarea
-          style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc', minHeight: 40 }}
-          value={text}
-          onChange={e => setText(e.target.value)}
-          placeholder="Escribe una respuesta..."
-        />
-        <button
-          onClick={handleSuggest}
-          disabled={loadingAi}
-          style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#eee' }}
-        >
-          {loadingAi ? 'IA...' : 'Sugerir'}
-        </button>
-        <button
-          onClick={handleSend}
-          disabled={loadingSend}
-          style={{ padding: '8px 10px', borderRadius: 4, border: 'none', background: '#000', color: '#fff' }}
-        >
-          {loadingSend ? 'Enviando...' : 'Enviar'}
-        </button>
+      <div
+        style={{
+          padding: 12,
+          borderTop: '1px solid #eee',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          flexShrink: 0,
+          background: '#fff'
+        }}
+      >
+        {!within24h && !isAdmin && (
+          <div style={{ fontSize: 13, color: '#b93800' }}>Fuera de ventana 24h. Debes usar una plantilla.</div>
+        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <textarea
+            style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc', minHeight: 40 }}
+            value={text}
+            onChange={e => setText(e.target.value)}
+            placeholder="Escribe una respuesta..."
+          />
+          <button
+            onClick={handleSuggest}
+            disabled={loadingAi || aiMode === 'OFF'}
+            style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#eee' }}
+          >
+            {loadingAi ? 'IA...' : 'Sugerir'}
+          </button>
+          <button
+            onClick={handleSend}
+            disabled={loadingSend || (!within24h && !isAdmin)}
+            style={{ padding: '8px 10px', borderRadius: 4, border: 'none', background: '#000', color: '#fff' }}
+          >
+            {loadingSend ? 'Enviando...' : 'Enviar'}
+          </button>
+        </div>
+        {sendError && <div style={{ color: '#b93800', fontSize: 13 }}>{sendError}</div>}
+        {!isAdmin && !within24h && aiMode === 'INTERVIEW' && templateInterviewInvite && (
+          <button
+            onClick={handleSendTemplate}
+            disabled={templateSending}
+            style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 4, border: '1px solid #111', background: '#fff' }}
+          >
+            {templateSending ? 'Enviando plantilla...' : 'Enviar plantilla de entrevista'}
+          </button>
+        )}
       </div>
     </div>
   );

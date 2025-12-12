@@ -39,6 +39,11 @@ interface InterviewAiConfigResponse {
   model: string;
 }
 
+interface TemplatesConfigResponse {
+  templateInterviewInvite: string;
+  templateGeneralFollowup: string;
+}
+
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [loading, setLoading] = useState(true);
 
@@ -82,18 +87,24 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [savingInterviewAi, setSavingInterviewAi] = useState(false);
   const [interviewAiStatus, setInterviewAiStatus] = useState<string | null>(null);
   const [interviewAiError, setInterviewAiError] = useState<string | null>(null);
+  const [templateInterviewInvite, setTemplateInterviewInvite] = useState('');
+  const [templateGeneralFollowup, setTemplateGeneralFollowup] = useState('');
+  const [savingTemplates, setSavingTemplates] = useState(false);
+  const [templateStatus, setTemplateStatus] = useState<string | null>(null);
+  const [templateError, setTemplateError] = useState<string | null>(null);
 
   useEffect(() => {
     const loadAll = async () => {
       setLoading(true);
       try {
-        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi] = await Promise.all([
+        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, templates] = await Promise.all([
           apiClient.get('/api/config/whatsapp') as Promise<WhatsappConfigResponse>,
           apiClient.get('/api/config/ai') as Promise<AiConfigResponse>,
           apiClient.get('/api/config/admin-account') as Promise<AdminAccountResponse>,
           apiClient.get('/api/config/ai-prompt') as Promise<AiPromptResponse>,
           apiClient.get('/api/config/admin-ai') as Promise<AdminAiConfigResponse>,
-          apiClient.get('/api/config/interview-ai') as Promise<InterviewAiConfigResponse>
+          apiClient.get('/api/config/interview-ai') as Promise<InterviewAiConfigResponse>,
+          apiClient.get('/api/config/templates') as Promise<TemplatesConfigResponse>
         ]);
 
         setWhatsappBaseUrl(wa.whatsappBaseUrl || 'https://graph.facebook.com/v20.0');
@@ -113,6 +124,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setAdminAiModel(adminAi.model || 'gpt-4.1-mini');
         setInterviewAiPrompt(interviewAi.prompt || '');
         setInterviewAiModel(interviewAi.model || 'gpt-4.1-mini');
+        setTemplateInterviewInvite(templates.templateInterviewInvite || '');
+        setTemplateGeneralFollowup(templates.templateGeneralFollowup || '');
       } catch (err) {
         console.error(err);
       } finally {
@@ -252,6 +265,24 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       setInterviewAiError(err.message || 'No se pudo guardar la IA entrevistador');
     } finally {
       setSavingInterviewAi(false);
+    }
+  };
+
+  const handleSaveTemplates = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingTemplates(true);
+    setTemplateStatus(null);
+    setTemplateError(null);
+    try {
+      await apiClient.put('/api/config/templates', {
+        templateInterviewInvite: templateInterviewInvite.trim() || null,
+        templateGeneralFollowup: templateGeneralFollowup.trim() || null
+      });
+      setTemplateStatus('Plantillas guardadas');
+    } catch (err: any) {
+      setTemplateError(err.message || 'No se pudieron guardar las plantillas');
+    } finally {
+      setSavingTemplates(false);
     }
   };
 
@@ -555,6 +586,41 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
                 >
                   {savingInterviewAi ? 'Guardando...' : 'Guardar IA Entrevista'}
+                </button>
+              </form>
+            </section>
+
+            <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <h2>Plantillas WhatsApp</h2>
+              <form onSubmit={handleSaveTemplates} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label>
+                  <div>Template entrevista (nombre aprobado)</div>
+                  <input
+                    type="text"
+                    value={templateInterviewInvite}
+                    onChange={e => setTemplateInterviewInvite(e.target.value)}
+                    placeholder="ej: entrevista_confirmacion_1"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label>
+                  <div>Template seguimiento general</div>
+                  <input
+                    type="text"
+                    value={templateGeneralFollowup}
+                    onChange={e => setTemplateGeneralFollowup(e.target.value)}
+                    placeholder="ej: followup_general"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                {templateStatus && <p style={{ color: 'green' }}>{templateStatus}</p>}
+                {templateError && <p style={{ color: 'red' }}>{templateError}</p>}
+                <button
+                  type="submit"
+                  disabled={savingTemplates}
+                  style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
+                >
+                  {savingTemplates ? 'Guardando...' : 'Guardar plantillas'}
                 </button>
               </form>
             </section>
