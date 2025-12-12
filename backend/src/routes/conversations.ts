@@ -3,9 +3,34 @@ import { prisma } from '../db/client';
 import { sendWhatsAppText, sendWhatsAppTemplate } from '../services/whatsappMessageService';
 import { serializeJson } from '../utils/json';
 import { getSystemConfig } from '../services/configService';
+import type { Prisma } from '@prisma/client';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
+  async function fetchTemplateConfigSafe(): Promise<{
+    templateInterviewInvite: string | null;
+    templateGeneralFollowup: string | null;
+  }> {
+    try {
+      const config = await prisma.systemConfig.findUnique({
+        where: { id: 1 },
+        select: {
+          templateInterviewInvite: true,
+          templateGeneralFollowup: true
+        }
+      });
+      return {
+        templateInterviewInvite: config?.templateInterviewInvite || null,
+        templateGeneralFollowup: config?.templateGeneralFollowup || null
+      };
+    } catch (err: any) {
+      if (err?.code === 'P2022') {
+        app.log.error({ err }, 'Template columns missing in SystemConfig');
+        return { templateInterviewInvite: null, templateGeneralFollowup: null };
+      }
+      throw err;
+    }
+  }
 
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const conversations = await prisma.conversation.findMany({
@@ -69,16 +94,21 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       orderBy: { timestamp: 'desc' }
     });
     const within24h = isWithin24Hours(lastInbound?.timestamp, WINDOW_MS);
-    const config = await getSystemConfig();
+    const templates = await fetchTemplateConfigSafe();
+    const normalizedStatus = ['NEW', 'OPEN', 'CLOSED'].includes(conversation.status)
+      ? conversation.status
+      : 'NEW';
+    const normalizedMode = ['RECRUIT', 'INTERVIEW', 'OFF'].includes(conversation.aiMode)
+      ? conversation.aiMode
+      : 'RECRUIT';
 
     return {
       ...conversation,
+      status: normalizedStatus,
+      aiMode: normalizedMode,
       lastInboundAt: lastInbound?.timestamp ?? null,
       within24h,
-      templates: {
-        interviewInvite: config.templateInterviewInvite || null,
-        generalFollowup: config.templateGeneralFollowup || null
-      }
+      templates
     };
   });
 
