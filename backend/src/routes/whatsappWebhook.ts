@@ -74,6 +74,7 @@ async function processIncomingPayload(app: FastifyInstance, payload: any) {
         text: msg.text ?? "",
         timestamp: msg.timestamp,
         rawPayload: msg.rawPayload,
+        profileName: msg.profileName,
         config,
       });
     }

@@ -19,6 +19,7 @@ interface InboundMessageParams {
   text?: string;
   timestamp?: number;
   rawPayload?: any;
+  profileName?: string;
   config?: SystemConfig;
 }
 
@@ -70,6 +71,7 @@ export async function handleInboundWhatsAppMessage(
       data: { waId, phone: waId },
     });
   }
+  await maybeUpdateContactName(contact, params.profileName, params.text);
 
   let conversation = await prisma.conversation.findFirst({
     where: { contactId: contact.id, isAdmin: false },
@@ -211,6 +213,59 @@ function isAdminCommandText(text?: string): boolean {
   return ["/pendientes", "/resumen", "/estado", "/ayuda"].some((cmd) =>
     trimmed.startsWith(cmd),
   );
+}
+
+async function maybeUpdateContactName(
+  contact: { id: string; name: string | null },
+  profileName?: string,
+  fallbackText?: string,
+) {
+  if (contact.name) return;
+  const candidate =
+    normalizeName(profileName) || extractNameFromText(fallbackText);
+  if (!candidate) return;
+  await prisma.contact.update({
+    where: { id: contact.id },
+    data: { name: candidate },
+  });
+  contact.name = candidate;
+}
+
+function extractNameFromText(text?: string): string | null {
+  if (!text) return null;
+  const cleaned = text.trim();
+  if (!cleaned) return null;
+  const match = cleaned.match(
+    /(?:mi nombre es|me llamo|soy)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60})/i,
+  );
+  if (match && match[1]) {
+    const normalized = normalizeName(match[1]);
+    if (normalized) return normalized;
+  }
+  if (
+    /^[A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60}$/i.test(cleaned) &&
+    cleaned.split(/\s+/).filter(Boolean).length <= 4
+  ) {
+    const normalized = normalizeName(cleaned);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function normalizeName(value?: string | null): string | null {
+  if (!value) return null;
+  const sanitized = value
+    .replace(/[^A-Za-zÁÉÍÓÚáéíóúÑñ\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!sanitized) return null;
+  const words = sanitized.split(" ").filter(Boolean);
+  if (words.length === 0 || words.length > 4) return null;
+  return words
+    .map(
+      (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
+    )
+    .join(" ");
 }
 
 async function ensureAdminConversation(waId: string, normalizedAdmin: string) {

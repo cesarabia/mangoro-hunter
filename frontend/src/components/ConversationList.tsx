@@ -73,8 +73,10 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const unreadCount = c.unreadCount || 0;
           const hasUnread = unreadCount > 0;
           const isAdmin = Boolean(c.isAdmin);
-          const displayName = isAdmin ? 'Administrador' : c.contact?.name || c.contact?.phone || c.contact?.waId;
+          const displayName = isAdmin ? 'Administrador' : c.contact?.name || c.contact?.waId || c.contact?.phone;
+          const waId = !isAdmin && c.contact?.name ? c.contact?.waId || c.contact?.phone : null;
           const statusLabel = isAdmin ? 'Admin' : statusLabels[c.status] || c.status || 'Sin estado';
+          const preview = lastMessage?.text ? lastMessage.text.slice(0, 50) : 'Sin mensajes';
           return (
             <div
             key={c.id}
@@ -107,11 +109,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 </span>
               )}
             </div>
+            {waId && <div style={{ fontSize: 11, color: '#777' }}>{waId}</div>}
             <div style={{ fontSize: 12, color: hasUnread ? '#111' : '#666', fontWeight: hasUnread ? 600 : 400 }}>
-              {lastMessage?.text ? lastMessage.text.slice(0, 50) : 'Sin mensajes'}
-            </div>
-            <div style={{ fontSize: 11, color: '#999' }}>
-              Estado: {statusLabel}
+              {preview} · {statusLabel}
             </div>
             </div>
           );
