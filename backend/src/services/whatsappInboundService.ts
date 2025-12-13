@@ -200,6 +200,21 @@ export async function handleInboundWhatsAppMessage(
     config,
   });
 
+  const latestMessage = await prisma.message.findUnique({
+    where: { id: message.id },
+  });
+  const effectiveText =
+    latestMessage?.transcriptText ||
+    latestMessage?.text ||
+    params.text ||
+    "";
+
+  await maybeUpdateContactName(contact, params.profileName, effectiveText);
+
+  if (conversation.aiMode === "INTERVIEW") {
+    await detectInterviewSignals(conversation.id, effectiveText);
+  }
+
   await maybeSendAutoReply(app, conversation.id, contact.waId, config);
 
   if (!isAdminSender && isAdminCommandText(params.text)) {
@@ -244,17 +259,31 @@ export async function maybeSendAutoReply(
     let model: string | undefined = config.aiModel?.trim() || DEFAULT_AI_MODEL;
     if (mode === "INTERVIEW") {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
-      prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}`;
+      prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}\n\n` +
+        "Instrucciones obligatorias de sistema: " +
+        "No inventes direcciones; si te piden dirección exacta, responde que se enviará por este medio. " +
+        "Cuando propongas o confirmes fecha/hora/lugar de entrevista, agrega al final un bloque <hunter_action>{\"type\":\"interview_update\",\"day\":\"<Día>\",\"time\":\"<HH:mm>\",\"location\":\"<Lugar>\",\"status\":\"<CONFIRMED|PENDING|CANCELLED>\"}</hunter_action>.";
       model = config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL;
     }
 
-    const suggestion = await getSuggestedReply(context, {
+    const suggestionRaw = await getSuggestedReply(context, {
       prompt,
       model,
       config,
     });
+
+    const { cleanedText, actions } = parseHunterActions(suggestionRaw || "");
+    const suggestion = cleanedText;
     if (!suggestion?.trim()) {
       return;
+    }
+
+    if (actions.length > 0) {
+      for (const action of actions) {
+        if (action.type === "interview_update") {
+          await applyInterviewAction(conversationId, action);
+        }
+      }
     }
 
     let sendResultRaw: SendResult = {
@@ -485,17 +514,19 @@ async function maybeUpdateContactName(
   const candidate = extractNameFromText(fallbackText);
   if (candidate && isValidName(candidate)) {
     const existing = contact.candidateName?.trim() || null;
+    const existingScore = scoreName(existing);
+    const candidateScore = scoreName(candidate);
     const sameAsDisplay =
-      contact.displayName && candidate.toLowerCase() === contact.displayName.toLowerCase();
-    if (!sameAsDisplay && candidate.length > 1) {
+      contact.displayName &&
+      candidate.toLowerCase() === contact.displayName.toLowerCase();
+    if (!sameAsDisplay && candidate.length > 1 && candidateScore >= existingScore) {
       updates.candidateName = candidate;
     }
     if (!existing) {
       updates.name = candidate;
     }
   }
-  if (display && !contact.name && !updates.name) {
-    updates.candidateName = candidate;
+  if (!updates.candidateName && !contact.candidateName && display && !updates.name && !contact.name) {
     updates.name = display;
   }
   if (Object.keys(updates).length === 0) return;
@@ -558,6 +589,128 @@ function isValidName(value?: string | null): boolean {
   if (blacklist.includes(lower)) return false;
   if (!trimmed.includes(" ") && trimmed.length < 3) return false;
   return true;
+}
+
+function scoreName(value?: string | null): number {
+  if (!value) return 0;
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  let score = words.length;
+  if (value.length >= 6) score += 1;
+  if (words.length >= 2) score += 1;
+  return score;
+}
+
+async function detectInterviewSignals(
+  conversationId: string,
+  text: string,
+): Promise<void> {
+  const lower = text.toLowerCase();
+  const updates: Record<string, string | null> = {};
+  let statusUpdate: string | null = null;
+
+  if (/\bconfirm(o|ar)?\b/.test(lower)) {
+    statusUpdate = "CONFIRMED";
+  }
+  if (/\bno (puedo|sirve|voy|asistir|ir)\b/.test(lower) || /^no\b/.test(lower)) {
+    statusUpdate = "CANCELLED";
+  }
+
+  const parsed = parseDayTime(text);
+  if (parsed.day) updates.interviewDay = parsed.day;
+  if (parsed.time) updates.interviewTime = parsed.time;
+
+  if (statusUpdate) {
+    updates.interviewStatus = statusUpdate;
+  }
+
+  if (Object.keys(updates).length === 0) return;
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: updates,
+  });
+}
+
+function parseDayTime(text: string): { day: string | null; time: string | null } {
+  const dayMatch = text.match(
+    /(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i,
+  );
+  const timeMatch = text.match(
+    /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b/i,
+  );
+  let time: string | null = null;
+  if (timeMatch) {
+    let hour = parseInt(timeMatch[1], 10);
+    const minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+    const suffix = timeMatch[3]?.toLowerCase();
+    if (suffix?.includes("p") && hour < 12) hour += 12;
+    if (suffix?.includes("a") && hour === 12) hour = 0;
+    const hh = hour.toString().padStart(2, "0");
+    const mm = minutes.toString().padStart(2, "0");
+    time = `${hh}:${mm}`;
+  } else if (/medio ?d[ií]a/i.test(text)) {
+    time = "12:00";
+  }
+  const day = dayMatch ? capitalize(dayMatch[1]) : null;
+  return { day, time };
+}
+
+function capitalize(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+}
+
+type InterviewAction = {
+  type: "interview_update";
+  day?: string | null;
+  time?: string | null;
+  location?: string | null;
+  status?: string | null;
+};
+
+function parseHunterActions(text: string): {
+  cleanedText: string;
+  actions: InterviewAction[];
+} {
+  const actions: InterviewAction[] = [];
+  let cleaned = text;
+  const regex = /<hunter_action>([\s\S]*?)<\/hunter_action>/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (parsed?.type === "interview_update") {
+        actions.push({
+          type: "interview_update",
+          day: parsed.day || null,
+          time: parsed.time || null,
+          location: parsed.location || null,
+          status: parsed.status || null,
+        });
+      }
+    } catch {
+      // ignore bad JSON
+    }
+  }
+  cleaned = cleaned.replace(regex, "").trim();
+  return { cleanedText: cleaned, actions };
+}
+
+async function applyInterviewAction(
+  conversationId: string,
+  action: InterviewAction,
+) {
+  const data: Record<string, string | null> = {};
+  if (typeof action.day !== "undefined") data.interviewDay = action.day || null;
+  if (typeof action.time !== "undefined") data.interviewTime = action.time || null;
+  if (typeof action.location !== "undefined")
+    data.interviewLocation = action.location || null;
+  if (typeof action.status !== "undefined")
+    data.interviewStatus = action.status || null;
+  if (Object.keys(data).length === 0) return;
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data,
+  });
 }
 
 function extractWaIdFromText(text?: string | null): string | null {

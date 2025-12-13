@@ -282,12 +282,6 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     }
   };
 
-  const handleCopyWaId = () => {
-    if (!waId) return;
-    const value = waId.startsWith('+') ? waId : `+${waId}`;
-    navigator.clipboard?.writeText(value).catch(() => {});
-  };
-
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -296,14 +290,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
             <div style={{ fontSize: 18, fontWeight: 700 }}>{displayName}</div>
             {!isAdmin && profileDisplay && <div style={{ fontSize: 12, color: '#666' }}>{profileDisplay}</div>}
             {waId && (
-              <div style={{ fontSize: 12, color: '#444', display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: '#444', display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
                 <span>+{waId}</span>
-                <button
-                  onClick={handleCopyWaId}
-                  style={{ padding: '2px 8px', borderRadius: 6, border: '1px solid #ccc', background: '#f8f8f8', fontSize: 12 }}
-                >
-                  Copiar
-                </button>
               </div>
             )}
           </div>
