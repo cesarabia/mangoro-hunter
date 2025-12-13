@@ -382,19 +382,26 @@ async function processMediaAttachment(
     });
 
     if (media.type === "audio" || media.type === "voice") {
-      const transcript = await transcribeAudio(
+      const transcription = await transcribeAudio(
         absolutePath,
         options.config,
         app,
       );
-      if (transcript) {
+      if (transcription.text) {
         await prisma.message.update({
           where: { id: options.messageId },
-          data: { transcriptText: transcript, text: transcript },
+          data: { transcriptText: transcription.text, text: transcription.text },
         });
         await prisma.conversation.update({
           where: { id: options.conversationId },
           data: { updatedAt: new Date() },
+        });
+      } else if (transcription.error) {
+        const fallback =
+          "Audio recibido pero no se pudo transcribir. Envía el detalle por texto, por favor.";
+        await prisma.message.update({
+          where: { id: options.messageId },
+          data: { text: fallback, transcriptText: null },
         });
       }
     }
@@ -432,10 +439,10 @@ async function transcribeAudio(
   filePath: string,
   config: SystemConfig,
   app: FastifyInstance,
-): Promise<string | null> {
+): Promise<{ text: string | null; error?: string | null }> {
   try {
     const apiKey = getEffectiveOpenAiKey(config);
-    if (!apiKey) return null;
+    if (!apiKey) return { text: null, error: "Sin clave de OpenAI" };
     const client = new OpenAI({ apiKey });
     const response = await client.audio.transcriptions.create({
       file: createReadStream(filePath),
@@ -443,10 +450,12 @@ async function transcribeAudio(
     });
     const text = (response as any)?.text || (response as any)?.segments?.[0];
     const trimmed = typeof text === "string" ? text.trim() : null;
-    return trimmed && trimmed.length > 0 ? trimmed : null;
+    const finalText = trimmed && trimmed.length > 0 ? trimmed : null;
+    return { text: finalText, error: finalText ? null : "Sin texto" };
   } catch (err) {
     app.log.warn({ err }, "Audio transcription failed");
-    return null;
+    const message = err instanceof Error ? err.message : "Transcripción fallida";
+    return { text: null, error: message };
   }
 }
 
@@ -474,11 +483,20 @@ async function maybeUpdateContactName(
     updates.displayName = display;
   }
   const candidate = extractNameFromText(fallbackText);
-  if (candidate && !contact.candidateName) {
-    updates.candidateName = candidate;
+  if (candidate && isValidName(candidate)) {
+    const existing = contact.candidateName?.trim() || null;
+    const sameAsDisplay =
+      contact.displayName && candidate.toLowerCase() === contact.displayName.toLowerCase();
+    if (!sameAsDisplay && candidate.length > 1) {
+      updates.candidateName = candidate;
+    }
+    if (!existing) {
+      updates.name = candidate;
+    }
   }
-  if (candidate && !contact.name) {
-    updates.name = candidate;
+  if (display && !contact.name && !updates.name) {
+    updates.candidateName = candidate;
+    updates.name = display;
   }
   if (Object.keys(updates).length === 0) return;
   await prisma.contact.update({
@@ -497,14 +515,19 @@ function extractNameFromText(text?: string): string | null {
   );
   if (match && match[1]) {
     const normalized = normalizeName(match[1]);
-    if (normalized) return normalized;
+    if (isValidName(normalized)) return normalized;
+  }
+  // pattern: "Ignacio, Santiago", take first part
+  const firstChunk = cleaned.split(/[,;-]/)[0]?.trim();
+  if (isValidName(firstChunk)) {
+    return normalizeName(firstChunk);
   }
   if (
     /^[A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60}$/i.test(cleaned) &&
     cleaned.split(/\s+/).filter(Boolean).length <= 4
   ) {
     const normalized = normalizeName(cleaned);
-    if (normalized) return normalized;
+    if (isValidName(normalized)) return normalized;
   }
   return null;
 }
@@ -523,6 +546,18 @@ function normalizeName(value?: string | null): string | null {
       (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
     )
     .join(" ");
+}
+
+function isValidName(value?: string | null): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return false;
+  if (/[^A-Za-zÁÉÍÓÚáéíóúÑñ\s]/.test(trimmed)) return false;
+  const lower = trimmed.toLowerCase();
+  const blacklist = ["hola", "buenas", "buenos", "gracias", "ok", "vale", "hello", "hey", "hi"];
+  if (blacklist.includes(lower)) return false;
+  if (!trimmed.includes(" ") && trimmed.length < 3) return false;
+  return true;
 }
 
 function extractWaIdFromText(text?: string | null): string | null {

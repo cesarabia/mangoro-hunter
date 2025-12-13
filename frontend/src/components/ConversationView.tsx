@@ -346,47 +346,49 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
                 </button>
               ))}
             </div>
-            <div style={{ marginTop: 10, padding: 10, border: '1px solid #eee', borderRadius: 8, background: '#fafafa', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>Entrevista</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                <input
-                  value={interviewDay}
-                  onChange={e => setInterviewDay(e.target.value)}
-                  placeholder="Día (ej: Lunes)"
-                  style={{ flex: '1 1 140px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-                />
-                <input
-                  value={interviewTime}
-                  onChange={e => setInterviewTime(e.target.value)}
-                  placeholder="Hora (ej: 10:00)"
-                  style={{ flex: '1 1 120px', minWidth: 120, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-                />
-                <input
-                  value={interviewLocation}
-                  onChange={e => setInterviewLocation(e.target.value)}
-                  placeholder="Lugar (ej: Online)"
-                  style={{ flex: '2 1 200px', minWidth: 160, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-                />
-                <select
-                  value={interviewStatus}
-                  onChange={e => setInterviewStatus(e.target.value)}
-                  style={{ flex: '1 1 160px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+            {aiMode === 'INTERVIEW' && (
+              <div style={{ marginTop: 10, padding: 10, border: '1px solid #eee', borderRadius: 8, background: '#fafafa', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>Entrevista</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <input
+                    value={interviewDay}
+                    onChange={e => setInterviewDay(e.target.value)}
+                    placeholder="Día (ej: Lunes)"
+                    style={{ flex: '1 1 140px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                  <input
+                    value={interviewTime}
+                    onChange={e => setInterviewTime(e.target.value)}
+                    placeholder="Hora (ej: 10:00)"
+                    style={{ flex: '1 1 120px', minWidth: 120, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                  <input
+                    value={interviewLocation}
+                    onChange={e => setInterviewLocation(e.target.value)}
+                    placeholder="Lugar (ej: Online)"
+                    style={{ flex: '2 1 200px', minWidth: 160, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                  <select
+                    value={interviewStatus}
+                    onChange={e => setInterviewStatus(e.target.value)}
+                    style={{ flex: '1 1 160px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  >
+                    <option value="">Estado entrevista</option>
+                    <option value="PENDING">Pendiente</option>
+                    <option value="CONFIRMED">Confirmada</option>
+                    <option value="CANCELLED">Cancelada</option>
+                  </select>
+                </div>
+                <button
+                  onClick={handleInterviewSave}
+                  disabled={interviewSaving}
+                  style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
                 >
-                  <option value="">Estado entrevista</option>
-                  <option value="PENDING">Pendiente</option>
-                  <option value="CONFIRMED">Confirmada</option>
-                  <option value="CANCELLED">Cancelada</option>
-                </select>
+                  {interviewSaving ? 'Guardando...' : 'Guardar entrevista'}
+                </button>
+                <div style={{ fontSize: 11, color: '#666' }}>Las plantillas de entrevista usan estos valores; si están vacíos se usan los defaults de Configuración.</div>
               </div>
-              <button
-                onClick={handleInterviewSave}
-                disabled={interviewSaving}
-                style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
-              >
-                {interviewSaving ? 'Guardando...' : 'Guardar entrevista'}
-              </button>
-              <div style={{ fontSize: 11, color: '#666' }}>Las plantillas de entrevista usan estos valores; si están vacíos se usan los defaults de Configuración.</div>
-            </div>
+            )}
           </div>
         )}
       </div>
