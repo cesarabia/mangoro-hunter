@@ -35,8 +35,27 @@ export const InboxPage: React.FC<Props> = ({
   const [simStatus, setSimStatus] = useState<string | null>(null);
   const [simError, setSimError] = useState<string | null>(null);
   const [simLoading, setSimLoading] = useState(false);
+  const [backendError, setBackendError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const initialSelectionDone = useRef(false);
+  const lastBackendErrorRef = useRef<string | null>(null);
+  const lastBackendLogAtRef = useRef(0);
+
+  const recordBackendError = useCallback((err: unknown) => {
+    const message = err instanceof Error ? err.message : 'Backend no disponible';
+    setBackendError('Backend no disponible. Reintentando…');
+    const now = Date.now();
+    if (message !== lastBackendErrorRef.current || now - lastBackendLogAtRef.current > 60_000) {
+      console.error(err);
+      lastBackendErrorRef.current = message;
+      lastBackendLogAtRef.current = now;
+    }
+  }, []);
+
+  const clearBackendError = useCallback(() => {
+    setBackendError(null);
+    lastBackendErrorRef.current = null;
+  }, []);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -45,6 +64,7 @@ export const InboxPage: React.FC<Props> = ({
   const loadConversations = useCallback(async () => {
     try {
       const data = await apiClient.get('/api/conversations');
+      clearBackendError();
       setConversations(data);
 
       const currentSelected = selectedIdRef.current;
@@ -63,26 +83,27 @@ export const InboxPage: React.FC<Props> = ({
         initialSelectionDone.current = false;
       }
     } catch (err) {
-      console.error(err);
+      recordBackendError(err);
     }
-  }, []);
+  }, [clearBackendError, recordBackendError]);
 
   const loadConversation = useCallback(async (id: string) => {
     try {
       const data = await apiClient.get(`/api/conversations/${id}`);
+      clearBackendError();
       setSelectedConversation(data);
     } catch (err) {
-      console.error(err);
+      recordBackendError(err);
     }
-  }, []);
+  }, [clearBackendError, recordBackendError]);
 
   const markConversationRead = useCallback(async (id: string) => {
     try {
       await apiClient.post(`/api/conversations/${id}/mark-read`, {});
     } catch (err) {
-      console.error(err);
+      recordBackendError(err);
     }
-  }, []);
+  }, [recordBackendError]);
 
   useEffect(() => {
     let isMounted = true;
@@ -169,7 +190,10 @@ export const InboxPage: React.FC<Props> = ({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minHeight: 0 }}>
       <header style={{ padding: '8px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <strong>Hunter CRM v2.1</strong>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <strong>Hunter CRM v2.1</strong>
+          {backendError && <span style={{ fontSize: 12, color: '#b93800' }}>{backendError}</span>}
+        </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {showSettings && (
             <button onClick={onOpenSettings} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>

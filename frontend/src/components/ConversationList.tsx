@@ -12,6 +12,13 @@ const statusLabels: Record<string, string> = {
   CLOSED: 'Cerrado'
 };
 
+const statusStyles: Record<string, { background: string; border: string; color: string }> = {
+  NEW: { background: '#e6f7ff', border: '#91d5ff', color: '#0958d9' },
+  OPEN: { background: '#fffbe6', border: '#ffe58f', color: '#ad6800' },
+  CLOSED: { background: '#f6ffed', border: '#b7eb8f', color: '#237804' },
+  DEFAULT: { background: '#f5f5f5', border: '#d9d9d9', color: '#333' }
+};
+
 export const ConversationList: React.FC<ConversationListProps> = ({
   conversations,
   selectedId,
@@ -76,6 +83,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const displayName = isAdmin ? 'Administrador' : c.contact?.name || c.contact?.waId || c.contact?.phone;
           const waId = !isAdmin && c.contact?.name ? c.contact?.waId || c.contact?.phone : null;
           const statusLabel = isAdmin ? 'Admin' : statusLabels[c.status] || c.status || 'Sin estado';
+          const statusStyle = (statusStyles[isAdmin ? 'DEFAULT' : c.status] || statusStyles.DEFAULT);
           const preview = lastMessage?.text ? lastMessage.text.slice(0, 50) : 'Sin mensajes';
           return (
             <div
@@ -90,28 +98,43 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <span style={{ fontWeight: hasUnread ? 700 : 600 }}>{displayName}</span>
-              {hasUnread && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span
                   style={{
-                    background: '#ff4d4f',
-                    color: '#fff',
+                    background: statusStyle.background,
+                    border: `1px solid ${statusStyle.border}`,
+                    color: statusStyle.color,
                     borderRadius: 999,
                     fontSize: 11,
-                    minWidth: 18,
-                    height: 18,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '0 6px'
+                    padding: '2px 8px',
+                    whiteSpace: 'nowrap'
                   }}
                 >
-                  {unreadCount}
+                  {statusLabel}
                 </span>
-              )}
+                {hasUnread && (
+                  <span
+                    style={{
+                      background: '#ff4d4f',
+                      color: '#fff',
+                      borderRadius: 999,
+                      fontSize: 11,
+                      minWidth: 18,
+                      height: 18,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '0 6px'
+                    }}
+                  >
+                    {unreadCount}
+                  </span>
+                )}
+              </div>
             </div>
             {waId && <div style={{ fontSize: 11, color: '#777' }}>{waId}</div>}
             <div style={{ fontSize: 12, color: hasUnread ? '#111' : '#666', fontWeight: hasUnread ? 600 : 400 }}>
-              {preview} · {statusLabel}
+              {preview}
             </div>
             </div>
           );

@@ -8,6 +8,7 @@ import { registerAiRoutes } from './routes/ai';
 import { ensureAdminUser } from './services/bootstrapService';
 import { registerConfigRoutes } from './routes/config';
 import { registerSimulationRoutes } from './routes/simulate';
+import { registerHealthRoutes } from './routes/health';
 
 export async function buildServer() {
   const app = Fastify({ logger: true });
@@ -28,6 +29,7 @@ export async function buildServer() {
   app.log.info('Admin bootstrap ok');
 
   app.register(registerAuthRoutes, { prefix: '/api/auth' });
+  app.register(registerHealthRoutes, { prefix: '/api' });
   app.register(registerConversationRoutes, { prefix: '/api/conversations' });
   app.register(registerAiRoutes, { prefix: '/api/conversations' });
   app.register(registerConfigRoutes, { prefix: '/api/config' });
