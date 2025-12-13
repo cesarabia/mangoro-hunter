@@ -62,8 +62,8 @@ export async function handleInboundWhatsAppMessage(
   }
 
   let conversation = await prisma.conversation.findFirst({
-    where: { contactId: contact.id, status: { in: ['NEW', 'OPEN'] } },
-    orderBy: { createdAt: 'desc' }
+    where: { contactId: contact.id, isAdmin: false },
+    orderBy: { updatedAt: 'desc' }
   });
 
   if (!conversation) {
@@ -73,6 +73,11 @@ export async function handleInboundWhatsAppMessage(
         status: 'NEW',
         channel: 'whatsapp'
       }
+    });
+  } else if (conversation.status === 'CLOSED') {
+    conversation = await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { status: 'OPEN' }
     });
   }
 
