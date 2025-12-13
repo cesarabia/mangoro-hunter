@@ -12,6 +12,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const [loadingAi, setLoadingAi] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [templateSending, setTemplateSending] = useState(false);
   const [templateVariables, setTemplateVariables] = useState<string[]>([]);
   const messagesRef = useRef<HTMLDivElement | null>(null);
@@ -23,6 +24,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setSendError(null);
       setModeSaving(false);
       setTemplateVariables([]);
+      setDownloadError(null);
       return;
     }
     setAutoScrollEnabled(true);
@@ -30,6 +32,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     previousCountRef.current = conversation.messages?.length ?? 0;
     setModeSaving(false);
     setSendError(null);
+    setDownloadError(null);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -185,6 +188,43 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const templateVariablesReady =
     templateVariableCount === 0 || templateVariables.every(value => value.trim().length > 0);
 
+  const describeMedia = (message: any) => {
+    if (!message?.mediaType) return null;
+    if (message.mediaType === 'audio' || message.mediaType === 'voice') return 'Audio';
+    if (message.mediaType === 'image') return 'Imagen';
+    if (message.mediaType === 'document') return message.mediaMime?.includes('pdf') ? 'PDF' : 'Documento';
+    if (message.mediaType === 'sticker') return 'Sticker';
+    return 'Adjunto';
+  };
+
+  const handleDownload = async (message: any) => {
+    if (!message?.id) return;
+    setDownloadError(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/messages/${message.id}/download`, {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      });
+      if (!res.ok) {
+        throw new Error('No se pudo descargar el archivo');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const filename = (message.mediaPath && message.mediaPath.split('/').pop()) || 'archivo';
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setDownloadError(err.message || 'No se pudo descargar el adjunto');
+    }
+  };
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee' }}>
@@ -237,10 +277,31 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
                   borderRadius: 12,
                   background: m.direction === 'OUTBOUND' ? '#d1e7dd' : '#fff',
                   border: '1px solid #eee',
-                  fontSize: 14
+                  fontSize: 14,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6
                 }}
               >
-                {m.text}
+                <div>{m.text || describeMedia(m) || '(sin texto)'}</div>
+                {m.mediaType && (
+                  <div style={{ fontSize: 12, color: '#555', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span>{describeMedia(m)}</span>
+                    {m.mediaPath && (
+                      <button
+                        onClick={() => handleDownload(m)}
+                        style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc', background: '#f8f8f8', fontSize: 12 }}
+                      >
+                        Descargar
+                      </button>
+                    )}
+                  </div>
+                )}
+                {m.transcriptText && (
+                  <div style={{ fontSize: 12, color: '#333', background: '#f6f6f6', padding: '6px 8px', borderRadius: 8 }}>
+                    Transcripción: {m.transcriptText}
+                  </div>
+                )}
               </div>
             </div>
           ))
@@ -285,6 +346,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
           </button>
         </div>
         {sendError && <div style={{ color: '#b93800', fontSize: 13 }}>{sendError}</div>}
+        {downloadError && <div style={{ color: '#b93800', fontSize: 13 }}>{downloadError}</div>}
         {hasConversation && !isAdmin && !within24h && (
           <>
             {requiredTemplate ? (

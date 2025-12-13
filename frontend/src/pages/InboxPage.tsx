@@ -36,6 +36,13 @@ export const InboxPage: React.FC<Props> = ({
   const [simError, setSimError] = useState<string | null>(null);
   const [simLoading, setSimLoading] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newPhone, setNewPhone] = useState('');
+  const [newMode, setNewMode] = useState<'RECRUIT' | 'INTERVIEW' | 'OFF'>('RECRUIT');
+  const [newStatus, setNewStatus] = useState<'NEW' | 'OPEN' | 'CLOSED'>('NEW');
+  const [sendTemplateNow, setSendTemplateNow] = useState(true);
+  const [creatingConversation, setCreatingConversation] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const initialSelectionDone = useRef(false);
   const lastBackendErrorRef = useRef<string | null>(null);
@@ -146,6 +153,44 @@ export const InboxPage: React.FC<Props> = ({
     }
   };
 
+  const resetAddModal = () => {
+    setNewPhone('');
+    setNewMode('RECRUIT');
+    setNewStatus('NEW');
+    setSendTemplateNow(true);
+    setCreateError(null);
+  };
+
+  const handleCreateConversation = async () => {
+    if (!newPhone.trim()) {
+      setCreateError('Ingresa un número en formato E.164');
+      return;
+    }
+    setCreatingConversation(true);
+    setCreateError(null);
+    try {
+      const res = await apiClient.post('/api/conversations/create-and-send', {
+        phoneE164: newPhone.trim(),
+        mode: newMode,
+        status: newStatus,
+        sendTemplateNow
+      });
+      const convoId = res?.conversationId;
+      await loadConversations();
+      if (convoId) {
+        selectedIdRef.current = convoId;
+        setSelectedId(convoId);
+        await loadConversation(convoId);
+      }
+      setShowAddModal(false);
+      resetAddModal();
+    } catch (err: any) {
+      setCreateError(err.message || 'No se pudo crear la conversación');
+    } finally {
+      setCreatingConversation(false);
+    }
+  };
+
   const handleSimulate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!simNumber.trim() || !simMessage.trim()) return;
@@ -195,6 +240,9 @@ export const InboxPage: React.FC<Props> = ({
           {backendError && <span style={{ fontSize: 12, color: '#b93800' }}>{backendError}</span>}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setShowAddModal(true)} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
+            + Agregar número
+          </button>
           {showSettings && (
             <button onClick={onOpenSettings} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
               Configuración
@@ -281,6 +329,93 @@ export const InboxPage: React.FC<Props> = ({
           <ConversationView conversation={selectedConversation} onMessageSent={handleMessageSent} />
         </div>
       </div>
+      {showAddModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 20
+          }}
+        >
+          <div style={{ background: '#fff', borderRadius: 10, padding: 20, width: 'min(520px, 90vw)', boxShadow: '0 10px 30px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0 }}>Agregar número</h3>
+              <button onClick={() => { setShowAddModal(false); resetAddModal(); }} style={{ border: 'none', background: 'transparent', fontSize: 18, cursor: 'pointer' }}>×</button>
+            </div>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+              Teléfono (E.164)
+              <input
+                type="text"
+                value={newPhone}
+                onChange={e => setNewPhone(e.target.value)}
+                placeholder="Ej: 56982345846"
+                style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+              />
+            </label>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, flex: '1 1 200px' }}>
+                Modo inicial
+                <select
+                  value={newMode}
+                  onChange={e => setNewMode(e.target.value as 'RECRUIT' | 'INTERVIEW' | 'OFF')}
+                  style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                >
+                  <option value="RECRUIT">Reclutamiento</option>
+                  <option value="INTERVIEW">Entrevista</option>
+                  <option value="OFF">Manual</option>
+                </select>
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, flex: '1 1 200px' }}>
+                Estado
+                <select
+                  value={newStatus}
+                  onChange={e => setNewStatus(e.target.value as 'NEW' | 'OPEN' | 'CLOSED')}
+                  style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                >
+                  <option value="NEW">Nuevo</option>
+                  <option value="OPEN">Seguimiento</option>
+                  <option value="CLOSED">Cerrado</option>
+                </select>
+              </label>
+            </div>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={sendTemplateNow}
+                onChange={e => setSendTemplateNow(e.target.checked)}
+              />
+              Enviar plantilla ahora
+            </label>
+            <div style={{ fontSize: 12, color: '#555' }}>
+              Reclutamiento envía <strong>postulacion_completar_1</strong> con el título por defecto. Entrevista envía <strong>entrevista_confirmacion_1</strong> con día/hora/lugar configurados.
+            </div>
+            {createError && <div style={{ color: '#b93800', fontSize: 13 }}>{createError}</div>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button
+                onClick={() => { setShowAddModal(false); resetAddModal(); }}
+                style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
+                disabled={creatingConversation}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleCreateConversation}
+                disabled={creatingConversation}
+                style={{ padding: '8px 14px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
+              >
+                {creatingConversation ? 'Creando...' : sendTemplateNow ? 'Crear y enviar' : 'Crear'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

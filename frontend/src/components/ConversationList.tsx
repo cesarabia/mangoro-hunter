@@ -82,9 +82,11 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const isAdmin = Boolean(c.isAdmin);
           const displayName = isAdmin ? 'Administrador' : c.contact?.name || c.contact?.waId || c.contact?.phone;
           const waId = !isAdmin && c.contact?.name ? c.contact?.waId || c.contact?.phone : null;
-          const statusLabel = isAdmin ? 'Admin' : statusLabels[c.status] || c.status || 'Sin estado';
-          const statusStyle = (statusStyles[isAdmin ? 'DEFAULT' : c.status] || statusStyles.DEFAULT);
-          const preview = lastMessage?.text ? lastMessage.text.slice(0, 50) : 'Sin mensajes';
+          const statusLabel = statusLabels[c.status] || c.status || 'Sin estado';
+          const statusStyle = (statusStyles[c.status] || statusStyles.DEFAULT);
+          const previewSource = lastMessage?.transcriptText || lastMessage?.text;
+          const preview = previewSource ? previewSource.slice(0, 70) : 'Sin mensajes';
+          const showStatus = !isAdmin;
           return (
             <div
             key={c.id}
@@ -98,7 +100,31 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <span style={{ fontWeight: hasUnread ? 700 : 600 }}>{displayName}</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {hasUnread && (
+                <span
+                  style={{
+                    background: '#ff4d4f',
+                    color: '#fff',
+                    borderRadius: 999,
+                    fontSize: 11,
+                    minWidth: 18,
+                    height: 18,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '0 6px'
+                  }}
+                >
+                  {unreadCount}
+                </span>
+              )}
+            </div>
+            {waId && <div style={{ fontSize: 11, color: '#777' }}>{waId}</div>}
+            <div style={{ fontSize: 12, color: hasUnread ? '#111' : '#666', fontWeight: hasUnread ? 600 : 400 }}>
+              {preview}
+            </div>
+            {showStatus && (
+              <div style={{ marginTop: 6 }}>
                 <span
                   style={{
                     background: statusStyle.background,
@@ -112,30 +138,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 >
                   {statusLabel}
                 </span>
-                {hasUnread && (
-                  <span
-                    style={{
-                      background: '#ff4d4f',
-                      color: '#fff',
-                      borderRadius: 999,
-                      fontSize: 11,
-                      minWidth: 18,
-                      height: 18,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      padding: '0 6px'
-                    }}
-                  >
-                    {unreadCount}
-                  </span>
-                )}
               </div>
-            </div>
-            {waId && <div style={{ fontSize: 11, color: '#777' }}>{waId}</div>}
-            <div style={{ fontSize: 12, color: hasUnread ? '#111' : '#666', fontWeight: hasUnread ? 600 : 400 }}>
-              {preview}
-            </div>
+            )}
             </div>
           );
         })}
