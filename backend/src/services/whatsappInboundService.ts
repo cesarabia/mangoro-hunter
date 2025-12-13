@@ -6,6 +6,7 @@ import {
   DEFAULT_INTERVIEW_AI_PROMPT,
   DEFAULT_INTERVIEW_AI_MODEL,
   INTERVIEW_AI_POLICY_ADDENDUM,
+  DEFAULT_AI_MODEL,
 } from "./configService";
 import { DEFAULT_AI_PROMPT } from "../constants/ai";
 import { serializeJson } from "../utils/json";
@@ -153,7 +154,7 @@ export async function maybeSendAutoReply(
       .join("\n");
 
     let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
-    let model: string | undefined;
+    let model: string | undefined = config.aiModel?.trim() || DEFAULT_AI_MODEL;
     if (mode === "INTERVIEW") {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
       prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}`;

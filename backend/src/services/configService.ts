@@ -7,6 +7,11 @@ export const DEFAULT_WHATSAPP_PHONE_ID = '1511895116748404';
 export const DEFAULT_TEMPLATE_INTERVIEW_INVITE = 'entrevista_confirmacion_1';
 export const DEFAULT_TEMPLATE_GENERAL_FOLLOWUP = 'postulacion_completar_1';
 export const DEFAULT_TEMPLATE_LANGUAGE_CODE = 'es_CL';
+export const DEFAULT_AI_MODEL = 'gpt-4.1-mini';
+export const DEFAULT_JOB_TITLE = 'Vendedor/a';
+export const DEFAULT_INTERVIEW_DAY = 'Lunes';
+export const DEFAULT_INTERVIEW_TIME = '10:00';
+export const DEFAULT_INTERVIEW_LOCATION = 'Online';
 export const DEFAULT_ADMIN_AI_PROMPT =
   'Eres Hunter Admin, un asistente en español para managers de reclutamiento. Da respuestas claras y accionables, usa herramientas cuando te lo pidan.';
 export const DEFAULT_ADMIN_AI_MODEL = 'gpt-4.1-mini';
@@ -96,6 +101,16 @@ export async function updateAiPrompt(aiPrompt?: string | null): Promise<SystemCo
   });
 }
 
+export async function updateAiModel(aiModel?: string | null): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data: {
+      aiModel: normalizeValue(aiModel)
+    }
+  });
+}
+
 export async function updateAdminAiConfig(input: {
   prompt?: string | null;
   model?: string | null;
@@ -168,6 +183,10 @@ export async function updateTemplateConfig(input: {
   templateInterviewInvite?: string | null;
   templateGeneralFollowup?: string | null;
   templateLanguageCode?: string | null;
+  defaultJobTitle?: string | null;
+  defaultInterviewDay?: string | null;
+  defaultInterviewTime?: string | null;
+  defaultInterviewLocation?: string | null;
 }): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
   const data: Record<string, string | null | undefined> = {};
@@ -179,6 +198,18 @@ export async function updateTemplateConfig(input: {
   }
   if (typeof input.templateLanguageCode !== 'undefined') {
     data.templateLanguageCode = normalizeValue(input.templateLanguageCode);
+  }
+  if (typeof input.defaultJobTitle !== 'undefined') {
+    data.defaultJobTitle = normalizeValue(input.defaultJobTitle);
+  }
+  if (typeof input.defaultInterviewDay !== 'undefined') {
+    data.defaultInterviewDay = normalizeValue(input.defaultInterviewDay);
+  }
+  if (typeof input.defaultInterviewTime !== 'undefined') {
+    data.defaultInterviewTime = normalizeValue(input.defaultInterviewTime);
+  }
+  if (typeof input.defaultInterviewLocation !== 'undefined') {
+    data.defaultInterviewLocation = normalizeValue(input.defaultInterviewLocation);
   }
   return prisma.systemConfig.update({
     where: { id: config.id },
@@ -197,9 +228,14 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         botAutoReply: true,
         interviewAiPrompt: DEFAULT_INTERVIEW_AI_PROMPT,
         interviewAiModel: DEFAULT_INTERVIEW_AI_MODEL,
+        aiModel: DEFAULT_AI_MODEL,
         templateInterviewInvite: DEFAULT_TEMPLATE_INTERVIEW_INVITE,
         templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
-        templateLanguageCode: DEFAULT_TEMPLATE_LANGUAGE_CODE
+        templateLanguageCode: DEFAULT_TEMPLATE_LANGUAGE_CODE,
+        defaultJobTitle: DEFAULT_JOB_TITLE,
+        defaultInterviewDay: DEFAULT_INTERVIEW_DAY,
+        defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
+        defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION
       }
     });
     return existing;
@@ -219,6 +255,21 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.templateLanguageCode) {
     updates.templateLanguageCode = DEFAULT_TEMPLATE_LANGUAGE_CODE;
+  }
+  if (!existing.defaultJobTitle) {
+    updates.defaultJobTitle = DEFAULT_JOB_TITLE;
+  }
+  if (!existing.defaultInterviewDay) {
+    updates.defaultInterviewDay = DEFAULT_INTERVIEW_DAY;
+  }
+  if (!existing.defaultInterviewTime) {
+    updates.defaultInterviewTime = DEFAULT_INTERVIEW_TIME;
+  }
+  if (!existing.defaultInterviewLocation) {
+    updates.defaultInterviewLocation = DEFAULT_INTERVIEW_LOCATION;
+  }
+  if (!existing.aiModel) {
+    updates.aiModel = DEFAULT_AI_MODEL;
   }
   if (!existing.interviewAiPrompt) {
     updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;

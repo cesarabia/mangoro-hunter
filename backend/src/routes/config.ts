@@ -14,7 +14,13 @@ import {
   DEFAULT_INTERVIEW_AI_MODEL,
   DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
   DEFAULT_TEMPLATE_INTERVIEW_INVITE,
-  DEFAULT_TEMPLATE_LANGUAGE_CODE
+  DEFAULT_TEMPLATE_LANGUAGE_CODE,
+  DEFAULT_AI_MODEL,
+  DEFAULT_JOB_TITLE,
+  DEFAULT_INTERVIEW_DAY,
+  DEFAULT_INTERVIEW_TIME,
+  DEFAULT_INTERVIEW_LOCATION,
+  updateAiModel
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
@@ -32,7 +38,11 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   const templatesDefaults = {
     templateInterviewInvite: DEFAULT_TEMPLATE_INTERVIEW_INVITE,
     templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
-    templateLanguageCode: DEFAULT_TEMPLATE_LANGUAGE_CODE
+    templateLanguageCode: DEFAULT_TEMPLATE_LANGUAGE_CODE,
+    defaultJobTitle: DEFAULT_JOB_TITLE,
+    defaultInterviewDay: DEFAULT_INTERVIEW_DAY,
+    defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
+    defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION
   };
 
   function isMissingColumnError(err: any): boolean {
@@ -133,11 +143,13 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     const config = await loadConfigSafe(request);
     if (!config) {
       return {
-        hasOpenAiKey: false
+        hasOpenAiKey: false,
+        aiModel: DEFAULT_AI_MODEL
       };
     }
     return {
-      hasOpenAiKey: Boolean(config.openAiApiKey)
+      hasOpenAiKey: Boolean(config.openAiApiKey),
+      aiModel: config.aiModel || DEFAULT_AI_MODEL
     };
   });
 
@@ -146,11 +158,19 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const body = request.body as { openAiApiKey?: string | null };
-    const updated = await executeUpdate(reply, () => updateAiConfig(body?.openAiApiKey ?? null));
+    const body = request.body as { openAiApiKey?: string | null; aiModel?: string | null };
+    const updated = await executeUpdate(reply, async () => {
+      const cfg = await updateAiConfig(body?.openAiApiKey ?? null);
+      if (typeof body?.aiModel !== 'undefined') {
+        await updateAiModel(body.aiModel ?? null);
+      }
+      return cfg;
+    });
     if (!updated) return;
+    const fresh = await getSystemConfig();
     return {
-      hasOpenAiKey: Boolean(updated.openAiApiKey)
+      hasOpenAiKey: Boolean(fresh.openAiApiKey),
+      aiModel: fresh.aiModel || DEFAULT_AI_MODEL
     };
   });
 
@@ -162,11 +182,13 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     const config = await loadConfigSafe(request);
     if (!config) {
       return {
-        aiPrompt: DEFAULT_AI_PROMPT
+        aiPrompt: DEFAULT_AI_PROMPT,
+        aiModel: DEFAULT_AI_MODEL
       };
     }
     return {
-      aiPrompt: config.aiPrompt || DEFAULT_AI_PROMPT
+      aiPrompt: config.aiPrompt || DEFAULT_AI_PROMPT,
+      aiModel: config.aiModel || DEFAULT_AI_MODEL
     };
   });
 
@@ -175,12 +197,19 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const body = request.body as { aiPrompt?: string | null };
-    const updated = await executeUpdate(reply, () => updateAiPrompt(body?.aiPrompt ?? null));
+    const body = request.body as { aiPrompt?: string | null; aiModel?: string | null };
+    const updated = await executeUpdate(reply, async () => {
+      const cfg = await updateAiPrompt(body?.aiPrompt ?? null);
+      if (typeof body?.aiModel !== 'undefined') {
+        await updateAiModel(body.aiModel ?? null);
+      }
+      return cfg;
+    });
     if (!updated) return;
-
+    const fresh = await getSystemConfig();
     return {
-      aiPrompt: updated.aiPrompt || DEFAULT_AI_PROMPT
+      aiPrompt: fresh.aiPrompt || DEFAULT_AI_PROMPT,
+      aiModel: fresh.aiModel || DEFAULT_AI_MODEL
     };
   });
 
@@ -271,7 +300,11 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     return {
       templateInterviewInvite: config.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE,
       templateGeneralFollowup: config.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
-      templateLanguageCode: config.templateLanguageCode || DEFAULT_TEMPLATE_LANGUAGE_CODE
+      templateLanguageCode: config.templateLanguageCode || DEFAULT_TEMPLATE_LANGUAGE_CODE,
+      defaultJobTitle: config.defaultJobTitle || DEFAULT_JOB_TITLE,
+      defaultInterviewDay: config.defaultInterviewDay || DEFAULT_INTERVIEW_DAY,
+      defaultInterviewTime: config.defaultInterviewTime || DEFAULT_INTERVIEW_TIME,
+      defaultInterviewLocation: config.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION
     };
   });
 
@@ -283,6 +316,10 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       templateInterviewInvite?: string | null;
       templateGeneralFollowup?: string | null;
       templateLanguageCode?: string | null;
+      defaultJobTitle?: string | null;
+      defaultInterviewDay?: string | null;
+      defaultInterviewTime?: string | null;
+      defaultInterviewLocation?: string | null;
     };
     const updated = await executeUpdate(reply, () =>
       updateTemplateConfig({
@@ -291,14 +328,25 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         templateGeneralFollowup:
           typeof body?.templateGeneralFollowup === 'undefined' ? undefined : body.templateGeneralFollowup,
         templateLanguageCode:
-          typeof body?.templateLanguageCode === 'undefined' ? undefined : body.templateLanguageCode
+          typeof body?.templateLanguageCode === 'undefined' ? undefined : body.templateLanguageCode,
+        defaultJobTitle: typeof body?.defaultJobTitle === 'undefined' ? undefined : body.defaultJobTitle,
+        defaultInterviewDay:
+          typeof body?.defaultInterviewDay === 'undefined' ? undefined : body.defaultInterviewDay,
+        defaultInterviewTime:
+          typeof body?.defaultInterviewTime === 'undefined' ? undefined : body.defaultInterviewTime,
+        defaultInterviewLocation:
+          typeof body?.defaultInterviewLocation === 'undefined' ? undefined : body.defaultInterviewLocation
       })
     );
     if (!updated) return;
     return {
       templateInterviewInvite: updated.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE,
       templateGeneralFollowup: updated.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
-      templateLanguageCode: updated.templateLanguageCode || DEFAULT_TEMPLATE_LANGUAGE_CODE
+      templateLanguageCode: updated.templateLanguageCode || DEFAULT_TEMPLATE_LANGUAGE_CODE,
+      defaultJobTitle: updated.defaultJobTitle || DEFAULT_JOB_TITLE,
+      defaultInterviewDay: updated.defaultInterviewDay || DEFAULT_INTERVIEW_DAY,
+      defaultInterviewTime: updated.defaultInterviewTime || DEFAULT_INTERVIEW_TIME,
+      defaultInterviewLocation: updated.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION
     };
   });
 

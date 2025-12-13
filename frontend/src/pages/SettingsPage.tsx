@@ -17,6 +17,7 @@ interface WhatsappConfigResponse {
 
 interface AiConfigResponse {
   hasOpenAiKey: boolean;
+  aiModel?: string;
 }
 
 interface AdminAccountResponse {
@@ -25,6 +26,7 @@ interface AdminAccountResponse {
 
 interface AiPromptResponse {
   aiPrompt: string;
+  aiModel?: string;
 }
 
 interface AdminAiConfigResponse {
@@ -43,6 +45,10 @@ interface TemplatesConfigResponse {
   templateInterviewInvite: string;
   templateGeneralFollowup: string;
   templateLanguageCode: string;
+  defaultJobTitle: string;
+  defaultInterviewDay: string;
+  defaultInterviewTime: string;
+  defaultInterviewLocation: string;
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
@@ -71,6 +77,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
 
   const [openAiKey, setOpenAiKey] = useState('');
   const [hasOpenAiKey, setHasOpenAiKey] = useState(false);
+  const [aiModel, setAiModel] = useState('gpt-4.1-mini');
   const [aiStatus, setAiStatus] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   const [savingAi, setSavingAi] = useState(false);
@@ -91,6 +98,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [templateInterviewInvite, setTemplateInterviewInvite] = useState('');
   const [templateGeneralFollowup, setTemplateGeneralFollowup] = useState('');
   const [templateLanguageCode, setTemplateLanguageCode] = useState('es_CL');
+  const [defaultJobTitle, setDefaultJobTitle] = useState('Vendedor/a');
+  const [defaultInterviewDay, setDefaultInterviewDay] = useState('Lunes');
+  const [defaultInterviewTime, setDefaultInterviewTime] = useState('10:00');
+  const [defaultInterviewLocation, setDefaultInterviewLocation] = useState('Online');
   const [savingTemplates, setSavingTemplates] = useState(false);
   const [templateStatus, setTemplateStatus] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
@@ -120,8 +131,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setWhatsappVerifyToken('');
         setVerifyTokenDirty(false);
         setHasOpenAiKey(ai.hasOpenAiKey);
+        setAiModel(ai.aiModel || 'gpt-4.1-mini');
         setAdminEmail(admin.adminEmail || 'admin@example.com');
         setAiPrompt(aiPromptRes.aiPrompt || defaultAiPrompt);
+        setAiModel(aiPromptRes.aiModel || ai.aiModel || 'gpt-4.1-mini');
         setAdminAiPrompt(adminAi.prompt || '');
         setAdminAiModel(adminAi.model || 'gpt-4.1-mini');
         setInterviewAiPrompt(interviewAi.prompt || '');
@@ -129,6 +142,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setTemplateInterviewInvite(templates.templateInterviewInvite || '');
         setTemplateGeneralFollowup(templates.templateGeneralFollowup || '');
         setTemplateLanguageCode(templates.templateLanguageCode || 'es_CL');
+        setDefaultJobTitle(templates.defaultJobTitle || 'Vendedor/a');
+        setDefaultInterviewDay(templates.defaultInterviewDay || 'Lunes');
+        setDefaultInterviewTime(templates.defaultInterviewTime || '10:00');
+        setDefaultInterviewLocation(templates.defaultInterviewLocation || 'Online');
       } catch (err) {
         console.error(err);
       } finally {
@@ -205,9 +222,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     setAiStatus(null);
     try {
       const res = (await apiClient.put('/api/config/ai', {
-        openAiApiKey: openAiKey.trim() || null
+        openAiApiKey: openAiKey.trim() || null,
+        aiModel
       })) as AiConfigResponse;
       setHasOpenAiKey(res.hasOpenAiKey);
+      setAiModel(res.aiModel || aiModel);
       setAiStatus('Configuración de IA guardada');
       setOpenAiKey('');
     } catch (err: any) {
@@ -224,9 +243,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     setAiPromptError(null);
     try {
       const res = (await apiClient.put('/api/config/ai-prompt', {
-        aiPrompt: aiPrompt.trim() || null
+        aiPrompt: aiPrompt.trim() || null,
+        aiModel
       })) as AiPromptResponse;
       setAiPrompt(res.aiPrompt);
+      if (res.aiModel) {
+        setAiModel(res.aiModel);
+      }
       setAiPromptStatus('Prompt actualizado');
     } catch (err: any) {
       setAiPromptError(err.message || 'No se pudo guardar el prompt');
@@ -509,6 +532,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 120 }}
                   />
                 </label>
+                <label>
+                  <div>Modelo</div>
+                  <select
+                    value={aiModel}
+                    onChange={e => setAiModel(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  >
+                    <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                    <option value="gpt-5-mini">gpt-5-mini</option>
+                  </select>
+                </label>
                 <small style={{ color: '#666' }}>
                   Ajusta el tono, las instrucciones y las reglas de la IA que responde a los candidatos.
                 </small>
@@ -624,6 +658,46 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     value={templateLanguageCode}
                     onChange={e => setTemplateLanguageCode(e.target.value)}
                     placeholder="ej: es_CL"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label>
+                  <div>{'Default título de vacante ({{1}} seguimiento)'}</div>
+                  <input
+                    type="text"
+                    value={defaultJobTitle}
+                    onChange={e => setDefaultJobTitle(e.target.value)}
+                    placeholder="ej: Ejecutivo/a de ventas"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label>
+                  <div>{'Default día entrevista ({{1}} entrevista_confirmacion_1)'}</div>
+                  <input
+                    type="text"
+                    value={defaultInterviewDay}
+                    onChange={e => setDefaultInterviewDay(e.target.value)}
+                    placeholder="ej: Lunes"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label>
+                  <div>{'Default hora entrevista ({{2}} entrevista_confirmacion_1)'}</div>
+                  <input
+                    type="text"
+                    value={defaultInterviewTime}
+                    onChange={e => setDefaultInterviewTime(e.target.value)}
+                    placeholder="ej: 10:00"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label>
+                  <div>{'Default lugar entrevista ({{3}} entrevista_confirmacion_1)'}</div>
+                  <input
+                    type="text"
+                    value={defaultInterviewLocation}
+                    onChange={e => setDefaultInterviewLocation(e.target.value)}
+                    placeholder="ej: Online/Oficina"
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   />
                 </label>

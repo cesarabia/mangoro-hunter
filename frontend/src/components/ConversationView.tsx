@@ -112,13 +112,19 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation.aiMode || 'RECRUIT';
   const isManualMode = aiMode === 'OFF';
   const within24h = conversation.within24h !== false;
-  const templateInterviewInvite = conversation.templates?.templateInterviewInvite || null;
-  const templateGeneralFollowup = conversation.templates?.templateGeneralFollowup || null;
+  const templateConfig = conversation.templates || {};
+  const templateInterviewInvite = templateConfig.templateInterviewInvite || null;
+  const templateGeneralFollowup = templateConfig.templateGeneralFollowup || null;
   const requiredTemplate =
     aiMode === 'INTERVIEW' ? templateInterviewInvite : templateGeneralFollowup;
   const requiredTemplateLabel =
     aiMode === 'INTERVIEW' ? 'entrevista' : 'seguimiento';
-  const templateVariableCount = requiredTemplate === 'postulacion_completar_1' ? 1 : requiredTemplate === 'entrevista_confirmacion_1' ? 3 : 0;
+  const templateVariableCount =
+    requiredTemplate === 'postulacion_completar_1'
+      ? 1
+      : requiredTemplate === 'entrevista_confirmacion_1'
+      ? 3
+      : 0;
   const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'OFF'; label: string }> = [
     { key: 'RECRUIT', label: 'Reclutamiento' },
     { key: 'INTERVIEW', label: 'Entrevista' },
@@ -131,14 +137,28 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setTemplateVariables([]);
       return;
     }
-    const initial = Array.from({ length: templateVariableCount }, (_, index) => {
-      if (index === 0) {
-        return conversation.contact?.name || '';
-      }
-      return '';
-    });
-    setTemplateVariables(initial);
-  }, [conversation?.id, requiredTemplate, templateVariableCount]);
+    if (requiredTemplate === 'postulacion_completar_1') {
+      setTemplateVariables([templateConfig.defaultJobTitle || '']);
+      return;
+    }
+    if (requiredTemplate === 'entrevista_confirmacion_1') {
+      setTemplateVariables([
+        templateConfig.defaultInterviewDay || '',
+        templateConfig.defaultInterviewTime || '',
+        templateConfig.defaultInterviewLocation || ''
+      ]);
+      return;
+    }
+    setTemplateVariables(Array.from({ length: templateVariableCount }, () => ''));
+  }, [
+    conversation?.id,
+    requiredTemplate,
+    templateVariableCount,
+    templateConfig.defaultJobTitle,
+    templateConfig.defaultInterviewDay,
+    templateConfig.defaultInterviewTime,
+    templateConfig.defaultInterviewLocation
+  ]);
 
   const handleSendTemplate = async () => {
     if (!conversation || !requiredTemplate) return;

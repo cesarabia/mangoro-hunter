@@ -174,7 +174,7 @@ export const InboxPage: React.FC<Props> = ({
   };
 
   const handleStatusChange = async (status: string) => {
-    if (!selectedConversation || selectedConversation.status === status) return;
+    if (!selectedConversation || selectedConversation.isAdmin || selectedConversation.status === status) return;
     setStatusUpdating(true);
     try {
       await apiClient.patch(`/api/conversations/${selectedConversation.id}/status`, { status });
@@ -247,7 +247,7 @@ export const InboxPage: React.FC<Props> = ({
           onSelect={handleSelect}
         />
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          {selectedConversation && (
+          {selectedConversation && !selectedConversation.isAdmin && (
             <div style={{ padding: '10px 16px', borderBottom: '1px solid #eee', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
                 <strong>Estado:</strong>{' '}

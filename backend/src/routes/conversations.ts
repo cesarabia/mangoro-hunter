@@ -3,8 +3,13 @@ import { prisma } from '../db/client';
 import { sendWhatsAppText, sendWhatsAppTemplate } from '../services/whatsappMessageService';
 import { serializeJson } from '../utils/json';
 import {
+  DEFAULT_INTERVIEW_DAY,
+  DEFAULT_INTERVIEW_LOCATION,
+  DEFAULT_INTERVIEW_TIME,
+  DEFAULT_JOB_TITLE,
   DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
-  DEFAULT_TEMPLATE_INTERVIEW_INVITE
+  DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+  DEFAULT_TEMPLATE_LANGUAGE_CODE
 } from '../services/configService';
 import type { Prisma } from '@prisma/client';
 
@@ -13,23 +18,46 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   async function fetchTemplateConfigSafe(): Promise<{
     templateInterviewInvite: string | null;
     templateGeneralFollowup: string | null;
+    templateLanguageCode: string | null;
+    defaultJobTitle: string | null;
+    defaultInterviewDay: string | null;
+    defaultInterviewTime: string | null;
+    defaultInterviewLocation: string | null;
   }> {
     try {
       const config = await prisma.systemConfig.findUnique({
         where: { id: 1 },
         select: {
           templateInterviewInvite: true,
-          templateGeneralFollowup: true
+          templateGeneralFollowup: true,
+          templateLanguageCode: true,
+          defaultJobTitle: true,
+          defaultInterviewDay: true,
+          defaultInterviewTime: true,
+          defaultInterviewLocation: true
         }
       });
       return {
         templateInterviewInvite: config?.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE,
-        templateGeneralFollowup: config?.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
+        templateGeneralFollowup: config?.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+        templateLanguageCode: config?.templateLanguageCode || DEFAULT_TEMPLATE_LANGUAGE_CODE,
+        defaultJobTitle: config?.defaultJobTitle || DEFAULT_JOB_TITLE,
+        defaultInterviewDay: config?.defaultInterviewDay || DEFAULT_INTERVIEW_DAY,
+        defaultInterviewTime: config?.defaultInterviewTime || DEFAULT_INTERVIEW_TIME,
+        defaultInterviewLocation: config?.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION
       };
     } catch (err: any) {
       if (err?.code === 'P2022') {
         app.log.error({ err }, 'Template columns missing in SystemConfig');
-        return { templateInterviewInvite: null, templateGeneralFollowup: null };
+        return {
+          templateInterviewInvite: DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+          templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+          templateLanguageCode: DEFAULT_TEMPLATE_LANGUAGE_CODE,
+          defaultJobTitle: DEFAULT_JOB_TITLE,
+          defaultInterviewDay: DEFAULT_INTERVIEW_DAY,
+          defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
+          defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION
+        };
       }
       throw err;
     }
@@ -250,7 +278,23 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Conversation or waId not found' });
     }
 
-    const sendResult = await sendWhatsAppTemplate(conversation.contact.waId, body.templateName, body.variables);
+    const templates = await fetchTemplateConfigSafe();
+    const normalizedVars = Array.isArray(body.variables)
+      ? body.variables.map(v => (typeof v === 'string' ? v.trim() : '')).filter(v => v.length > 0)
+      : [];
+    let finalVariables = normalizedVars;
+    if (body.templateName === (templates.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP)) {
+      const v1 = normalizedVars[0] || templates.defaultJobTitle || DEFAULT_JOB_TITLE;
+      finalVariables = [v1];
+    } else if (body.templateName === (templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE)) {
+      finalVariables = [
+        normalizedVars[0] || templates.defaultInterviewDay || DEFAULT_INTERVIEW_DAY,
+        normalizedVars[1] || templates.defaultInterviewTime || DEFAULT_INTERVIEW_TIME,
+        normalizedVars[2] || templates.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION
+      ];
+    }
+
+    const sendResult = await sendWhatsAppTemplate(conversation.contact.waId, body.templateName, finalVariables);
     if (!sendResult.success) {
       return reply.code(502).send({ error: sendResult.error || 'Falló el envío de plantilla' });
     }
@@ -262,7 +306,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         text: `[TEMPLATE] ${body.templateName}`,
         rawPayload: serializeJson({
           template: body.templateName,
-          variables: body.variables || [],
+          variables: finalVariables || [],
           sendResult
         }),
         timestamp: new Date(),

@@ -105,6 +105,7 @@ model SystemConfig {
   botAutoReply    Boolean  @default(true)
   openAiApiKey    String?
   aiPrompt        String?
+  aiModel         String?
   adminEmail      String?
   adminWaId       String?
   adminAiPrompt   String?
@@ -114,6 +115,10 @@ model SystemConfig {
   templateInterviewInvite String?
   templateGeneralFollowup String?
   templateLanguageCode String?
+  defaultJobTitle String?
+  defaultInterviewDay String?
+  defaultInterviewTime String?
+  defaultInterviewLocation String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
