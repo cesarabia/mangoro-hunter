@@ -1,14 +1,18 @@
-import { FastifyInstance } from 'fastify';
-import { SystemConfig } from '@prisma/client';
-import { prisma } from '../db/client';
-import { getSystemConfig, DEFAULT_INTERVIEW_AI_PROMPT, DEFAULT_INTERVIEW_AI_MODEL } from './configService';
-import { DEFAULT_AI_PROMPT } from '../constants/ai';
-import { serializeJson } from '../utils/json';
-import { getSuggestedReply } from './aiService';
-import { sendWhatsAppText, SendResult } from './whatsappMessageService';
-import { normalizeWhatsAppId } from '../utils/whatsapp';
-import { processAdminCommand } from './whatsappAdminCommandService';
-import { generateAdminAiResponse } from './whatsappAdminAiService';
+import { FastifyInstance } from "fastify";
+import { SystemConfig } from "@prisma/client";
+import { prisma } from "../db/client";
+import {
+  getSystemConfig,
+  DEFAULT_INTERVIEW_AI_PROMPT,
+  DEFAULT_INTERVIEW_AI_MODEL,
+} from "./configService";
+import { DEFAULT_AI_PROMPT } from "../constants/ai";
+import { serializeJson } from "../utils/json";
+import { getSuggestedReply } from "./aiService";
+import { sendWhatsAppText, SendResult } from "./whatsappMessageService";
+import { normalizeWhatsAppId } from "../utils/whatsapp";
+import { processAdminCommand } from "./whatsappAdminCommandService";
+import { generateAdminAiResponse } from "./whatsappAdminAiService";
 
 interface InboundMessageParams {
   from: string;
@@ -20,24 +24,30 @@ interface InboundMessageParams {
 
 export async function handleInboundWhatsAppMessage(
   app: FastifyInstance,
-  params: InboundMessageParams
+  params: InboundMessageParams,
 ): Promise<{ conversationId: string }> {
   const config = params.config ?? (await getSystemConfig());
   const waId = params.from;
   const normalizedAdmin = normalizeWhatsAppId(config.adminWaId);
   const normalizedSender = normalizeWhatsAppId(waId);
-  const isAdminSender = normalizedAdmin && normalizedSender && normalizedAdmin === normalizedSender;
-  const trimmedText = (params.text || '').trim();
+  const isAdminSender =
+    normalizedAdmin && normalizedSender && normalizedAdmin === normalizedSender;
+  const trimmedText = (params.text || "").trim();
 
   if (isAdminSender && normalizedAdmin) {
     const adminThread = await ensureAdminConversation(waId, normalizedAdmin);
-    await logAdminMessage(adminThread.conversation.id, 'INBOUND', params.text || '', params.rawPayload);
+    await logAdminMessage(
+      adminThread.conversation.id,
+      "INBOUND",
+      params.text || "",
+      params.rawPayload,
+    );
 
-    if (trimmedText.startsWith('/')) {
+    if (trimmedText.startsWith("/")) {
       const response = await processAdminCommand({
         waId,
         text: params.text,
-        config
+        config,
       });
       if (response) {
         await sendAdminReply(app, adminThread.conversation.id, waId, response);
@@ -47,8 +57,8 @@ export async function handleInboundWhatsAppMessage(
 
     const aiResponse = await generateAdminAiResponse(app, {
       waId,
-      text: params.text || '',
-      config
+      text: params.text || "",
+      config,
     });
     await sendAdminReply(app, adminThread.conversation.id, waId, aiResponse);
     return { conversationId: adminThread.conversation.id };
@@ -57,50 +67,52 @@ export async function handleInboundWhatsAppMessage(
   let contact = await prisma.contact.findUnique({ where: { waId } });
   if (!contact) {
     contact = await prisma.contact.create({
-      data: { waId, phone: waId }
+      data: { waId, phone: waId },
     });
   }
 
   let conversation = await prisma.conversation.findFirst({
     where: { contactId: contact.id, isAdmin: false },
-    orderBy: { updatedAt: 'desc' }
+    orderBy: { updatedAt: "desc" },
   });
 
   if (!conversation) {
     conversation = await prisma.conversation.create({
       data: {
         contactId: contact.id,
-        status: 'NEW',
-        channel: 'whatsapp'
-      }
+        status: "NEW",
+        channel: "whatsapp",
+      },
     });
-  } else if (conversation.status === 'CLOSED') {
+  } else if (conversation.status === "CLOSED") {
     conversation = await prisma.conversation.update({
       where: { id: conversation.id },
-      data: { status: 'OPEN' }
+      data: { status: "OPEN" },
     });
   }
 
   await prisma.message.create({
     data: {
       conversationId: conversation.id,
-      direction: 'INBOUND',
-      text: params.text || '',
+      direction: "INBOUND",
+      text: params.text || "",
       rawPayload: serializeJson(params.rawPayload ?? { simulated: true }),
-      timestamp: new Date(params.timestamp ? params.timestamp * 1000 : Date.now()),
-      read: false
-    }
+      timestamp: new Date(
+        params.timestamp ? params.timestamp * 1000 : Date.now(),
+      ),
+      read: false,
+    },
   });
 
   await prisma.conversation.update({
     where: { id: conversation.id },
-    data: { updatedAt: new Date() }
+    data: { updatedAt: new Date() },
   });
 
   await maybeSendAutoReply(app, conversation.id, contact.waId, config);
 
   if (!isAdminSender && isAdminCommandText(params.text)) {
-    await sendWhatsAppText(waId, 'Comando no reconocido');
+    await sendWhatsAppText(waId, "Comando no reconocido");
   }
 
   return { conversationId: conversation.id };
@@ -110,7 +122,7 @@ export async function maybeSendAutoReply(
   app: FastifyInstance,
   conversationId: string,
   waId: string | null | undefined,
-  config: SystemConfig
+  config: SystemConfig,
 ): Promise<void> {
   try {
     if (!config?.botAutoReply) return;
@@ -119,35 +131,43 @@ export async function maybeSendAutoReply(
       where: { id: conversationId },
       include: {
         messages: {
-          orderBy: { timestamp: 'asc' }
-        }
-      }
+          orderBy: { timestamp: "asc" },
+        },
+      },
     });
 
     if (!conversation || conversation.isAdmin) return;
 
-    const mode = conversation.aiMode || 'RECRUIT';
-    if (mode === 'OFF') return;
+    const mode = conversation.aiMode || "RECRUIT";
+    if (mode === "OFF") return;
 
     const context = conversation.messages
-      .map(m => (m.direction === 'INBOUND' ? `Candidato: ${m.text}` : `Agente: ${m.text}`))
-      .join('\n');
+      .map((m) =>
+        m.direction === "INBOUND"
+          ? `Candidato: ${m.text}`
+          : `Agente: ${m.text}`,
+      )
+      .join("\n");
 
     let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
     let model: string | undefined;
-    if (mode === 'INTERVIEW') {
+    if (mode === "INTERVIEW") {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
       model = config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL;
     }
 
-    const suggestion = await getSuggestedReply(context, { prompt, model, config });
+    const suggestion = await getSuggestedReply(context, {
+      prompt,
+      model,
+      config,
+    });
     if (!suggestion?.trim()) {
       return;
     }
 
     let sendResultRaw: SendResult = {
       success: false,
-      error: 'waId is missing'
+      error: "waId is missing",
     };
     if (waId) {
       sendResultRaw = await sendWhatsAppText(waId, suggestion);
@@ -155,64 +175,72 @@ export async function maybeSendAutoReply(
 
     const normalizedSendResult = {
       success: sendResultRaw.success,
-      messageId: 'messageId' in sendResultRaw ? sendResultRaw.messageId ?? null : null,
-      error: 'error' in sendResultRaw ? sendResultRaw.error ?? null : null
+      messageId:
+        "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+      error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
     };
 
     if (!normalizedSendResult.success) {
-      app.log.warn({ conversationId, error: normalizedSendResult.error }, 'Auto-reply send failed');
+      app.log.warn(
+        { conversationId, error: normalizedSendResult.error },
+        "Auto-reply send failed",
+      );
     }
 
     await prisma.message.create({
       data: {
         conversationId,
-        direction: 'OUTBOUND',
+        direction: "OUTBOUND",
         text: suggestion,
         rawPayload: serializeJson({
           autoReply: true,
-          sendResult: normalizedSendResult
+          sendResult: normalizedSendResult,
         }),
         timestamp: new Date(),
-        read: true
-      }
+        read: true,
+      },
     });
   } catch (err) {
-    app.log.error({ err, conversationId }, 'Auto-reply processing failed');
+    app.log.error({ err, conversationId }, "Auto-reply processing failed");
   }
 }
 
 function isAdminCommandText(text?: string): boolean {
   if (!text) return false;
   const trimmed = text.trim().toLowerCase();
-  return ['/pendientes', '/resumen', '/estado', '/ayuda'].some(cmd => trimmed.startsWith(cmd));
+  return ["/pendientes", "/resumen", "/estado", "/ayuda"].some((cmd) =>
+    trimmed.startsWith(cmd),
+  );
 }
 
 async function ensureAdminConversation(waId: string, normalizedAdmin: string) {
-  let contact = await prisma.contact.findUnique({ where: { waId: normalizedAdmin } });
+  let contact = await prisma.contact.findUnique({
+    where: { waId: normalizedAdmin },
+  });
   if (!contact) {
     contact = await prisma.contact.create({
       data: {
         waId: normalizedAdmin,
         phone: normalizedAdmin,
-        name: 'Administrador'
-      }
+        name: "Administrador",
+      },
     });
   }
 
   let conversation = await prisma.conversation.findFirst({
     where: { contactId: contact.id, isAdmin: true },
-    orderBy: { updatedAt: 'desc' }
+    orderBy: { updatedAt: "desc" },
   });
 
   if (!conversation) {
     conversation = await prisma.conversation.create({
       data: {
         contactId: contact.id,
-        status: 'OPEN',
-        channel: 'admin',
+        status: "OPEN",
+        channel: "admin",
         isAdmin: true,
-        aiMode: 'OFF'
-      }
+        aiMode: "OFF",
+      },
     });
   }
 
@@ -221,9 +249,9 @@ async function ensureAdminConversation(waId: string, normalizedAdmin: string) {
 
 async function logAdminMessage(
   conversationId: string,
-  direction: 'INBOUND' | 'OUTBOUND',
+  direction: "INBOUND" | "OUTBOUND",
   text: string,
-  rawPayload?: any
+  rawPayload?: any,
 ) {
   await prisma.message.create({
     data: {
@@ -232,13 +260,13 @@ async function logAdminMessage(
       text,
       rawPayload: serializeJson(rawPayload ?? { admin: true }),
       timestamp: new Date(),
-      read: direction === 'OUTBOUND'
-    }
+      read: direction === "OUTBOUND",
+    },
   });
 
   await prisma.conversation.update({
     where: { id: conversationId },
-    data: { updatedAt: new Date() }
+    data: { updatedAt: new Date() },
   });
 }
 
@@ -246,19 +274,23 @@ async function sendAdminReply(
   app: FastifyInstance,
   conversationId: string,
   waId: string,
-  text: string
+  text: string,
 ) {
   let sendResultRaw: SendResult = await sendWhatsAppText(waId, text);
   const normalizedSendResult = {
     success: sendResultRaw.success,
-    messageId: 'messageId' in sendResultRaw ? sendResultRaw.messageId ?? null : null,
-    error: 'error' in sendResultRaw ? sendResultRaw.error ?? null : null
+    messageId:
+      "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+    error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
   };
   if (!normalizedSendResult.success) {
-    app.log.warn({ conversationId, error: normalizedSendResult.error }, 'Admin reply send failed');
+    app.log.warn(
+      { conversationId, error: normalizedSendResult.error },
+      "Admin reply send failed",
+    );
   }
-  await logAdminMessage(conversationId, 'OUTBOUND', text, {
+  await logAdminMessage(conversationId, "OUTBOUND", text, {
     adminReply: true,
-    sendResult: normalizedSendResult
+    sendResult: normalizedSendResult,
   });
 }
