@@ -80,8 +80,15 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const unreadCount = c.unreadCount || 0;
           const hasUnread = unreadCount > 0;
           const isAdmin = Boolean(c.isAdmin);
-          const displayName = isAdmin ? 'Administrador' : c.contact?.name || c.contact?.waId || c.contact?.phone;
-          const waId = !isAdmin && c.contact?.name ? c.contact?.waId || c.contact?.phone : null;
+          const candidateName = isAdmin
+            ? 'Administrador'
+            : c.contact?.candidateName ||
+              c.contact?.name ||
+              c.contact?.displayName ||
+              c.contact?.waId ||
+              c.contact?.phone;
+          const waId = c.contact?.waId || c.contact?.phone || '';
+          const profileDisplay = c.contact?.displayName || '';
           const statusLabel = statusLabels[c.status] || c.status || 'Sin estado';
           const statusStyle = (statusStyles[c.status] || statusStyles.DEFAULT);
           const previewSource = lastMessage?.transcriptText || lastMessage?.text;
@@ -89,57 +96,60 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const showStatus = !isAdmin;
           return (
             <div
-            key={c.id}
-            onClick={() => onSelect(c.id)}
-            style={{
-              padding: '8px 12px',
-              cursor: 'pointer',
-              background: selectedId === c.id ? '#f0f0f0' : 'transparent',
-              borderBottom: '1px solid #f5f5f5'
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontWeight: hasUnread ? 700 : 600 }}>{displayName}</span>
-              {hasUnread && (
-                <span
-                  style={{
-                    background: '#ff4d4f',
-                    color: '#fff',
-                    borderRadius: 999,
-                    fontSize: 11,
-                    minWidth: 18,
-                    height: 18,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '0 6px'
-                  }}
-                >
-                  {unreadCount}
-                </span>
-              )}
-            </div>
-            {waId && <div style={{ fontSize: 11, color: '#777' }}>{waId}</div>}
-            <div style={{ fontSize: 12, color: hasUnread ? '#111' : '#666', fontWeight: hasUnread ? 600 : 400 }}>
-              {preview}
-            </div>
-            {showStatus && (
-              <div style={{ marginTop: 6 }}>
-                <span
-                  style={{
-                    background: statusStyle.background,
-                    border: `1px solid ${statusStyle.border}`,
-                    color: statusStyle.color,
-                    borderRadius: 999,
-                    fontSize: 11,
-                    padding: '2px 8px',
-                    whiteSpace: 'nowrap'
-                  }}
-                >
-                  {statusLabel}
-                </span>
+              key={c.id}
+              onClick={() => onSelect(c.id)}
+              style={{
+                padding: '8px 12px',
+                cursor: 'pointer',
+                background: selectedId === c.id ? '#f0f0f0' : 'transparent',
+                borderBottom: '1px solid #f5f5f5'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: hasUnread ? 700 : 600 }}>{candidateName}</span>
+                {hasUnread && (
+                  <span
+                    style={{
+                      background: '#ff4d4f',
+                      color: '#fff',
+                      borderRadius: 999,
+                      fontSize: 11,
+                      minWidth: 18,
+                      height: 18,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '0 6px'
+                    }}
+                  >
+                    {unreadCount}
+                  </span>
+                )}
               </div>
-            )}
+              <div style={{ fontSize: 11, color: '#555' }}>
+                {profileDisplay ? `${profileDisplay} · ` : ''}
+                {waId ? `+${waId}` : ''}
+              </div>
+              <div style={{ fontSize: 12, color: hasUnread ? '#111' : '#666', fontWeight: hasUnread ? 600 : 400 }}>
+                {preview}
+              </div>
+              {showStatus && (
+                <div style={{ marginTop: 6 }}>
+                  <span
+                    style={{
+                      background: statusStyle.background,
+                      border: `1px solid ${statusStyle.border}`,
+                      color: statusStyle.color,
+                      borderRadius: 999,
+                      fontSize: 11,
+                      padding: '2px 8px',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {statusLabel}
+                  </span>
+                </div>
+              )}
             </div>
           );
         })}

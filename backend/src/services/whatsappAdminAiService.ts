@@ -94,7 +94,7 @@ const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
 
 export async function generateAdminAiResponse(
   app: FastifyInstance,
-  params: { waId: string; text: string; config?: SystemConfig }
+  params: { waId: string; text: string; config?: SystemConfig; lastCandidateWaId?: string | null }
 ): Promise<string> {
   const config = params.config ?? (await getSystemConfig());
   const apiKey = getEffectiveOpenAiKey(config);
@@ -113,8 +113,14 @@ export async function generateAdminAiResponse(
         `${prompt}\n` +
         'Habla siempre en español. Usa los datos de las herramientas para responder con números concretos y acciones claras.'
     },
+    params.lastCandidateWaId
+      ? {
+          role: 'system',
+          content: `Último candidato referenciado: +${params.lastCandidateWaId}. Si el usuario pregunta sin número, asume ese candidato salvo que se indique otro.`
+        }
+      : null,
     { role: 'user', content: params.text }
-  ];
+  ].filter(Boolean) as OpenAI.Chat.Completions.ChatCompletionMessageParam[];
 
   const reply = await runWithTools(client, model, messages, config);
   return reply?.trim() || 'No pude generar la respuesta en este momento.';

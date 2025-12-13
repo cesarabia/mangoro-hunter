@@ -121,6 +121,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       ...conversation,
       status: normalizedStatus,
       aiMode: normalizedMode,
+      aiPaused: Boolean(conversation.aiPaused),
       lastInboundAt: lastInbound?.timestamp ?? null,
       within24h,
       templates
@@ -246,6 +247,65 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
   });
 
+  app.patch('/:id/ai-settings', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { mode?: string; aiPaused?: boolean };
+    const data: Record<string, any> = {};
+    if (typeof body.aiPaused !== 'undefined') {
+      data.aiPaused = Boolean(body.aiPaused);
+    }
+    if (body.mode) {
+      const nextMode = body.mode.toUpperCase();
+      if (!['RECRUIT', 'INTERVIEW', 'OFF'].includes(nextMode)) {
+        return reply.code(400).send({ error: 'Modo inválido' });
+      }
+      data.aiMode = nextMode;
+    }
+    if (Object.keys(data).length === 0) {
+      return reply.code(400).send({ error: 'Sin cambios' });
+    }
+    try {
+      const updated = await prisma.conversation.update({
+        where: { id },
+        data
+      });
+      return updated;
+    } catch (err) {
+      return reply.code(404).send({ error: 'Conversation not found' });
+    }
+  });
+
+  app.patch('/:id/interview', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as {
+      interviewDay?: string | null;
+      interviewTime?: string | null;
+      interviewLocation?: string | null;
+      interviewStatus?: string | null;
+    };
+
+    const data: Record<string, string | null> = {};
+    if (typeof body.interviewDay !== 'undefined') data.interviewDay = normalizeValue(body.interviewDay);
+    if (typeof body.interviewTime !== 'undefined') data.interviewTime = normalizeValue(body.interviewTime);
+    if (typeof body.interviewLocation !== 'undefined')
+      data.interviewLocation = normalizeValue(body.interviewLocation);
+    if (typeof body.interviewStatus !== 'undefined') data.interviewStatus = normalizeValue(body.interviewStatus);
+
+    if (Object.keys(data).length === 0) {
+      return reply.code(400).send({ error: 'Sin cambios' });
+    }
+
+    try {
+      const updated = await prisma.conversation.update({
+        where: { id },
+        data
+      });
+      return updated;
+    } catch (err) {
+      return reply.code(404).send({ error: 'Conversation not found' });
+    }
+  });
+
   app.post('/:id/send-template', { preValidation: [app.authenticate] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { templateName?: string; variables?: string[] };
@@ -263,7 +323,11 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
 
     const templates = await fetchTemplateConfigSafe();
-    const finalVariables = resolveTemplateVariables(body.templateName, body.variables, templates);
+    const finalVariables = resolveTemplateVariables(body.templateName, body.variables, templates, {
+      interviewDay: conversation.interviewDay,
+      interviewTime: conversation.interviewTime,
+      interviewLocation: conversation.interviewLocation
+    });
 
     const sendResult = await sendWhatsAppTemplate(conversation.contact.waId, body.templateName, finalVariables);
     if (!sendResult.success) {
@@ -298,4 +362,12 @@ function isWithin24Hours(date?: Date | null, windowMs = 24 * 60 * 60 * 1000): bo
   if (!date) return true;
   const diff = Date.now() - date.getTime();
   return diff <= windowMs;
+}
+
+function normalizeValue(value?: string | null): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return value ?? null;
 }

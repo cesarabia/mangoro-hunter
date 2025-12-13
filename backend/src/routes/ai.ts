@@ -28,7 +28,14 @@ export async function registerAiRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'Conversation not found' });
     }
 
-    const mode = conversation.aiMode === 'INTERVIEW' ? 'INTERVIEW' : conversation.aiMode === 'OFF' ? 'OFF' : 'RECRUIT';
+    const paused = Boolean((conversation as any).aiPaused);
+    const mode = paused
+      ? 'OFF'
+      : conversation.aiMode === 'INTERVIEW'
+      ? 'INTERVIEW'
+      : conversation.aiMode === 'OFF'
+      ? 'OFF'
+      : 'RECRUIT';
 
     const recentMessages = conversation.messages.slice(-15);
     const context = recentMessages

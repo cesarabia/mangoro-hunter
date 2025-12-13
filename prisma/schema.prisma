@@ -25,6 +25,8 @@ model Contact {
   waId          String?         @unique
   phone         String?
   name          String?
+  displayName   String?
+  candidateName String?
   notes         String?
   conversations Conversation[]
   applications  Application[]
@@ -42,6 +44,12 @@ model Conversation {
   channel       String
   isAdmin       Boolean            @default(false)
   aiMode        String             @default("RECRUIT")
+  aiPaused      Boolean            @default(false)
+  interviewDay  String?
+  interviewTime String?
+  interviewLocation String?
+  interviewStatus String?
+  adminLastCandidateWaId String?
   messages      Message[]
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt

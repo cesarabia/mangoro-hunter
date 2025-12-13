@@ -70,6 +70,14 @@ export async function handleInboundWhatsAppMessage(
 
   if (isAdminSender && normalizedAdmin) {
     const adminThread = await ensureAdminConversation(waId, normalizedAdmin);
+    const candidateFromText = extractWaIdFromText(params.text);
+    if (candidateFromText) {
+      await prisma.conversation.update({
+        where: { id: adminThread.conversation.id },
+        data: { adminLastCandidateWaId: candidateFromText },
+      });
+      adminThread.conversation.adminLastCandidateWaId = candidateFromText;
+    }
     await logAdminMessage(
       adminThread.conversation.id,
       "INBOUND",
@@ -108,6 +116,14 @@ export async function handleInboundWhatsAppMessage(
     );
     if (templateIntent) {
       pendingAdminSends.set(normalizedAdmin, templateIntent);
+      if (templateIntent.targetWaId) {
+        await prisma.conversation.update({
+          where: { id: adminThread.conversation.id },
+          data: { adminLastCandidateWaId: templateIntent.targetWaId },
+        });
+        adminThread.conversation.adminLastCandidateWaId =
+          templateIntent.targetWaId;
+      }
       await sendAdminReply(
         app,
         adminThread.conversation.id,
@@ -121,6 +137,7 @@ export async function handleInboundWhatsAppMessage(
       waId,
       text: params.text || "",
       config,
+      lastCandidateWaId: adminThread.conversation.adminLastCandidateWaId,
     });
     await sendAdminReply(app, adminThread.conversation.id, waId, aiResponse);
     return { conversationId: adminThread.conversation.id };
@@ -175,7 +192,7 @@ export async function handleInboundWhatsAppMessage(
     data: { updatedAt: new Date() },
   });
 
-  void processMediaAttachment(app, {
+  await processMediaAttachment(app, {
     conversationId: conversation.id,
     waId: contact.waId,
     media: params.media,
@@ -213,7 +230,7 @@ export async function maybeSendAutoReply(
     if (!conversation || conversation.isAdmin) return;
 
     const mode = conversation.aiMode || "RECRUIT";
-    if (mode === "OFF") return;
+    if (mode === "OFF" || conversation.aiPaused) return;
 
     const context = conversation.messages
       .map((m) =>
@@ -442,19 +459,33 @@ function isAdminCommandText(text?: string): boolean {
 }
 
 async function maybeUpdateContactName(
-  contact: { id: string; name: string | null },
+  contact: {
+    id: string;
+    name: string | null;
+    displayName?: string | null;
+    candidateName?: string | null;
+  },
   profileName?: string,
   fallbackText?: string,
 ) {
-  if (contact.name) return;
-  const candidate =
-    normalizeName(profileName) || extractNameFromText(fallbackText);
-  if (!candidate) return;
+  const updates: Record<string, string | null> = {};
+  const display = normalizeName(profileName);
+  if (display && display !== contact.displayName) {
+    updates.displayName = display;
+  }
+  const candidate = extractNameFromText(fallbackText);
+  if (candidate && !contact.candidateName) {
+    updates.candidateName = candidate;
+  }
+  if (candidate && !contact.name) {
+    updates.name = candidate;
+  }
+  if (Object.keys(updates).length === 0) return;
   await prisma.contact.update({
     where: { id: contact.id },
-    data: { name: candidate },
+    data: updates,
   });
-  contact.name = candidate;
+  Object.assign(contact, updates);
 }
 
 function extractNameFromText(text?: string): string | null {
@@ -492,6 +523,13 @@ function normalizeName(value?: string | null): string | null {
       (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
     )
     .join(" ");
+}
+
+function extractWaIdFromText(text?: string | null): string | null {
+  if (!text) return null;
+  const match = text.match(/\+?\d{9,15}/);
+  if (!match) return null;
+  return normalizeWhatsAppId(match[0]);
 }
 
 function clearStaleAdminIntent(normalizedAdmin: string) {

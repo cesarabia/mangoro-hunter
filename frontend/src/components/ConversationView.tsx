@@ -18,6 +18,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const previousCountRef = useRef(0);
+  const [aiPausedSaving, setAiPausedSaving] = useState(false);
+  const [interviewDay, setInterviewDay] = useState('');
+  const [interviewTime, setInterviewTime] = useState('');
+  const [interviewLocation, setInterviewLocation] = useState('');
+  const [interviewStatus, setInterviewStatus] = useState('');
+  const [interviewSaving, setInterviewSaving] = useState(false);
 
   useEffect(() => {
     if (!conversation) {
@@ -25,6 +31,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setModeSaving(false);
       setTemplateVariables([]);
       setDownloadError(null);
+      setInterviewDay('');
+      setInterviewTime('');
+      setInterviewLocation('');
+      setInterviewStatus('');
       return;
     }
     setAutoScrollEnabled(true);
@@ -33,6 +43,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     setModeSaving(false);
     setSendError(null);
     setDownloadError(null);
+    setInterviewDay(conversation.interviewDay || '');
+    setInterviewTime(conversation.interviewTime || '');
+    setInterviewLocation(conversation.interviewLocation || '');
+    setInterviewStatus(conversation.interviewStatus || '');
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -92,6 +106,39 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     }
   };
 
+  const handleAiPauseToggle = async () => {
+    if (!conversation) return;
+    setAiPausedSaving(true);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/ai-settings`, {
+        aiPaused: !aiPaused
+      });
+      onMessageSent();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setAiPausedSaving(false);
+    }
+  };
+
+  const handleInterviewSave = async () => {
+    if (!conversation) return;
+    setInterviewSaving(true);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/interview`, {
+        interviewDay,
+        interviewTime,
+        interviewLocation,
+        interviewStatus
+      });
+      onMessageSent();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setInterviewSaving(false);
+    }
+  };
+
   const handleSuggest = async () => {
     if (!conversation) return;
     setLoadingAi(true);
@@ -111,11 +158,18 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
 
   const hasConversation = Boolean(conversation);
   const isAdmin = Boolean(conversation?.isAdmin);
-  const displayName = isAdmin
+  const waId = conversation?.contact?.waId || conversation?.contact?.phone || '';
+  const candidateName = isAdmin
     ? 'Administrador'
-    : conversation?.contact?.name || conversation?.contact?.phone || conversation?.contact?.waId || 'Sin conversación';
+    : conversation?.contact?.candidateName ||
+      conversation?.contact?.name ||
+      null;
+  const profileDisplay =
+    conversation?.contact?.displayName || conversation?.contact?.name || conversation?.contact?.waId || '';
+  const displayName = candidateName || profileDisplay || 'Sin conversación';
   const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation?.aiMode || 'RECRUIT';
-  const isManualMode = aiMode === 'OFF';
+  const aiPaused = Boolean(conversation?.aiPaused);
+  const isManualMode = aiMode === 'OFF' || aiPaused;
   const within24h = conversation?.within24h !== false;
   const templateConfig = conversation?.templates || {};
   const templateInterviewInvite = templateConfig.templateInterviewInvite || null;
@@ -151,9 +205,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     }
     if (requiredTemplate === 'entrevista_confirmacion_1') {
       setTemplateVariables([
-        templateConfig.defaultInterviewDay || '',
-        templateConfig.defaultInterviewTime || '',
-        templateConfig.defaultInterviewLocation || ''
+        conversation?.interviewDay || templateConfig.defaultInterviewDay || '',
+        conversation?.interviewTime || templateConfig.defaultInterviewTime || '',
+        conversation?.interviewLocation || templateConfig.defaultInterviewLocation || ''
       ]);
       return;
     }
@@ -165,7 +219,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     templateConfig.defaultJobTitle,
     templateConfig.defaultInterviewDay,
     templateConfig.defaultInterviewTime,
-    templateConfig.defaultInterviewLocation
+    templateConfig.defaultInterviewLocation,
+    conversation?.interviewDay,
+    conversation?.interviewTime,
+    conversation?.interviewLocation
   ]);
 
   const handleSendTemplate = async () => {
@@ -225,10 +282,47 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     }
   };
 
+  const handleCopyWaId = () => {
+    if (!waId) return;
+    const value = waId.startsWith('+') ? waId : `+${waId}`;
+    navigator.clipboard?.writeText(value).catch(() => {});
+  };
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee' }}>
-        <strong>{displayName}</strong>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>{displayName}</div>
+            {!isAdmin && profileDisplay && <div style={{ fontSize: 12, color: '#666' }}>{profileDisplay}</div>}
+            {waId && (
+              <div style={{ fontSize: 12, color: '#444', display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <span>+{waId}</span>
+                <button
+                  onClick={handleCopyWaId}
+                  style={{ padding: '2px 8px', borderRadius: 6, border: '1px solid #ccc', background: '#f8f8f8', fontSize: 12 }}
+                >
+                  Copiar
+                </button>
+              </div>
+            )}
+          </div>
+          {hasConversation && !isAdmin && (
+            <button
+              onClick={handleAiPauseToggle}
+              disabled={aiPausedSaving}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 8,
+                border: '1px solid #ccc',
+                background: aiPaused ? '#ffe8cc' : '#f6f6f6',
+                fontSize: 12
+              }}
+            >
+              {aiPaused ? 'Silencio activado' : 'Silenciar IA'}
+            </button>
+          )}
+        </div>
         {hasConversation && !isAdmin && (
           <div style={{ marginTop: 8 }}>
             <div style={{ fontSize: 13, marginBottom: 4 }}>Modo del candidato:</div>
@@ -251,6 +345,47 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
                   {option.label}
                 </button>
               ))}
+            </div>
+            <div style={{ marginTop: 10, padding: 10, border: '1px solid #eee', borderRadius: 8, background: '#fafafa', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Entrevista</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <input
+                  value={interviewDay}
+                  onChange={e => setInterviewDay(e.target.value)}
+                  placeholder="Día (ej: Lunes)"
+                  style={{ flex: '1 1 140px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                />
+                <input
+                  value={interviewTime}
+                  onChange={e => setInterviewTime(e.target.value)}
+                  placeholder="Hora (ej: 10:00)"
+                  style={{ flex: '1 1 120px', minWidth: 120, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                />
+                <input
+                  value={interviewLocation}
+                  onChange={e => setInterviewLocation(e.target.value)}
+                  placeholder="Lugar (ej: Online)"
+                  style={{ flex: '2 1 200px', minWidth: 160, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                />
+                <select
+                  value={interviewStatus}
+                  onChange={e => setInterviewStatus(e.target.value)}
+                  style={{ flex: '1 1 160px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                >
+                  <option value="">Estado entrevista</option>
+                  <option value="PENDING">Pendiente</option>
+                  <option value="CONFIRMED">Confirmada</option>
+                  <option value="CANCELLED">Cancelada</option>
+                </select>
+              </div>
+              <button
+                onClick={handleInterviewSave}
+                disabled={interviewSaving}
+                style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
+              >
+                {interviewSaving ? 'Guardando...' : 'Guardar entrevista'}
+              </button>
+              <div style={{ fontSize: 11, color: '#666' }}>Las plantillas de entrevista usan estos valores; si están vacíos se usan los defaults de Configuración.</div>
             </div>
           </div>
         )}
@@ -335,7 +470,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
             disabled={!hasConversation || loadingAi || (isManualMode && !text.trim())}
             style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#eee' }}
           >
-            {loadingAi ? 'IA...' : isManualMode ? 'Mejorar' : 'Sugerir'}
+            {loadingAi ? 'IA...' : 'Sugerir'}
           </button>
           <button
             onClick={handleSend}

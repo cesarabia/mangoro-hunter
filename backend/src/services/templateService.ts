@@ -82,7 +82,13 @@ export function selectTemplateForMode(
 export function resolveTemplateVariables(
   templateName: string,
   providedVariables: string[] | undefined,
-  templates: TemplateConfig
+  templates: TemplateConfig,
+  conversationOverrides?: {
+    interviewDay?: string | null;
+    interviewTime?: string | null;
+    interviewLocation?: string | null;
+    jobTitle?: string | null;
+  }
 ): string[] {
   const normalized =
     Array.isArray(providedVariables) && providedVariables.length > 0
@@ -90,15 +96,28 @@ export function resolveTemplateVariables(
       : [];
 
   if (templateName === (templates.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP)) {
-    const v1 = normalized[0] || templates.defaultJobTitle || DEFAULT_JOB_TITLE;
+    const v1 =
+      normalized[0] ||
+      conversationOverrides?.jobTitle ||
+      templates.defaultJobTitle ||
+      DEFAULT_JOB_TITLE;
     return [v1];
   }
 
   if (templateName === (templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE)) {
     return [
-      normalized[0] || templates.defaultInterviewDay || DEFAULT_INTERVIEW_DAY,
-      normalized[1] || templates.defaultInterviewTime || DEFAULT_INTERVIEW_TIME,
-      normalized[2] || templates.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION
+      normalized[0] ||
+        conversationOverrides?.interviewDay ||
+        templates.defaultInterviewDay ||
+        DEFAULT_INTERVIEW_DAY,
+      normalized[1] ||
+        conversationOverrides?.interviewTime ||
+        templates.defaultInterviewTime ||
+        DEFAULT_INTERVIEW_TIME,
+      normalized[2] ||
+        conversationOverrides?.interviewLocation ||
+        templates.defaultInterviewLocation ||
+        DEFAULT_INTERVIEW_LOCATION
     ];
   }
 

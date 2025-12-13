@@ -91,7 +91,11 @@ export async function createConversationAndMaybeSend(
       (mode === 'INTERVIEW'
         ? templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE
         : templates.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP);
-    const finalVariables = resolveTemplateVariables(templateName, params.variables, templates);
+    const finalVariables = resolveTemplateVariables(templateName, params.variables, templates, {
+      interviewDay: conversation.interviewDay,
+      interviewTime: conversation.interviewTime,
+      interviewLocation: conversation.interviewLocation
+    });
 
     sendResult = await sendWhatsAppTemplate(waId, templateName, finalVariables);
     templateUsed = templateName;
