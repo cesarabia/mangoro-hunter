@@ -49,6 +49,7 @@ interface TemplatesConfigResponse {
   defaultInterviewDay: string;
   defaultInterviewTime: string;
   defaultInterviewLocation: string;
+  testPhoneNumber: string | null;
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
@@ -102,9 +103,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [defaultInterviewDay, setDefaultInterviewDay] = useState('Lunes');
   const [defaultInterviewTime, setDefaultInterviewTime] = useState('10:00');
   const [defaultInterviewLocation, setDefaultInterviewLocation] = useState('Online');
+  const [testPhoneNumber, setTestPhoneNumber] = useState('');
   const [savingTemplates, setSavingTemplates] = useState(false);
   const [templateStatus, setTemplateStatus] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
+  const [testSendStatus, setTestSendStatus] = useState<string | null>(null);
+  const [testSendError, setTestSendError] = useState<string | null>(null);
+  const [sendingTest, setSendingTest] = useState(false);
 
   useEffect(() => {
     const loadAll = async () => {
@@ -146,6 +151,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setDefaultInterviewDay(templates.defaultInterviewDay || 'Lunes');
         setDefaultInterviewTime(templates.defaultInterviewTime || '10:00');
         setDefaultInterviewLocation(templates.defaultInterviewLocation || 'Online');
+        setTestPhoneNumber(templates.testPhoneNumber || '');
       } catch (err) {
         console.error(err);
       } finally {
@@ -303,7 +309,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       await apiClient.put('/api/config/templates', {
         templateInterviewInvite: templateInterviewInvite.trim() || null,
         templateGeneralFollowup: templateGeneralFollowup.trim() || null,
-        templateLanguageCode: templateLanguageCode.trim() || null
+        templateLanguageCode: templateLanguageCode.trim() || null,
+        defaultJobTitle: defaultJobTitle.trim() || null,
+        defaultInterviewDay: defaultInterviewDay.trim() || null,
+        defaultInterviewTime: defaultInterviewTime.trim() || null,
+        defaultInterviewLocation: defaultInterviewLocation.trim() || null,
+        testPhoneNumber: testPhoneNumber.trim() || null
       });
       setTemplateStatus('Plantillas guardadas');
     } catch (err: any) {
@@ -701,6 +712,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   />
                 </label>
+                <label>
+                  <div>Número de pruebas (E.164)</div>
+                  <input
+                    type="text"
+                    value={testPhoneNumber}
+                    onChange={e => setTestPhoneNumber(e.target.value)}
+                    placeholder="ej: 569XXXXXXXX"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
                 {templateStatus && <p style={{ color: 'green' }}>{templateStatus}</p>}
                 {templateError && <p style={{ color: 'red' }}>{templateError}</p>}
                 <button
@@ -710,6 +731,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                 >
                   {savingTemplates ? 'Guardando...' : 'Guardar plantillas'}
                 </button>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    disabled={sendingTest}
+                    onClick={async () => {
+                      setTestSendStatus(null);
+                      setTestSendError(null);
+                      setSendingTest(true);
+                      try {
+                        await apiClient.post('/api/config/templates/test-send', {});
+                        setTestSendStatus('Enviado test al número configurado');
+                      } catch (err: any) {
+                        setTestSendError(err.message || 'No se pudo enviar el test');
+                      } finally {
+                        setSendingTest(false);
+                      }
+                    }}
+                    style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
+                  >
+                    {sendingTest ? 'Enviando prueba...' : 'Enviar mensaje de prueba'}
+                  </button>
+                  {testSendStatus && <span style={{ color: 'green' }}>{testSendStatus}</span>}
+                  {testSendError && <span style={{ color: 'red' }}>{testSendError}</span>}
+                </div>
               </form>
             </section>
           </>

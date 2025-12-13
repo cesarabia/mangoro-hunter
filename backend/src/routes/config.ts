@@ -20,10 +20,15 @@ import {
   DEFAULT_INTERVIEW_DAY,
   DEFAULT_INTERVIEW_TIME,
   DEFAULT_INTERVIEW_LOCATION,
+  DEFAULT_TEST_PHONE_NUMBER,
   updateAiModel
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
+import { normalizeWhatsAppId } from '../utils/whatsapp';
+import { prisma } from '../db/client';
+import { sendWhatsAppTemplate } from '../services/whatsappMessageService';
+import { serializeJson } from '../utils/json';
 
 export async function registerConfigRoutes(app: FastifyInstance) {
   const whatsappDefaults = {
@@ -42,7 +47,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     defaultJobTitle: DEFAULT_JOB_TITLE,
     defaultInterviewDay: DEFAULT_INTERVIEW_DAY,
     defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
-    defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION
+    defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION,
+    testPhoneNumber: DEFAULT_TEST_PHONE_NUMBER
   };
 
   function isMissingColumnError(err: any): boolean {
@@ -304,7 +310,11 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       defaultJobTitle: config.defaultJobTitle || DEFAULT_JOB_TITLE,
       defaultInterviewDay: config.defaultInterviewDay || DEFAULT_INTERVIEW_DAY,
       defaultInterviewTime: config.defaultInterviewTime || DEFAULT_INTERVIEW_TIME,
-      defaultInterviewLocation: config.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION
+      defaultInterviewLocation: config.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION,
+      testPhoneNumber:
+        typeof config.testPhoneNumber !== 'undefined'
+          ? config.testPhoneNumber
+          : DEFAULT_TEST_PHONE_NUMBER
     };
   });
 
@@ -320,6 +330,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       defaultInterviewDay?: string | null;
       defaultInterviewTime?: string | null;
       defaultInterviewLocation?: string | null;
+      testPhoneNumber?: string | null;
     };
     const updated = await executeUpdate(reply, () =>
       updateTemplateConfig({
@@ -335,7 +346,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         defaultInterviewTime:
           typeof body?.defaultInterviewTime === 'undefined' ? undefined : body.defaultInterviewTime,
         defaultInterviewLocation:
-          typeof body?.defaultInterviewLocation === 'undefined' ? undefined : body.defaultInterviewLocation
+          typeof body?.defaultInterviewLocation === 'undefined' ? undefined : body.defaultInterviewLocation,
+        testPhoneNumber: typeof body?.testPhoneNumber === 'undefined' ? undefined : body.testPhoneNumber
       })
     );
     if (!updated) return;
@@ -346,8 +358,82 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       defaultJobTitle: updated.defaultJobTitle || DEFAULT_JOB_TITLE,
       defaultInterviewDay: updated.defaultInterviewDay || DEFAULT_INTERVIEW_DAY,
       defaultInterviewTime: updated.defaultInterviewTime || DEFAULT_INTERVIEW_TIME,
-      defaultInterviewLocation: updated.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION
+      defaultInterviewLocation: updated.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION,
+      testPhoneNumber:
+        typeof updated.testPhoneNumber !== 'undefined'
+          ? updated.testPhoneNumber
+          : DEFAULT_TEST_PHONE_NUMBER
     };
+  });
+
+  app.post('/templates/test-send', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await getSystemConfig();
+    const targetAdmin = normalizeWhatsAppId(config.adminWaId);
+    const targetTest = normalizeWhatsAppId(config.testPhoneNumber);
+    const whitelist = [targetAdmin, targetTest].filter(Boolean) as string[];
+    const targetWaId = targetTest || targetAdmin;
+    if (!targetWaId || whitelist.length === 0) {
+      return reply
+        .code(400)
+        .send({ error: 'Configura un número de admin o testPhoneNumber para enviar la prueba.' });
+    }
+
+    const templateName = config.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP;
+    const variables = [config.defaultJobTitle || DEFAULT_JOB_TITLE];
+
+    if (!whitelist.includes(normalizeWhatsAppId(targetWaId)!)) {
+      return reply.code(403).send({ error: 'Número destino no permitido para pruebas' });
+    }
+
+    const sendResult = await sendWhatsAppTemplate(targetWaId, templateName, variables);
+    if (!sendResult.success) {
+      return reply.code(502).send({ error: sendResult.error || 'Falló el envío de prueba' });
+    }
+
+    // Log conversation for traceability
+    const contact = await prisma.contact.upsert({
+      where: { waId: targetWaId },
+      update: { phone: targetWaId },
+      create: { waId: targetWaId, phone: targetWaId }
+    });
+    let conversation = await prisma.conversation.findFirst({
+      where: { contactId: contact.id, isAdmin: false },
+      orderBy: { updatedAt: 'desc' }
+    });
+    if (!conversation) {
+      conversation = await prisma.conversation.create({
+        data: {
+          contactId: contact.id,
+          status: 'NEW',
+          channel: 'whatsapp',
+          aiMode: 'RECRUIT'
+        }
+      });
+    }
+    await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        direction: 'OUTBOUND',
+        text: `[TEST TEMPLATE] ${templateName}`,
+        rawPayload: serializeJson({
+          template: templateName,
+          variables,
+          sendResult,
+          test: true
+        }),
+        timestamp: new Date(),
+        read: true
+      }
+    });
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { updatedAt: new Date() }
+    });
+
+    return { success: true, sendResult };
   });
 
   app.put('/admin-account', { preValidation: [app.authenticate] }, async (request, reply) => {

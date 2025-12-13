@@ -12,6 +12,7 @@ export const DEFAULT_JOB_TITLE = 'Vendedor/a';
 export const DEFAULT_INTERVIEW_DAY = 'Lunes';
 export const DEFAULT_INTERVIEW_TIME = '10:00';
 export const DEFAULT_INTERVIEW_LOCATION = 'Online';
+export const DEFAULT_TEST_PHONE_NUMBER = null;
 export const DEFAULT_ADMIN_AI_PROMPT =
   'Eres Hunter Admin, un asistente en español para managers de reclutamiento. Da respuestas claras y accionables, usa herramientas cuando te lo pidan.';
 export const DEFAULT_ADMIN_AI_MODEL = 'gpt-4.1-mini';
@@ -187,6 +188,7 @@ export async function updateTemplateConfig(input: {
   defaultInterviewDay?: string | null;
   defaultInterviewTime?: string | null;
   defaultInterviewLocation?: string | null;
+   testPhoneNumber?: string | null;
 }): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
   const data: Record<string, string | null | undefined> = {};
@@ -210,6 +212,9 @@ export async function updateTemplateConfig(input: {
   }
   if (typeof input.defaultInterviewLocation !== 'undefined') {
     data.defaultInterviewLocation = normalizeValue(input.defaultInterviewLocation);
+  }
+  if (typeof input.testPhoneNumber !== 'undefined') {
+    data.testPhoneNumber = normalizeValue(input.testPhoneNumber);
   }
   return prisma.systemConfig.update({
     where: { id: config.id },
@@ -235,7 +240,8 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         defaultJobTitle: DEFAULT_JOB_TITLE,
         defaultInterviewDay: DEFAULT_INTERVIEW_DAY,
         defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
-        defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION
+        defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION,
+        testPhoneNumber: DEFAULT_TEST_PHONE_NUMBER
       }
     });
     return existing;
@@ -270,6 +276,9 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.aiModel) {
     updates.aiModel = DEFAULT_AI_MODEL;
+  }
+  if (typeof existing.testPhoneNumber === 'undefined') {
+    updates.testPhoneNumber = DEFAULT_TEST_PHONE_NUMBER;
   }
   if (!existing.interviewAiPrompt) {
     updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;

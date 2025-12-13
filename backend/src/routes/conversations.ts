@@ -23,6 +23,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     defaultInterviewDay: string | null;
     defaultInterviewTime: string | null;
     defaultInterviewLocation: string | null;
+    testPhoneNumber: string | null;
   }> {
     try {
       const config = await prisma.systemConfig.findUnique({
@@ -34,7 +35,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
           defaultJobTitle: true,
           defaultInterviewDay: true,
           defaultInterviewTime: true,
-          defaultInterviewLocation: true
+          defaultInterviewLocation: true,
+          testPhoneNumber: true
         }
       });
       return {
@@ -44,7 +46,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         defaultJobTitle: config?.defaultJobTitle || DEFAULT_JOB_TITLE,
         defaultInterviewDay: config?.defaultInterviewDay || DEFAULT_INTERVIEW_DAY,
         defaultInterviewTime: config?.defaultInterviewTime || DEFAULT_INTERVIEW_TIME,
-        defaultInterviewLocation: config?.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION
+        defaultInterviewLocation: config?.defaultInterviewLocation || DEFAULT_INTERVIEW_LOCATION,
+        testPhoneNumber: config?.testPhoneNumber || null
       };
     } catch (err: any) {
       if (err?.code === 'P2022') {
@@ -56,7 +59,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
           defaultJobTitle: DEFAULT_JOB_TITLE,
           defaultInterviewDay: DEFAULT_INTERVIEW_DAY,
           defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
-          defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION
+          defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION,
+          testPhoneNumber: null
         };
       }
       throw err;

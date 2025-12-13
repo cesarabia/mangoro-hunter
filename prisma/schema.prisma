@@ -119,6 +119,7 @@ model SystemConfig {
   defaultInterviewDay String?
   defaultInterviewTime String?
   defaultInterviewLocation String?
+  testPhoneNumber String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
