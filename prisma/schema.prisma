@@ -50,6 +50,7 @@ model Conversation {
   interviewLocation String?
   interviewStatus String?
   adminLastCandidateWaId String?
+  adminPendingAction    String?
   messages      Message[]
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
@@ -122,6 +123,7 @@ model SystemConfig {
   adminWaId       String?
   adminAiPrompt   String?
   adminAiModel    String?
+  adminAiAddendum String?
   interviewAiPrompt String?
   interviewAiModel  String?
   templateInterviewInvite String?

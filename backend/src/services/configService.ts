@@ -16,6 +16,7 @@ export const DEFAULT_TEST_PHONE_NUMBER = null;
 export const DEFAULT_ADMIN_AI_PROMPT =
   'Eres Hunter Admin, un asistente en español para managers de reclutamiento. Da respuestas claras y accionables, usa herramientas cuando te lo pidan.';
 export const DEFAULT_ADMIN_AI_MODEL = 'gpt-4.1-mini';
+export const DEFAULT_ADMIN_AI_ADDENDUM = null;
 const LEGACY_DEFAULT_INTERVIEW_AI_PROMPT =
   'Eres Hunter Entrevistador. Haz preguntas de entrevista cortas y profesionales, enfocadas en validar experiencia, motivaciones y disponibilidad.';
 export const INTERVIEW_AI_POLICY_ADDENDUM = `
@@ -115,6 +116,7 @@ export async function updateAiModel(aiModel?: string | null): Promise<SystemConf
 export async function updateAdminAiConfig(input: {
   prompt?: string | null;
   model?: string | null;
+  addendum?: string | null;
 }): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
   const data: Record<string, string | null | undefined> = {};
@@ -123,6 +125,9 @@ export async function updateAdminAiConfig(input: {
   }
   if (typeof input.model !== 'undefined') {
     data.adminAiModel = normalizeValue(input.model);
+  }
+  if (typeof input.addendum !== 'undefined') {
+    data.adminAiAddendum = normalizeValue(input.addendum);
   }
   return prisma.systemConfig.update({
     where: { id: config.id },
@@ -241,7 +246,8 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         defaultInterviewDay: DEFAULT_INTERVIEW_DAY,
         defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
         defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION,
-        testPhoneNumber: DEFAULT_TEST_PHONE_NUMBER
+        testPhoneNumber: DEFAULT_TEST_PHONE_NUMBER,
+        adminAiAddendum: DEFAULT_ADMIN_AI_ADDENDUM
       }
     });
     return existing;
@@ -276,6 +282,9 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.aiModel) {
     updates.aiModel = DEFAULT_AI_MODEL;
+  }
+  if (typeof (existing as any).adminAiAddendum === 'undefined') {
+    updates.adminAiAddendum = DEFAULT_ADMIN_AI_ADDENDUM;
   }
   if (typeof existing.testPhoneNumber === 'undefined') {
     updates.testPhoneNumber = DEFAULT_TEST_PHONE_NUMBER;

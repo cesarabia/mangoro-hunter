@@ -6,6 +6,26 @@ interface ConversationViewProps {
   onMessageSent: () => void;
 }
 
+const isSuspiciousCandidateName = (value?: string | null) => {
+  if (!value) return true;
+  const lower = value.toLowerCase();
+  const patterns = [
+    'hola quiero postular',
+    'quiero postular',
+    'postular',
+    'no puedo',
+    'no me sirve',
+    'confirmo',
+    'medio dia',
+    'mediodia',
+    'confirmar'
+  ];
+  if (patterns.some(p => lower.includes(p))) return true;
+  if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
+  if (/medio ?d[ií]a/i.test(value)) return true;
+  return false;
+};
+
 export const ConversationView: React.FC<ConversationViewProps> = ({ conversation, onMessageSent }) => {
   const [text, setText] = useState('');
   const [loadingSend, setLoadingSend] = useState(false);
@@ -159,14 +179,14 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const hasConversation = Boolean(conversation);
   const isAdmin = Boolean(conversation?.isAdmin);
   const waId = conversation?.contact?.waId || conversation?.contact?.phone || '';
-  const candidateName = isAdmin
+  const candidateRaw = conversation?.contact?.candidateName || null;
+  const candidateName =
+    !isAdmin && candidateRaw && !isSuspiciousCandidateName(candidateRaw) ? candidateRaw : null;
+  const profileDisplay = conversation?.contact?.displayName || conversation?.contact?.name || '';
+  const primaryName = isAdmin
     ? 'Administrador'
-    : conversation?.contact?.candidateName ||
-      conversation?.contact?.name ||
-      null;
-  const profileDisplay =
-    conversation?.contact?.displayName || conversation?.contact?.name || conversation?.contact?.waId || '';
-  const displayName = candidateName || profileDisplay || 'Sin conversación';
+    : candidateName || profileDisplay || 'Sin nombre';
+  const secondaryLabel = [profileDisplay, waId ? `+${waId}` : ''].filter(Boolean).join(' · ');
   const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation?.aiMode || 'RECRUIT';
   const aiPaused = Boolean(conversation?.aiPaused);
   const isManualMode = aiMode === 'OFF' || aiPaused;
@@ -287,13 +307,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>{displayName}</div>
-            {!isAdmin && profileDisplay && <div style={{ fontSize: 12, color: '#666' }}>{profileDisplay}</div>}
-            {waId && (
-              <div style={{ fontSize: 12, color: '#444', display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                <span>+{waId}</span>
-              </div>
-            )}
+            <div style={{ fontSize: 18, fontWeight: 700 }}>{primaryName}</div>
+            {secondaryLabel && <div style={{ fontSize: 12, color: '#666' }}>{secondaryLabel}</div>}
           </div>
           {hasConversation && !isAdmin && (
             <button

@@ -12,13 +12,14 @@ import {
   INTERVIEW_AI_POLICY_ADDENDUM,
   DEFAULT_AI_MODEL,
   DEFAULT_WHATSAPP_BASE_URL,
+  updateAdminAiConfig,
 } from "./configService";
 import { DEFAULT_AI_PROMPT } from "../constants/ai";
 import { serializeJson } from "../utils/json";
 import { getEffectiveOpenAiKey, getSuggestedReply } from "./aiService";
 import { sendWhatsAppText, SendResult } from "./whatsappMessageService";
 import { normalizeWhatsAppId } from "../utils/whatsapp";
-import { processAdminCommand } from "./whatsappAdminCommandService";
+import { processAdminCommand, fetchConversationByIdentifier, setConversationStatusByWaId } from "./whatsappAdminCommandService";
 import { generateAdminAiResponse } from "./whatsappAdminAiService";
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from "./templateService";
 import { createConversationAndMaybeSend } from "./conversationCreateService";
@@ -70,7 +71,38 @@ export async function handleInboundWhatsAppMessage(
 
   if (isAdminSender && normalizedAdmin) {
     const adminThread = await ensureAdminConversation(waId, normalizedAdmin);
-    const candidateFromText = extractWaIdFromText(params.text);
+    const baseText = buildInboundText(params.text, params.media);
+    const adminMessage = await prisma.message.create({
+      data: {
+        conversationId: adminThread.conversation.id,
+        direction: "INBOUND",
+        text: baseText,
+        mediaType: params.media?.type || null,
+        mediaMime: params.media?.mimeType || null,
+        rawPayload: serializeJson(params.rawPayload ?? { admin: true }),
+        timestamp: new Date(params.timestamp ? params.timestamp * 1000 : Date.now()),
+        read: false,
+      },
+    });
+
+    await processMediaAttachment(app, {
+      conversationId: adminThread.conversation.id,
+      waId: normalizedAdmin,
+      media: params.media,
+      messageId: adminMessage.id,
+      config,
+    });
+
+    const refreshedAdminMessage = await prisma.message.findUnique({
+      where: { id: adminMessage.id },
+    });
+    const effectiveText =
+      refreshedAdminMessage?.transcriptText ||
+      refreshedAdminMessage?.text ||
+      params.text ||
+      "";
+
+    const candidateFromText = extractWaIdFromText(effectiveText);
     if (candidateFromText) {
       await prisma.conversation.update({
         where: { id: adminThread.conversation.id },
@@ -78,15 +110,14 @@ export async function handleInboundWhatsAppMessage(
       });
       adminThread.conversation.adminLastCandidateWaId = candidateFromText;
     }
-    await logAdminMessage(
-      adminThread.conversation.id,
-      "INBOUND",
-      params.text || "",
-      params.rawPayload,
-    );
+    await prisma.conversation.update({
+      where: { id: adminThread.conversation.id },
+      data: { updatedAt: new Date() },
+    });
 
     clearStaleAdminIntent(normalizedAdmin);
-    if (trimmedText.toUpperCase() === "CONFIRMAR ENVÍO") {
+    const trimmedEffective = (effectiveText || "").trim();
+    if (trimmedEffective.toUpperCase() === "CONFIRMAR ENVÍO") {
       const handled = await maybeConfirmAdminSend(
         app,
         adminThread.conversation.id,
@@ -97,10 +128,10 @@ export async function handleInboundWhatsAppMessage(
       }
     }
 
-    if (trimmedText.startsWith("/")) {
+    if (trimmedEffective.startsWith("/")) {
       const response = await processAdminCommand({
         waId,
-        text: params.text,
+        text: effectiveText,
         config,
       });
       if (response) {
@@ -109,8 +140,30 @@ export async function handleInboundWhatsAppMessage(
       return { conversationId: adminThread.conversation.id };
     }
 
+    const handledPending = await handleAdminPendingAction(
+      app,
+      adminThread.conversation.id,
+      adminThread.conversation.adminLastCandidateWaId || null,
+      trimmedEffective,
+      normalizedAdmin,
+    );
+    if (handledPending) {
+      return { conversationId: adminThread.conversation.id };
+    }
+
+    const learningResponse = await handleAdminLearning(
+      trimmedEffective,
+      config,
+      adminThread.conversation.id,
+      app,
+      waId,
+    );
+    if (learningResponse) {
+      return { conversationId: adminThread.conversation.id };
+    }
+
     const templateIntent = await detectAdminTemplateIntent(
-      trimmedText,
+      trimmedEffective,
       config,
       app,
     );
@@ -135,7 +188,7 @@ export async function handleInboundWhatsAppMessage(
 
     const aiResponse = await generateAdminAiResponse(app, {
       waId,
-      text: params.text || "",
+      text: effectiveText || "",
       config,
       lastCandidateWaId: adminThread.conversation.adminLastCandidateWaId,
     });
@@ -273,8 +326,8 @@ export async function maybeSendAutoReply(
     });
 
     const { cleanedText, actions } = parseHunterActions(suggestionRaw || "");
-    const suggestion = cleanedText;
-    if (!suggestion?.trim()) {
+    let suggestionText = cleanedText;
+    if (!suggestionText?.trim()) {
       return;
     }
 
@@ -284,6 +337,22 @@ export async function maybeSendAutoReply(
           await applyInterviewAction(conversationId, action);
         }
       }
+      const hasInterviewAction = actions.some(a => a.type === "interview_update");
+      if (hasInterviewAction) {
+        const convo = await prisma.conversation.findUnique({
+          where: { id: conversationId },
+          select: {
+            interviewDay: true,
+            interviewTime: true,
+            interviewLocation: true,
+          },
+        });
+        const locationText =
+          convo?.interviewLocation || "Te enviaremos la dirección exacta por este medio.";
+        const dayText = convo?.interviewDay || "día por definir";
+        const timeText = convo?.interviewTime || "hora por definir";
+        suggestionText = `Quedamos para ${dayText} a las ${timeText} en ${locationText}.`;
+      }
     }
 
     let sendResultRaw: SendResult = {
@@ -291,7 +360,7 @@ export async function maybeSendAutoReply(
       error: "waId is missing",
     };
     if (waId) {
-      sendResultRaw = await sendWhatsAppText(waId, suggestion);
+      sendResultRaw = await sendWhatsAppText(waId, suggestionText);
     }
 
     const normalizedSendResult = {
@@ -312,7 +381,7 @@ export async function maybeSendAutoReply(
       data: {
         conversationId,
         direction: "OUTBOUND",
-        text: suggestion,
+        text: suggestionText,
         rawPayload: serializeJson({
           autoReply: true,
           sendResult: normalizedSendResult,
@@ -507,22 +576,30 @@ async function maybeUpdateContactName(
   fallbackText?: string,
 ) {
   const updates: Record<string, string | null> = {};
+  if (contact.candidateName && isSuspiciousCandidateName(contact.candidateName)) {
+    updates.candidateName = null;
+  }
   const display = normalizeName(profileName);
   if (display && display !== contact.displayName) {
     updates.displayName = display;
   }
   const candidate = extractNameFromText(fallbackText);
-  if (candidate && isValidName(candidate)) {
+  if (candidate && isValidName(candidate) && !isSuspiciousCandidateName(candidate)) {
     const existing = contact.candidateName?.trim() || null;
     const existingScore = scoreName(existing);
     const candidateScore = scoreName(candidate);
     const sameAsDisplay =
       contact.displayName &&
       candidate.toLowerCase() === contact.displayName.toLowerCase();
-    if (!sameAsDisplay && candidate.length > 1 && candidateScore >= existingScore) {
+    const existingSuspicious = isSuspiciousCandidateName(existing);
+    if (
+      !sameAsDisplay &&
+      candidate.length > 1 &&
+      (candidateScore >= existingScore || existingSuspicious)
+    ) {
       updates.candidateName = candidate;
     }
-    if (!existing) {
+    if (!existing && !updates.candidateName) {
       updates.name = candidate;
     }
   }
@@ -589,6 +666,27 @@ function isValidName(value?: string | null): boolean {
   if (blacklist.includes(lower)) return false;
   if (!trimmed.includes(" ") && trimmed.length < 3) return false;
   return true;
+}
+
+function isSuspiciousCandidateName(value?: string | null): boolean {
+  if (!value) return true;
+  const lower = value.toLowerCase();
+  const patterns = [
+    "hola quiero postular",
+    "quiero postular",
+    "postular",
+    "no puedo",
+    "no me sirve",
+    "confirmo",
+    "medio dia",
+    "mediodia",
+    "confirmar",
+    "gracias",
+  ];
+  if (patterns.some(p => lower.includes(p))) return true;
+  if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
+  if (/medio ?d[ií]a/i.test(value)) return true;
+  return false;
 }
 
 function scoreName(value?: string | null): number {
@@ -659,6 +757,238 @@ function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
 }
 
+type AdminPendingAction =
+  | {
+      type: "status";
+      targetWaId: string | null;
+      awaiting: "status";
+    }
+  | {
+      type: "interview_update";
+      targetWaId: string | null;
+      awaiting: "confirm" | null;
+      updates: {
+        interviewDay?: string | null;
+        interviewTime?: string | null;
+        interviewLocation?: string | null;
+        interviewStatus?: string | null;
+      };
+    };
+
+async function handleAdminPendingAction(
+  app: FastifyInstance,
+  adminConversationId: string,
+  lastCandidateWaId: string | null,
+  text: string,
+  adminWaId: string,
+): Promise<boolean> {
+  const trimmed = text.trim().toLowerCase();
+  const adminConvo = await prisma.conversation.findUnique({
+    where: { id: adminConversationId },
+    select: { adminPendingAction: true },
+  });
+  const pending = adminConvo?.adminPendingAction
+    ? (JSON.parse(adminConvo.adminPendingAction) as AdminPendingAction)
+    : null;
+
+  const statusFromText = detectStatusKeyword(trimmed);
+  if (!pending && !statusFromText && /estado/.test(trimmed)) {
+    await prisma.conversation.update({
+      where: { id: adminConversationId },
+      data: {
+        adminPendingAction: JSON.stringify({
+          type: "status",
+          targetWaId: lastCandidateWaId || null,
+          awaiting: "status",
+        }),
+      },
+    });
+    await sendAdminReply(
+      app,
+      adminConversationId,
+      adminWaId,
+      "¿Qué estado deseas dejar? (Nuevo/Seguimiento/Cerrado)",
+    );
+    return true;
+  }
+
+  if (pending && pending.type === "status" && pending.awaiting === "status") {
+    if (statusFromText && pending.targetWaId) {
+      await setConversationStatusByWaId(pending.targetWaId, statusFromText);
+      await prisma.conversation.update({
+        where: { id: adminConversationId },
+        data: { adminPendingAction: null, adminLastCandidateWaId: pending.targetWaId },
+      });
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `Estado actualizado a ${statusFromText} para +${pending.targetWaId}.`,
+      );
+      return true;
+    }
+  }
+
+  if (pending && pending.type === "interview_update" && pending.awaiting === "confirm") {
+    if (/^(si|sí|ok|ya|dale)/i.test(trimmed)) {
+      if (pending.targetWaId) {
+      await prisma.conversation.update({
+        where: { id: adminConversationId },
+        data: { adminPendingAction: null, adminLastCandidateWaId: pending.targetWaId },
+      });
+      await applyConversationInterviewUpdate(pending.targetWaId, pending.updates);
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        "Entrevista actualizada. ¿Quieres que envíe la plantilla de entrevista? Responde CONFIRMAR ENVÍO.",
+      );
+      return true;
+    }
+  }
+  }
+
+  if (!pending && statusFromText && lastCandidateWaId) {
+    await setConversationStatusByWaId(lastCandidateWaId, statusFromText);
+    await prisma.conversation.update({
+      where: { id: adminConversationId },
+      data: { adminLastCandidateWaId: lastCandidateWaId },
+    });
+    await sendAdminReply(
+      app,
+      adminConversationId,
+      adminWaId,
+      `Estado actualizado a ${statusFromText} para +${lastCandidateWaId}.`,
+    );
+    return true;
+  }
+
+  const parsedInterview = parseInterviewInstruction(trimmed);
+  if (parsedInterview && lastCandidateWaId) {
+    await applyConversationInterviewUpdate(lastCandidateWaId, {
+      interviewDay: parsedInterview.day,
+      interviewTime: parsedInterview.time,
+      interviewLocation: parsedInterview.location,
+      interviewStatus: "PENDING",
+    });
+    await prisma.conversation.update({
+      where: { id: adminConversationId },
+      data: {
+        adminLastCandidateWaId: lastCandidateWaId,
+        adminPendingAction: JSON.stringify({
+          type: "interview_update",
+          targetWaId: lastCandidateWaId,
+          awaiting: "confirm",
+          updates: {
+            interviewDay: parsedInterview.day,
+            interviewTime: parsedInterview.time,
+            interviewLocation: parsedInterview.location,
+            interviewStatus: "PENDING",
+          },
+        }),
+      },
+    });
+    const locationText = parsedInterview.location || "Te enviaremos la dirección exacta por este medio.";
+    await sendAdminReply(
+      app,
+      adminConversationId,
+      adminWaId,
+      `Actualicé a modo Entrevista: ${parsedInterview.day || "día por definir"} a ${
+        parsedInterview.time || "hora por definir"
+      } en ${locationText}. ¿Deseas que envíe la plantilla de entrevista? Responde CONFIRMAR ENVÍO.`,
+    );
+    return true;
+  }
+
+  return false;
+}
+
+function detectStatusKeyword(text: string): "NEW" | "OPEN" | "CLOSED" | null {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (/nuevo/.test(lower)) return "NEW";
+  if (/seguimiento|abierto|open/.test(lower)) return "OPEN";
+  if (/cerrado|close/.test(lower)) return "CLOSED";
+  return null;
+}
+
+function parseInterviewInstruction(text: string): { day: string | null; time: string | null; location: string | null } | null {
+  if (!/entrevista|agenda|agendar|coordinar/.test(text)) return null;
+  const { day, time } = parseDayTime(text);
+  let location: string | null = null;
+  const locMatch = text.match(/en\s+([A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s,.-]{3,60})$/i);
+  if (locMatch) {
+    location = locMatch[1].trim();
+  }
+  if (!day && !time && !location) return null;
+  return { day, time, location };
+}
+
+async function applyConversationInterviewUpdate(
+  waId: string,
+  updates: { interviewDay?: string | null; interviewTime?: string | null; interviewLocation?: string | null; interviewStatus?: string | null },
+) {
+  const convo = await fetchConversationByIdentifier(waId, { includeMessages: false });
+  if (!convo) return;
+  await prisma.conversation.update({
+    where: { id: convo.id },
+    data: {
+      aiMode: "INTERVIEW",
+      interviewDay: typeof updates.interviewDay !== "undefined" ? updates.interviewDay : convo.interviewDay,
+      interviewTime: typeof updates.interviewTime !== "undefined" ? updates.interviewTime : convo.interviewTime,
+      interviewLocation:
+        typeof updates.interviewLocation !== "undefined" ? updates.interviewLocation : convo.interviewLocation,
+      interviewStatus:
+        typeof updates.interviewStatus !== "undefined" ? updates.interviewStatus : convo.interviewStatus,
+    },
+  });
+}
+
+async function handleAdminLearning(
+  text: string,
+  config: SystemConfig,
+  adminConversationId: string,
+  app: FastifyInstance,
+  waId: string,
+): Promise<boolean> {
+  const learnMatch = text.match(/^aprender:\s*(.+)/i);
+  if (learnMatch) {
+    const now = new Date().toISOString();
+    const entry = `${now}: ${learnMatch[1]}`.trim();
+    const existing = config.adminAiAddendum || "";
+    const combined = `${existing}\n${entry}`.trim();
+    const trimmed = combined.slice(-8000);
+    await updateAdminAiConfig({ addendum: trimmed });
+    await sendAdminReply(app, adminConversationId, waId, "Aprendido y guardado.");
+    return true;
+  }
+  if (/^listar aprendizajes/i.test(text)) {
+    const liveConfig = await getSystemConfig();
+    const items = (liveConfig.adminAiAddendum || "").split("\n").filter(Boolean);
+    const body =
+      items.length === 0
+        ? "No hay aprendizajes guardados."
+        : items.map((line, idx) => `${idx + 1}. ${line}`).join("\n");
+    await sendAdminReply(app, adminConversationId, waId, body);
+    return true;
+  }
+  const forgetMatch = text.match(/^olvidar:\s*(\d+)/i);
+  if (forgetMatch) {
+    const idx = parseInt(forgetMatch[1], 10) - 1;
+    const liveConfig = await getSystemConfig();
+    const items = (liveConfig.adminAiAddendum || "").split("\n").filter(Boolean);
+    if (idx >= 0 && idx < items.length) {
+      items.splice(idx, 1);
+      const trimmed = items.join("\n");
+      await updateAdminAiConfig({ addendum: trimmed });
+      await sendAdminReply(app, adminConversationId, waId, "Aprendizaje eliminado.");
+    } else {
+      await sendAdminReply(app, adminConversationId, waId, "Índice inválido.");
+    }
+    return true;
+  }
+  return false;
+}
 type InterviewAction = {
   type: "interview_update";
   day?: string | null;

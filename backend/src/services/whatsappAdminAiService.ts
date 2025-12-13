@@ -139,7 +139,10 @@ export async function generateAdminAiResponse(
       role: 'system',
       content:
         `${prompt}\n` +
-        'Habla siempre en español. Usa los datos de las herramientas para responder con números concretos y acciones claras.'
+        'Habla siempre en español. Usa los datos de las herramientas para responder con números concretos y acciones claras.' +
+        (config.adminAiAddendum
+          ? `\n\nAprendizajes recientes:\n${config.adminAiAddendum.slice(-4000)}`
+          : '')
     },
     lastCandidate
       ? {

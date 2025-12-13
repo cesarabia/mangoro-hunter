@@ -19,6 +19,26 @@ const statusStyles: Record<string, { background: string; border: string; color: 
   DEFAULT: { background: '#f5f5f5', border: '#d9d9d9', color: '#333' }
 };
 
+const isSuspiciousCandidateName = (value?: string | null) => {
+  if (!value) return true;
+  const lower = value.toLowerCase();
+  const patterns = [
+    'hola quiero postular',
+    'quiero postular',
+    'postular',
+    'no puedo',
+    'no me sirve',
+    'confirmo',
+    'medio dia',
+    'mediodia',
+    'confirmar'
+  ];
+  if (patterns.some(p => lower.includes(p))) return true;
+  if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
+  if (/medio ?d[ií]a/i.test(value)) return true;
+  return false;
+};
+
 export const ConversationList: React.FC<ConversationListProps> = ({
   conversations,
   selectedId,
@@ -80,15 +100,15 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const unreadCount = c.unreadCount || 0;
           const hasUnread = unreadCount > 0;
           const isAdmin = Boolean(c.isAdmin);
-          const candidateName = isAdmin
-            ? 'Administrador'
-            : c.contact?.candidateName ||
-              c.contact?.name ||
-              c.contact?.displayName ||
-              c.contact?.waId ||
-              c.contact?.phone;
+          const rawCandidate = c.contact?.candidateName || null;
+          const validCandidate = !isAdmin && rawCandidate && !isSuspiciousCandidateName(rawCandidate);
           const waId = c.contact?.waId || c.contact?.phone || '';
-          const profileDisplay = c.contact?.displayName || '';
+          const profileDisplay = c.contact?.displayName || c.contact?.name || '';
+          const primaryName = isAdmin
+            ? 'Administrador'
+            : validCandidate
+            ? rawCandidate
+            : profileDisplay || waId || 'Sin nombre';
           const statusLabel = statusLabels[c.status] || c.status || 'Sin estado';
           const statusStyle = (statusStyles[c.status] || statusStyles.DEFAULT);
           const previewSource = lastMessage?.transcriptText || lastMessage?.text;
@@ -106,7 +126,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontWeight: hasUnread ? 700 : 600 }}>{candidateName}</span>
+                <span style={{ fontWeight: hasUnread ? 700 : 600 }}>{primaryName}</span>
                 {hasUnread && (
                   <span
                     style={{
@@ -127,7 +147,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 )}
               </div>
               <div style={{ fontSize: 11, color: '#555' }}>
-                {profileDisplay ? `${profileDisplay} · ` : ''}
+                {profileDisplay ? `${profileDisplay}` : ''}
+                {profileDisplay && waId ? ' · ' : ''}
                 {waId ? `+${waId}` : ''}
               </div>
               <div style={{ fontSize: 12, color: hasUnread ? '#111' : '#666', fontWeight: hasUnread ? 600 : 400 }}>
