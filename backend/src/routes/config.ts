@@ -17,12 +17,63 @@ import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
 
 export async function registerConfigRoutes(app: FastifyInstance) {
+  const whatsappDefaults = {
+    whatsappBaseUrl: null,
+    whatsappPhoneId: null,
+    botAutoReply: true,
+    adminWaId: null,
+    hasToken: false,
+    hasVerifyToken: false
+  };
+
+  const templatesDefaults = {
+    templateInterviewInvite: '',
+    templateGeneralFollowup: ''
+  };
+
+  function isMissingColumnError(err: any): boolean {
+    return Boolean(err && typeof err === 'object' && err.code === 'P2022');
+  }
+
+  async function loadConfigSafe(request: any) {
+    try {
+      return await getSystemConfig();
+    } catch (err) {
+      if (isMissingColumnError(err)) {
+        request.log.warn({ err }, 'SystemConfig columns missing; returning defaults');
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  function respondMissingColumns(reply: any) {
+    return reply
+      .code(409)
+      .send({ error: 'Campos de configuración no disponibles. Ejecuta las migraciones en el servidor.' });
+  }
+
+  async function executeUpdate(reply: any, fn: () => Promise<any>) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (isMissingColumnError(err)) {
+        respondMissingColumns(reply);
+        return null;
+      }
+      throw err;
+    }
+  }
+
   app.get('/whatsapp', { preValidation: [app.authenticate] }, async (request, reply) => {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const config = await getSystemConfig();
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return whatsappDefaults;
+    }
     return {
       whatsappBaseUrl: config.whatsappBaseUrl,
       whatsappPhoneId: config.whatsappPhoneId,
@@ -47,14 +98,18 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       adminWaId?: string | null;
     };
 
-    const updated = await updateWhatsAppConfig({
-      whatsappBaseUrl: body.whatsappBaseUrl,
-      whatsappPhoneId: body.whatsappPhoneId,
-      whatsappToken: body.whatsappToken,
-      whatsappVerifyToken: typeof body.whatsappVerifyToken === 'undefined' ? undefined : body.whatsappVerifyToken,
-      botAutoReply: body.botAutoReply,
-      adminWaId: typeof body.adminWaId === 'undefined' ? undefined : body.adminWaId
-    });
+    const updated = await executeUpdate(reply, () =>
+      updateWhatsAppConfig({
+        whatsappBaseUrl: body.whatsappBaseUrl,
+        whatsappPhoneId: body.whatsappPhoneId,
+        whatsappToken: body.whatsappToken,
+        whatsappVerifyToken:
+          typeof body.whatsappVerifyToken === 'undefined' ? undefined : body.whatsappVerifyToken,
+        botAutoReply: body.botAutoReply,
+        adminWaId: typeof body.adminWaId === 'undefined' ? undefined : body.adminWaId
+      })
+    );
+    if (!updated) return;
 
     return {
       whatsappBaseUrl: updated.whatsappBaseUrl,
@@ -71,7 +126,12 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const config = await getSystemConfig();
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return {
+        hasOpenAiKey: false
+      };
+    }
     return {
       hasOpenAiKey: Boolean(config.openAiApiKey)
     };
@@ -83,7 +143,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     }
 
     const body = request.body as { openAiApiKey?: string | null };
-    const updated = await updateAiConfig(body?.openAiApiKey ?? null);
+    const updated = await executeUpdate(reply, () => updateAiConfig(body?.openAiApiKey ?? null));
+    if (!updated) return;
     return {
       hasOpenAiKey: Boolean(updated.openAiApiKey)
     };
@@ -94,7 +155,12 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const config = await getSystemConfig();
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return {
+        aiPrompt: DEFAULT_AI_PROMPT
+      };
+    }
     return {
       aiPrompt: config.aiPrompt || DEFAULT_AI_PROMPT
     };
@@ -106,7 +172,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     }
 
     const body = request.body as { aiPrompt?: string | null };
-    const updated = await updateAiPrompt(body?.aiPrompt ?? null);
+    const updated = await executeUpdate(reply, () => updateAiPrompt(body?.aiPrompt ?? null));
+    if (!updated) return;
 
     return {
       aiPrompt: updated.aiPrompt || DEFAULT_AI_PROMPT
@@ -117,7 +184,14 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
-    const config = await getSystemConfig();
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return {
+        prompt: DEFAULT_ADMIN_AI_PROMPT,
+        hasCustomPrompt: false,
+        model: DEFAULT_ADMIN_AI_MODEL
+      };
+    }
     return {
       prompt: config.adminAiPrompt || DEFAULT_ADMIN_AI_PROMPT,
       hasCustomPrompt: Boolean(config.adminAiPrompt),
@@ -130,10 +204,13 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const body = request.body as { prompt?: string | null; model?: string | null };
-    const updated = await updateAdminAiConfig({
-      prompt: typeof body?.prompt === 'undefined' ? undefined : body.prompt,
-      model: typeof body?.model === 'undefined' ? undefined : body.model
-    });
+    const updated = await executeUpdate(reply, () =>
+      updateAdminAiConfig({
+        prompt: typeof body?.prompt === 'undefined' ? undefined : body.prompt,
+        model: typeof body?.model === 'undefined' ? undefined : body.model
+      })
+    );
+    if (!updated) return;
     return {
       prompt: updated.adminAiPrompt || DEFAULT_ADMIN_AI_PROMPT,
       hasCustomPrompt: Boolean(updated.adminAiPrompt),
@@ -145,7 +222,14 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
-    const config = await getSystemConfig();
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return {
+        prompt: DEFAULT_INTERVIEW_AI_PROMPT,
+        hasCustomPrompt: false,
+        model: DEFAULT_INTERVIEW_AI_MODEL
+      };
+    }
     return {
       prompt: config.interviewAiPrompt || DEFAULT_INTERVIEW_AI_PROMPT,
       hasCustomPrompt: Boolean(config.interviewAiPrompt),
@@ -158,10 +242,13 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const body = request.body as { prompt?: string | null; model?: string | null };
-    const updated = await updateInterviewAiConfig({
-      prompt: typeof body?.prompt === 'undefined' ? undefined : body.prompt,
-      model: typeof body?.model === 'undefined' ? undefined : body.model
-    });
+    const updated = await executeUpdate(reply, () =>
+      updateInterviewAiConfig({
+        prompt: typeof body?.prompt === 'undefined' ? undefined : body.prompt,
+        model: typeof body?.model === 'undefined' ? undefined : body.model
+      })
+    );
+    if (!updated) return;
     return {
       prompt: updated.interviewAiPrompt || DEFAULT_INTERVIEW_AI_PROMPT,
       hasCustomPrompt: Boolean(updated.interviewAiPrompt),
@@ -173,7 +260,10 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
-    const config = await getSystemConfig();
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return templatesDefaults;
+    }
     return {
       templateInterviewInvite: config.templateInterviewInvite || '',
       templateGeneralFollowup: config.templateGeneralFollowup || ''
@@ -185,12 +275,15 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const body = request.body as { templateInterviewInvite?: string | null; templateGeneralFollowup?: string | null };
-    const updated = await updateTemplateConfig({
-      templateInterviewInvite:
-        typeof body?.templateInterviewInvite === 'undefined' ? undefined : body.templateInterviewInvite,
-      templateGeneralFollowup:
-        typeof body?.templateGeneralFollowup === 'undefined' ? undefined : body.templateGeneralFollowup
-    });
+    const updated = await executeUpdate(reply, () =>
+      updateTemplateConfig({
+        templateInterviewInvite:
+          typeof body?.templateInterviewInvite === 'undefined' ? undefined : body.templateInterviewInvite,
+        templateGeneralFollowup:
+          typeof body?.templateGeneralFollowup === 'undefined' ? undefined : body.templateGeneralFollowup
+      })
+    );
+    if (!updated) return;
     return {
       templateInterviewInvite: updated.templateInterviewInvite || '',
       templateGeneralFollowup: updated.templateGeneralFollowup || ''
@@ -208,7 +301,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     }
 
     const passwordHash = await hashPassword(body.password);
-    const updated = await updateAdminAccount(body.email, passwordHash);
+    const updated = await executeUpdate(reply, () => updateAdminAccount(body.email!, passwordHash));
+    if (!updated) return;
 
     return {
       adminEmail: updated.adminEmail
@@ -219,7 +313,12 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
-    const config = await getSystemConfig();
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return {
+        adminEmail: null
+      };
+    }
     return {
       adminEmail: config.adminEmail
     };
