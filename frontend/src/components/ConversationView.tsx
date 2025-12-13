@@ -13,6 +13,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const [modeSaving, setModeSaving] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [templateSending, setTemplateSending] = useState(false);
+  const [templateVariables, setTemplateVariables] = useState<string[]>([]);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const previousCountRef = useRef(0);
@@ -117,11 +118,27 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     aiMode === 'INTERVIEW' ? templateInterviewInvite : templateGeneralFollowup;
   const requiredTemplateLabel =
     aiMode === 'INTERVIEW' ? 'entrevista' : 'seguimiento';
+  const templateVariableCount = requiredTemplate === 'postulacion_completar_1' ? 1 : requiredTemplate === 'entrevista_confirmacion_1' ? 3 : 0;
   const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'OFF'; label: string }> = [
     { key: 'RECRUIT', label: 'Reclutamiento' },
     { key: 'INTERVIEW', label: 'Entrevista' },
     { key: 'OFF', label: 'Manual' }
   ];
+
+  useEffect(() => {
+    if (!conversation) return;
+    if (!requiredTemplate || templateVariableCount === 0) {
+      setTemplateVariables([]);
+      return;
+    }
+    const initial = Array.from({ length: templateVariableCount }, (_, index) => {
+      if (index === 0) {
+        return conversation.contact?.name || '';
+      }
+      return '';
+    });
+    setTemplateVariables(initial);
+  }, [conversation?.id, requiredTemplate, templateVariableCount]);
 
   const handleSendTemplate = async () => {
     if (!conversation || !requiredTemplate) return;
@@ -129,7 +146,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     setSendError(null);
     try {
       await apiClient.post(`/api/conversations/${conversation.id}/send-template`, {
-        templateName: requiredTemplate
+        templateName: requiredTemplate,
+        variables: templateVariables.map(value => value.trim())
       });
       onMessageSent();
     } catch (err: any) {
@@ -138,6 +156,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setTemplateSending(false);
     }
   };
+
+  const templateVariablesReady =
+    templateVariableCount === 0 || templateVariables.every(value => value.trim().length > 0);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -238,13 +259,35 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
         {!isAdmin && !within24h && (
           <>
             {requiredTemplate ? (
-              <button
-                onClick={handleSendTemplate}
-                disabled={templateSending}
-                style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 4, border: '1px solid #111', background: '#fff' }}
-              >
-                {templateSending ? 'Enviando plantilla...' : `Enviar plantilla de ${requiredTemplateLabel}`}
-              </button>
+              <>
+                {templateVariableCount > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ fontSize: 12, color: '#666' }}>Variables plantilla ({templateVariableCount}):</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {Array.from({ length: templateVariableCount }, (_, index) => (
+                        <input
+                          key={index}
+                          value={templateVariables[index] || ''}
+                          onChange={e => {
+                            const next = [...templateVariables];
+                            next[index] = e.target.value;
+                            setTemplateVariables(next);
+                          }}
+                          placeholder={index === 0 ? 'Variable 1 (ej: nombre)' : `Variable ${index + 1}`}
+                          style={{ flex: '1 1 160px', minWidth: 160, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <button
+                  onClick={handleSendTemplate}
+                  disabled={templateSending || !templateVariablesReady}
+                  style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 4, border: '1px solid #111', background: '#fff' }}
+                >
+                  {templateSending ? 'Enviando plantilla...' : `Enviar plantilla de ${requiredTemplateLabel}`}
+                </button>
+              </>
             ) : (
               <div style={{ fontSize: 13, color: '#b93800' }}>
                 No hay plantilla configurada para {requiredTemplateLabel}. Ve a Configuración → Plantillas WhatsApp.
