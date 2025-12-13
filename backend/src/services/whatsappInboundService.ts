@@ -1,5 +1,9 @@
 import { FastifyInstance } from "fastify";
 import { SystemConfig } from "@prisma/client";
+import fs from "fs/promises";
+import { createReadStream } from "fs";
+import path from "path";
+import OpenAI from "openai";
 import { prisma } from "../db/client";
 import {
   getSystemConfig,
@@ -7,14 +11,26 @@ import {
   DEFAULT_INTERVIEW_AI_MODEL,
   INTERVIEW_AI_POLICY_ADDENDUM,
   DEFAULT_AI_MODEL,
+  DEFAULT_WHATSAPP_BASE_URL,
 } from "./configService";
 import { DEFAULT_AI_PROMPT } from "../constants/ai";
 import { serializeJson } from "../utils/json";
-import { getSuggestedReply } from "./aiService";
+import { getEffectiveOpenAiKey, getSuggestedReply } from "./aiService";
 import { sendWhatsAppText, SendResult } from "./whatsappMessageService";
 import { normalizeWhatsAppId } from "../utils/whatsapp";
 import { processAdminCommand } from "./whatsappAdminCommandService";
 import { generateAdminAiResponse } from "./whatsappAdminAiService";
+import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from "./templateService";
+import { createConversationAndMaybeSend } from "./conversationCreateService";
+
+interface InboundMedia {
+  type: string;
+  id: string;
+  mimeType?: string;
+  sha256?: string;
+  filename?: string;
+  caption?: string;
+}
 
 interface InboundMessageParams {
   from: string;
@@ -22,8 +38,23 @@ interface InboundMessageParams {
   timestamp?: number;
   rawPayload?: any;
   profileName?: string;
+  media?: InboundMedia | null;
   config?: SystemConfig;
 }
+
+interface PendingAdminSend {
+  targetWaId: string;
+  mode: "RECRUIT" | "INTERVIEW" | "OFF";
+  templateName: string;
+  variables: string[];
+  previewText: string;
+  createdAt: number;
+  allowed: boolean;
+}
+
+const pendingAdminSends = new Map<string, PendingAdminSend>();
+const UPLOADS_BASE = path.join(__dirname, "..", "uploads");
+const ADMIN_PENDING_TTL_MS = 30 * 60 * 1000;
 
 export async function handleInboundWhatsAppMessage(
   app: FastifyInstance,
@@ -46,6 +77,18 @@ export async function handleInboundWhatsAppMessage(
       params.rawPayload,
     );
 
+    clearStaleAdminIntent(normalizedAdmin);
+    if (trimmedText.toUpperCase() === "CONFIRMAR ENVÍO") {
+      const handled = await maybeConfirmAdminSend(
+        app,
+        adminThread.conversation.id,
+        normalizedAdmin,
+      );
+      if (handled) {
+        return { conversationId: adminThread.conversation.id };
+      }
+    }
+
     if (trimmedText.startsWith("/")) {
       const response = await processAdminCommand({
         waId,
@@ -55,6 +98,22 @@ export async function handleInboundWhatsAppMessage(
       if (response) {
         await sendAdminReply(app, adminThread.conversation.id, waId, response);
       }
+      return { conversationId: adminThread.conversation.id };
+    }
+
+    const templateIntent = await detectAdminTemplateIntent(
+      trimmedText,
+      config,
+      app,
+    );
+    if (templateIntent) {
+      pendingAdminSends.set(normalizedAdmin, templateIntent);
+      await sendAdminReply(
+        app,
+        adminThread.conversation.id,
+        waId,
+        templateIntent.previewText,
+      );
       return { conversationId: adminThread.conversation.id };
     }
 
@@ -95,11 +154,14 @@ export async function handleInboundWhatsAppMessage(
     });
   }
 
-  await prisma.message.create({
+  const messageText = buildInboundText(params.text, params.media);
+  const message = await prisma.message.create({
     data: {
       conversationId: conversation.id,
       direction: "INBOUND",
-      text: params.text || "",
+      text: messageText,
+      mediaType: params.media?.type || null,
+      mediaMime: params.media?.mimeType || null,
       rawPayload: serializeJson(params.rawPayload ?? { simulated: true }),
       timestamp: new Date(
         params.timestamp ? params.timestamp * 1000 : Date.now(),
@@ -111,6 +173,14 @@ export async function handleInboundWhatsAppMessage(
   await prisma.conversation.update({
     where: { id: conversation.id },
     data: { updatedAt: new Date() },
+  });
+
+  void processMediaAttachment(app, {
+    conversationId: conversation.id,
+    waId: contact.waId,
+    media: params.media,
+    messageId: message.id,
+    config,
   });
 
   await maybeSendAutoReply(app, conversation.id, contact.waId, config);
@@ -210,6 +280,159 @@ export async function maybeSendAutoReply(
   }
 }
 
+function buildInboundText(text?: string, media?: InboundMedia | null): string {
+  const trimmed = (text || "").trim();
+  if (trimmed) return trimmed;
+  const mediaLabel = renderMediaLabel(media);
+  return mediaLabel || "(mensaje recibido)";
+}
+
+function renderMediaLabel(media?: InboundMedia | null): string | null {
+  if (!media) return null;
+  if (media.type === "voice" || media.type === "audio") {
+    return "Audio recibido";
+  }
+  if (media.type === "image") {
+    return media.caption ? `Imagen: ${media.caption}` : "Imagen recibida";
+  }
+  if (media.type === "document") {
+    const base = media.filename
+      ? `Documento ${media.filename}`
+      : "Documento recibido";
+    return media.caption ? `${base} - ${media.caption}` : base;
+  }
+  if (media.type === "sticker") {
+    return "Sticker recibido";
+  }
+  return "Mensaje multimedia recibido";
+}
+
+async function processMediaAttachment(
+  app: FastifyInstance,
+  options: {
+    conversationId: string;
+    waId?: string | null;
+    media?: InboundMedia | null;
+    messageId: string;
+    config: SystemConfig;
+  },
+): Promise<void> {
+  const media = options.media;
+  if (!media || !media.id || !options.waId) return;
+  if (!options.config?.whatsappToken) return;
+
+  try {
+    const baseUrl = (options.config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL)
+      .replace(/\/$/, "");
+    const infoRes = await fetch(`${baseUrl}/${media.id}`, {
+      headers: { Authorization: `Bearer ${options.config.whatsappToken}` },
+    });
+    if (!infoRes.ok) {
+      app.log.warn(
+        { conversationId: options.conversationId, mediaId: media.id },
+        "No se pudo obtener metadata de media",
+      );
+      return;
+    }
+    const mediaInfo = (await infoRes.json()) as any;
+    const mediaUrl = mediaInfo.url;
+    const mimeType = media.mimeType || mediaInfo.mime_type;
+    if (!mediaUrl) return;
+
+    const downloadRes = await fetch(mediaUrl, {
+      headers: { Authorization: `Bearer ${options.config.whatsappToken}` },
+    });
+    if (!downloadRes.ok) {
+      app.log.warn(
+        { conversationId: options.conversationId, mediaId: media.id },
+        "No se pudo descargar media",
+      );
+      return;
+    }
+
+    const buffer = Buffer.from(await downloadRes.arrayBuffer());
+    const extension = pickExtension(mimeType, media.type);
+    const dir = path.join(UPLOADS_BASE, options.waId);
+    await fs.mkdir(dir, { recursive: true });
+    const filename = `${options.messageId}.${extension}`;
+    const absolutePath = path.join(dir, filename);
+    await fs.writeFile(absolutePath, buffer);
+    const relativePath = path.relative(path.join(__dirname, ".."), absolutePath);
+
+    await prisma.message.update({
+      where: { id: options.messageId },
+      data: { mediaPath: relativePath, mediaMime: mimeType || null },
+    });
+
+    if (media.type === "audio" || media.type === "voice") {
+      const transcript = await transcribeAudio(
+        absolutePath,
+        options.config,
+        app,
+      );
+      if (transcript) {
+        await prisma.message.update({
+          where: { id: options.messageId },
+          data: { transcriptText: transcript, text: transcript },
+        });
+        await prisma.conversation.update({
+          where: { id: options.conversationId },
+          data: { updatedAt: new Date() },
+        });
+      }
+    }
+  } catch (err) {
+    app.log.error(
+      { err, conversationId: options.conversationId },
+      "Media processing failed",
+    );
+  }
+}
+
+function pickExtension(
+  mimeType?: string | null,
+  mediaType?: string | null,
+): string {
+  if (mimeType) {
+    const lower = mimeType.toLowerCase();
+    if (lower.includes("ogg")) return "ogg";
+    if (lower.includes("mpeg")) return "mp3";
+    if (lower.includes("wav")) return "wav";
+    if (lower.includes("mp4")) return "mp4";
+    if (lower.includes("pdf")) return "pdf";
+    if (lower.includes("png")) return "png";
+    if (lower.includes("jpeg") || lower.includes("jpg")) return "jpg";
+    const parts = lower.split("/");
+    if (parts[1]) return parts[1];
+  }
+  if (mediaType === "image") return "jpg";
+  if (mediaType === "document") return "pdf";
+  if (mediaType === "audio" || mediaType === "voice") return "ogg";
+  return "bin";
+}
+
+async function transcribeAudio(
+  filePath: string,
+  config: SystemConfig,
+  app: FastifyInstance,
+): Promise<string | null> {
+  try {
+    const apiKey = getEffectiveOpenAiKey(config);
+    if (!apiKey) return null;
+    const client = new OpenAI({ apiKey });
+    const response = await client.audio.transcriptions.create({
+      file: createReadStream(filePath),
+      model: "gpt-4o-mini-transcribe",
+    });
+    const text = (response as any)?.text || (response as any)?.segments?.[0];
+    const trimmed = typeof text === "string" ? text.trim() : null;
+    return trimmed && trimmed.length > 0 ? trimmed : null;
+  } catch (err) {
+    app.log.warn({ err }, "Audio transcription failed");
+    return null;
+  }
+}
+
 function isAdminCommandText(text?: string): boolean {
   if (!text) return false;
   const trimmed = text.trim().toLowerCase();
@@ -269,6 +492,109 @@ function normalizeName(value?: string | null): string | null {
       (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
     )
     .join(" ");
+}
+
+function clearStaleAdminIntent(normalizedAdmin: string) {
+  const pending = pendingAdminSends.get(normalizedAdmin);
+  if (pending && Date.now() - pending.createdAt > ADMIN_PENDING_TTL_MS) {
+    pendingAdminSends.delete(normalizedAdmin);
+  }
+}
+
+async function maybeConfirmAdminSend(
+  app: FastifyInstance,
+  conversationId: string,
+  normalizedAdmin: string,
+): Promise<boolean> {
+  const pending = pendingAdminSends.get(normalizedAdmin);
+  if (!pending) return false;
+
+  try {
+    const result = await createConversationAndMaybeSend({
+      phoneE164: pending.targetWaId,
+      mode: pending.mode,
+      status: "NEW",
+      sendTemplateNow: true,
+      variables: pending.variables,
+      templateNameOverride: pending.templateName,
+    });
+
+    pendingAdminSends.delete(normalizedAdmin);
+    const success = result.sendResult?.success;
+    const sendText = success
+      ? `Plantilla ${pending.templateName} enviada a +${pending.targetWaId}.`
+      : `No se pudo enviar a +${pending.targetWaId}: ${
+          result.sendResult?.error || "Error"
+        }`;
+    await sendAdminReply(app, conversationId, normalizedAdmin, sendText);
+  } catch (err) {
+    pendingAdminSends.delete(normalizedAdmin);
+    const message =
+      err instanceof Error ? err.message : "No se pudo enviar la plantilla";
+    await sendAdminReply(
+      app,
+      conversationId,
+      normalizedAdmin,
+      `Error al enviar: ${message}`,
+    );
+  }
+
+  return true;
+}
+
+async function detectAdminTemplateIntent(
+  text: string,
+  config: SystemConfig,
+  app: FastifyInstance,
+): Promise<PendingAdminSend | null> {
+  if (!text) return null;
+  const normalized = text.trim();
+  const phoneMatch = normalized.match(/\+?\d{9,15}/);
+  const hasIntent = /plantilla|postulaci[oó]n|entrevista/i.test(normalized);
+  if (!hasIntent || !phoneMatch) return null;
+
+  const targetWaId = normalizeWhatsAppId(phoneMatch[0]);
+  if (!targetWaId) return null;
+
+  const lower = normalized.toLowerCase();
+  const mode: "RECRUIT" | "INTERVIEW" = lower.includes("entrevista")
+    ? "INTERVIEW"
+    : "RECRUIT";
+  const templates = await loadTemplateConfig(app.log);
+  const templateName = selectTemplateForMode(mode, templates);
+  const variables = resolveTemplateVariables(templateName, [], templates);
+  const whitelist = [
+    normalizeWhatsAppId(config.adminWaId),
+    normalizeWhatsAppId(templates.testPhoneNumber),
+  ].filter(Boolean) as string[];
+  const allowed = whitelist.includes(targetWaId);
+
+  const variablesPreview =
+    variables.length > 0
+      ? variables.map((v, idx) => `{{${idx + 1}}}=${v}`).join(", ")
+      : "sin variables";
+  const previewLines = [
+    `Destino: +${targetWaId}`,
+    `Modo: ${mode === "INTERVIEW" ? "Entrevista" : "Reclutamiento"}`,
+    `Plantilla: ${templateName} (${templates.templateLanguageCode || "es_CL"})`,
+    `Variables: ${variablesPreview}`,
+  ];
+  const warning = allowed
+    ? ""
+    : "\n⚠️ Destino fuera de whitelist, requiere CONFIRMAR ENVÍO.";
+  const previewText = `${previewLines.join(
+    "\n",
+  )}\nResponde "CONFIRMAR ENVÍO" para enviar.${warning}`;
+
+  return {
+    targetWaId,
+    mode,
+    templateName,
+    variables,
+    previewText,
+    createdAt: Date.now(),
+    allowed,
+  };
 }
 
 async function ensureAdminConversation(waId: string, normalizedAdmin: string) {

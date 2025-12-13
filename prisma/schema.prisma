@@ -54,6 +54,10 @@ model Message {
   direction      String
   text           String
   rawPayload     String?
+  mediaType      String?
+  mediaMime      String?
+  mediaPath      String?
+  transcriptText String?
   timestamp      DateTime
   read           Boolean       @default(false)
   createdAt      DateTime      @default(now())

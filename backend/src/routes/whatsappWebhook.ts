@@ -30,7 +30,9 @@ export function registerWhatsAppWebhookRoutes(app: FastifyInstance) {
 
   const handlePost = async (request: any, reply: any) => {
     const payload = request.body as any;
-    await processIncomingPayload(app, payload);
+    processIncomingPayload(app, payload).catch((err) => {
+      app.log.error({ err }, "Error procesando payload de WhatsApp");
+    });
     reply.code(200).send({ status: "ok" });
   };
 
@@ -72,6 +74,7 @@ async function processIncomingPayload(app: FastifyInstance, payload: any) {
       await handleInboundWhatsAppMessage(app, {
         from: msg.from,
         text: msg.text ?? "",
+        media: msg.media,
         timestamp: msg.timestamp,
         rawPayload: msg.rawPayload,
         profileName: msg.profileName,
@@ -89,6 +92,14 @@ function extractMessages(payload: any): Array<{
   timestamp?: number;
   rawPayload: any;
   profileName?: string;
+  media?: {
+    type: string;
+    id: string;
+    mimeType?: string;
+    sha256?: string;
+    filename?: string;
+    caption?: string;
+  } | null;
 }> {
   const collected: Array<{
     from: string;
@@ -96,16 +107,27 @@ function extractMessages(payload: any): Array<{
     timestamp?: number;
     rawPayload: any;
     profileName?: string;
+    media?:
+      | {
+          type: string;
+          id: string;
+          mimeType?: string;
+          sha256?: string;
+          filename?: string;
+          caption?: string;
+        }
+      | null;
   }> = [];
 
   if (payload?.messages && Array.isArray(payload.messages)) {
     for (const msg of payload.messages) {
       collected.push({
         from: msg.from,
-        text: msg.text?.body,
+        text: msg.text?.body || msg?.[msg.type]?.caption,
         timestamp: msg.timestamp,
         rawPayload: msg,
         profileName: msg.profile?.name,
+        media: mapMediaFromMessage(msg),
       });
     }
   }
@@ -119,13 +141,14 @@ function extractMessages(payload: any): Array<{
           for (const message of value.messages) {
             collected.push({
               from: message.from,
-              text: message.text?.body,
+              text: message.text?.body || message?.[message.type]?.caption,
               timestamp: message.timestamp
                 ? Number(message.timestamp)
                 : undefined,
               rawPayload: message,
               profileName:
                 value?.contacts?.[0]?.profile?.name || message.profile?.name,
+              media: mapMediaFromMessage(message),
             });
           }
         }
@@ -134,4 +157,50 @@ function extractMessages(payload: any): Array<{
   }
 
   return collected;
+}
+
+function mapMediaFromMessage(message: any) {
+  const type = message?.type;
+  if (!type) return null;
+
+  if (type === "image" && message.image?.id) {
+    return {
+      type: "image",
+      id: message.image.id,
+      mimeType: message.image.mime_type,
+      sha256: message.image.sha256,
+      caption: message.image.caption,
+    };
+  }
+
+  if (type === "audio" && message.audio?.id) {
+    return {
+      type: message.audio.voice ? "voice" : "audio",
+      id: message.audio.id,
+      mimeType: message.audio.mime_type,
+      sha256: message.audio.sha256,
+    };
+  }
+
+  if (type === "document" && message.document?.id) {
+    return {
+      type: "document",
+      id: message.document.id,
+      mimeType: message.document.mime_type,
+      sha256: message.document.sha256,
+      filename: message.document.filename,
+      caption: message.document.caption,
+    };
+  }
+
+  if (type === "sticker" && message.sticker?.id) {
+    return {
+      type: "sticker",
+      id: message.sticker.id,
+      mimeType: message.sticker.mime_type,
+      sha256: message.sticker.sha256,
+    };
+  }
+
+  return null;
 }
