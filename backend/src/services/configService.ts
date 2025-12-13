@@ -6,6 +6,7 @@ export const DEFAULT_WHATSAPP_BASE_URL = 'https://graph.facebook.com/v20.0';
 export const DEFAULT_WHATSAPP_PHONE_ID = '1511895116748404';
 export const DEFAULT_TEMPLATE_INTERVIEW_INVITE = 'entrevista_confirmacion_1';
 export const DEFAULT_TEMPLATE_GENERAL_FOLLOWUP = 'postulacion_completar_1';
+export const DEFAULT_TEMPLATE_LANGUAGE_CODE = 'es_CL';
 export const DEFAULT_ADMIN_AI_PROMPT =
   'Eres Hunter Admin, un asistente en español para managers de reclutamiento. Da respuestas claras y accionables, usa herramientas cuando te lo pidan.';
 export const DEFAULT_ADMIN_AI_MODEL = 'gpt-4.1-mini';
@@ -166,6 +167,7 @@ export async function updateInterviewAiConfig(input: {
 export async function updateTemplateConfig(input: {
   templateInterviewInvite?: string | null;
   templateGeneralFollowup?: string | null;
+  templateLanguageCode?: string | null;
 }): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
   const data: Record<string, string | null | undefined> = {};
@@ -174,6 +176,9 @@ export async function updateTemplateConfig(input: {
   }
   if (typeof input.templateGeneralFollowup !== 'undefined') {
     data.templateGeneralFollowup = normalizeValue(input.templateGeneralFollowup);
+  }
+  if (typeof input.templateLanguageCode !== 'undefined') {
+    data.templateLanguageCode = normalizeValue(input.templateLanguageCode);
   }
   return prisma.systemConfig.update({
     where: { id: config.id },
@@ -193,7 +198,8 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         interviewAiPrompt: DEFAULT_INTERVIEW_AI_PROMPT,
         interviewAiModel: DEFAULT_INTERVIEW_AI_MODEL,
         templateInterviewInvite: DEFAULT_TEMPLATE_INTERVIEW_INVITE,
-        templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
+        templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+        templateLanguageCode: DEFAULT_TEMPLATE_LANGUAGE_CODE
       }
     });
     return existing;
@@ -210,6 +216,9 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.templateGeneralFollowup) {
     updates.templateGeneralFollowup = DEFAULT_TEMPLATE_GENERAL_FOLLOWUP;
+  }
+  if (!existing.templateLanguageCode) {
+    updates.templateLanguageCode = DEFAULT_TEMPLATE_LANGUAGE_CODE;
   }
   if (!existing.interviewAiPrompt) {
     updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;

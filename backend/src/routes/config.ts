@@ -13,7 +13,8 @@ import {
   DEFAULT_INTERVIEW_AI_PROMPT,
   DEFAULT_INTERVIEW_AI_MODEL,
   DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
-  DEFAULT_TEMPLATE_INTERVIEW_INVITE
+  DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+  DEFAULT_TEMPLATE_LANGUAGE_CODE
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
@@ -30,7 +31,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
 
   const templatesDefaults = {
     templateInterviewInvite: DEFAULT_TEMPLATE_INTERVIEW_INVITE,
-    templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
+    templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+    templateLanguageCode: DEFAULT_TEMPLATE_LANGUAGE_CODE
   };
 
   function isMissingColumnError(err: any): boolean {
@@ -268,7 +270,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     }
     return {
       templateInterviewInvite: config.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE,
-      templateGeneralFollowup: config.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
+      templateGeneralFollowup: config.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+      templateLanguageCode: config.templateLanguageCode || DEFAULT_TEMPLATE_LANGUAGE_CODE
     };
   });
 
@@ -276,19 +279,26 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
-    const body = request.body as { templateInterviewInvite?: string | null; templateGeneralFollowup?: string | null };
+    const body = request.body as {
+      templateInterviewInvite?: string | null;
+      templateGeneralFollowup?: string | null;
+      templateLanguageCode?: string | null;
+    };
     const updated = await executeUpdate(reply, () =>
       updateTemplateConfig({
         templateInterviewInvite:
           typeof body?.templateInterviewInvite === 'undefined' ? undefined : body.templateInterviewInvite,
         templateGeneralFollowup:
-          typeof body?.templateGeneralFollowup === 'undefined' ? undefined : body.templateGeneralFollowup
+          typeof body?.templateGeneralFollowup === 'undefined' ? undefined : body.templateGeneralFollowup,
+        templateLanguageCode:
+          typeof body?.templateLanguageCode === 'undefined' ? undefined : body.templateLanguageCode
       })
     );
     if (!updated) return;
     return {
       templateInterviewInvite: updated.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE,
-      templateGeneralFollowup: updated.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
+      templateGeneralFollowup: updated.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+      templateLanguageCode: updated.templateLanguageCode || DEFAULT_TEMPLATE_LANGUAGE_CODE
     };
   });
 

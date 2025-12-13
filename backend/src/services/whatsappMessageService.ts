@@ -1,4 +1,10 @@
-import { DEFAULT_WHATSAPP_BASE_URL, getSystemConfig } from './configService';
+import {
+  DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+  DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+  DEFAULT_TEMPLATE_LANGUAGE_CODE,
+  DEFAULT_WHATSAPP_BASE_URL,
+  getSystemConfig
+} from './configService';
 
 export interface SendResult {
   success: boolean;
@@ -78,13 +84,21 @@ export async function sendWhatsAppTemplate(
         ]
       : undefined;
 
+  const baseLanguageCode =
+    config.templateLanguageCode?.trim() || DEFAULT_TEMPLATE_LANGUAGE_CODE;
+  const forcedLanguageByTemplate: Record<string, string> = {
+    [DEFAULT_TEMPLATE_GENERAL_FOLLOWUP]: DEFAULT_TEMPLATE_LANGUAGE_CODE,
+    [DEFAULT_TEMPLATE_INTERVIEW_INVITE]: DEFAULT_TEMPLATE_LANGUAGE_CODE
+  };
+  const languageCode = forcedLanguageByTemplate[templateName] || baseLanguageCode;
+
   const body: any = {
     messaging_product: 'whatsapp',
     to: toWaId,
     type: 'template',
     template: {
       name: templateName,
-      language: { code: 'es' }
+      language: { code: languageCode }
     }
   };
   if (components) {

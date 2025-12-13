@@ -113,6 +113,7 @@ model SystemConfig {
   interviewAiModel  String?
   templateInterviewInvite String?
   templateGeneralFollowup String?
+  templateLanguageCode String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
