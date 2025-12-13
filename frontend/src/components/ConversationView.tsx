@@ -19,7 +19,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const previousCountRef = useRef(0);
 
   useEffect(() => {
-    if (!conversation) return;
+    if (!conversation) {
+      setSendError(null);
+      setModeSaving(false);
+      setTemplateVariables([]);
+      return;
+    }
     setAutoScrollEnabled(true);
     scrollToBottom();
     previousCountRef.current = conversation.messages?.length ?? 0;
@@ -101,18 +106,15 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     }
   };
 
-  if (!conversation) {
-    return <div style={{ flex: 1, padding: 16 }}>Selecciona una conversación</div>;
-  }
-
-  const isAdmin = Boolean(conversation.isAdmin);
+  const hasConversation = Boolean(conversation);
+  const isAdmin = Boolean(conversation?.isAdmin);
   const displayName = isAdmin
     ? 'Administrador'
-    : conversation.contact?.name || conversation.contact?.phone || conversation.contact?.waId;
-  const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation.aiMode || 'RECRUIT';
+    : conversation?.contact?.name || conversation?.contact?.phone || conversation?.contact?.waId || 'Sin conversación';
+  const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation?.aiMode || 'RECRUIT';
   const isManualMode = aiMode === 'OFF';
-  const within24h = conversation.within24h !== false;
-  const templateConfig = conversation.templates || {};
+  const within24h = conversation?.within24h !== false;
+  const templateConfig = conversation?.templates || {};
   const templateInterviewInvite = templateConfig.templateInterviewInvite || null;
   const templateGeneralFollowup = templateConfig.templateGeneralFollowup || null;
   const requiredTemplate =
@@ -132,7 +134,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   ];
 
   useEffect(() => {
-    if (!conversation) return;
+    if (!conversation) {
+      setTemplateVariables([]);
+      return;
+    }
     if (!requiredTemplate || templateVariableCount === 0) {
       setTemplateVariables([]);
       return;
@@ -184,7 +189,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee' }}>
         <strong>{displayName}</strong>
-        {!isAdmin && (
+        {hasConversation && !isAdmin && (
           <div style={{ marginTop: 8 }}>
             <div style={{ fontSize: 13, marginBottom: 4 }}>Modo del candidato:</div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -215,29 +220,33 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
         onScroll={handleScroll}
         style={{ flex: 1, padding: 16, overflowY: 'auto', background: '#fafafa', minHeight: 0 }}
       >
-        {conversation.messages.map((m: any) => (
-          <div
-            key={m.id}
-            style={{
-              marginBottom: 8,
-              display: 'flex',
-              justifyContent: m.direction === 'OUTBOUND' ? 'flex-end' : 'flex-start'
-            }}
-          >
+        {hasConversation ? (
+          conversation?.messages?.map((m: any) => (
             <div
+              key={m.id}
               style={{
-                maxWidth: '70%',
-                padding: '8px 10px',
-                borderRadius: 12,
-                background: m.direction === 'OUTBOUND' ? '#d1e7dd' : '#fff',
-                border: '1px solid #eee',
-                fontSize: 14
+                marginBottom: 8,
+                display: 'flex',
+                justifyContent: m.direction === 'OUTBOUND' ? 'flex-end' : 'flex-start'
               }}
             >
-              {m.text}
+              <div
+                style={{
+                  maxWidth: '70%',
+                  padding: '8px 10px',
+                  borderRadius: 12,
+                  background: m.direction === 'OUTBOUND' ? '#d1e7dd' : '#fff',
+                  border: '1px solid #eee',
+                  fontSize: 14
+                }}
+              >
+                {m.text}
+              </div>
             </div>
-          </div>
-        ))}
+          ))
+        ) : (
+          <div style={{ padding: 8, color: '#666' }}>Selecciona una conversación</div>
+        )}
       </div>
       <div
         style={{
@@ -250,7 +259,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
           background: '#fff'
         }}
       >
-        {!within24h && !isAdmin && (
+        {hasConversation && !within24h && !isAdmin && (
           <div style={{ fontSize: 13, color: '#b93800' }}>Fuera de ventana 24h. Debes usar una plantilla.</div>
         )}
         <div style={{ display: 'flex', gap: 8 }}>
@@ -262,21 +271,21 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
           />
           <button
             onClick={handleSuggest}
-            disabled={loadingAi || (isManualMode && !text.trim())}
+            disabled={!hasConversation || loadingAi || (isManualMode && !text.trim())}
             style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#eee' }}
           >
             {loadingAi ? 'IA...' : isManualMode ? 'Mejorar' : 'Sugerir'}
           </button>
           <button
             onClick={handleSend}
-            disabled={loadingSend || (!within24h && !isAdmin)}
+            disabled={!hasConversation || loadingSend || (!within24h && !isAdmin)}
             style={{ padding: '8px 10px', borderRadius: 4, border: 'none', background: '#000', color: '#fff' }}
           >
             {loadingSend ? 'Enviando...' : 'Enviar'}
           </button>
         </div>
         {sendError && <div style={{ color: '#b93800', fontSize: 13 }}>{sendError}</div>}
-        {!isAdmin && !within24h && (
+        {hasConversation && !isAdmin && !within24h && (
           <>
             {requiredTemplate ? (
               <>
