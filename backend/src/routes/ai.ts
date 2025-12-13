@@ -4,7 +4,8 @@ import { getSuggestedReply } from '../services/aiService';
 import {
   getSystemConfig,
   DEFAULT_INTERVIEW_AI_PROMPT,
-  DEFAULT_INTERVIEW_AI_MODEL
+  DEFAULT_INTERVIEW_AI_MODEL,
+  INTERVIEW_AI_POLICY_ADDENDUM
 } from '../services/configService';
 import { DEFAULT_AI_PROMPT, DEFAULT_MANUAL_SUGGEST_PROMPT } from '../constants/ai';
 
@@ -38,6 +39,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
     let model: string | undefined;
     if (mode === 'INTERVIEW') {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
+      prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}`;
       model = config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL;
     }
 
