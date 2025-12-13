@@ -42,6 +42,7 @@ interface InterviewAiConfigResponse {
 interface TemplatesConfigResponse {
   templateInterviewInvite: string;
   templateGeneralFollowup: string;
+  templateLanguageCode: string;
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
@@ -89,6 +90,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [interviewAiError, setInterviewAiError] = useState<string | null>(null);
   const [templateInterviewInvite, setTemplateInterviewInvite] = useState('');
   const [templateGeneralFollowup, setTemplateGeneralFollowup] = useState('');
+  const [templateLanguageCode, setTemplateLanguageCode] = useState('es_CL');
   const [savingTemplates, setSavingTemplates] = useState(false);
   const [templateStatus, setTemplateStatus] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
@@ -126,6 +128,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setInterviewAiModel(interviewAi.model || 'gpt-4.1-mini');
         setTemplateInterviewInvite(templates.templateInterviewInvite || '');
         setTemplateGeneralFollowup(templates.templateGeneralFollowup || '');
+        setTemplateLanguageCode(templates.templateLanguageCode || 'es_CL');
       } catch (err) {
         console.error(err);
       } finally {
@@ -276,7 +279,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     try {
       await apiClient.put('/api/config/templates', {
         templateInterviewInvite: templateInterviewInvite.trim() || null,
-        templateGeneralFollowup: templateGeneralFollowup.trim() || null
+        templateGeneralFollowup: templateGeneralFollowup.trim() || null,
+        templateLanguageCode: templateLanguageCode.trim() || null
       });
       setTemplateStatus('Plantillas guardadas');
     } catch (err: any) {
@@ -610,6 +614,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     value={templateGeneralFollowup}
                     onChange={e => setTemplateGeneralFollowup(e.target.value)}
                     placeholder="ej: postulacion_completar_1"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label>
+                  <div>Idioma plantilla (language code)</div>
+                  <input
+                    type="text"
+                    value={templateLanguageCode}
+                    onChange={e => setTemplateLanguageCode(e.target.value)}
+                    placeholder="ej: es_CL"
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   />
                 </label>
