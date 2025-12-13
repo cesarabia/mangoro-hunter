@@ -609,7 +609,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     type="text"
                     value={templateGeneralFollowup}
                     onChange={e => setTemplateGeneralFollowup(e.target.value)}
-                    placeholder="ej: followup_general"
+                    placeholder="ej: postulacion_completar_1"
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   />
                 </label>

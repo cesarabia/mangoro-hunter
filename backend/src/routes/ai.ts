@@ -6,7 +6,7 @@ import {
   DEFAULT_INTERVIEW_AI_PROMPT,
   DEFAULT_INTERVIEW_AI_MODEL
 } from '../services/configService';
-import { DEFAULT_AI_PROMPT } from '../constants/ai';
+import { DEFAULT_AI_PROMPT, DEFAULT_MANUAL_SUGGEST_PROMPT } from '../constants/ai';
 
 export async function registerAiRoutes(app: FastifyInstance) {
   app.post('/:id/ai-suggest', { preValidation: [app.authenticate] }, async (request, reply) => {
@@ -26,9 +26,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'Conversation not found' });
     }
 
-    if (conversation.aiMode === 'OFF') {
-      return reply.code(400).send({ error: 'Modo manual no permite sugerencias automáticas' });
-    }
+    const mode = conversation.aiMode === 'INTERVIEW' ? 'INTERVIEW' : conversation.aiMode === 'OFF' ? 'OFF' : 'RECRUIT';
 
     const recentMessages = conversation.messages.slice(-15);
     const context = recentMessages
@@ -38,9 +36,22 @@ export async function registerAiRoutes(app: FastifyInstance) {
     const config = await getSystemConfig();
     let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
     let model: string | undefined;
-    if (conversation.aiMode === 'INTERVIEW') {
+    if (mode === 'INTERVIEW') {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
       model = config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL;
+    }
+
+    if (mode === 'OFF') {
+      prompt = DEFAULT_MANUAL_SUGGEST_PROMPT;
+      const trimmedDraft = (draft || '').trim();
+      if (!trimmedDraft) {
+        return reply
+          .code(400)
+          .send({ error: 'Escribe un borrador para que la IA lo mejore en modo Manual.' });
+      }
+      const enrichedContext = `${context}\n\nBorrador del agente:\n${trimmedDraft}\n\nMejora el borrador manteniendo el mismo significado. Responde solo con el texto final.`;
+      const suggestion = await getSuggestedReply(enrichedContext, { prompt, model, config });
+      return { suggestion };
     }
 
     const enrichedContext = `${context}\n\nBorrador actual del agente: ${draft?.trim() || '(vacío)'}\nGenera una respuesta corta lista para enviar.`;

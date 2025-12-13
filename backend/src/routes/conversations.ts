@@ -2,7 +2,10 @@ import { FastifyInstance } from 'fastify';
 import { prisma } from '../db/client';
 import { sendWhatsAppText, sendWhatsAppTemplate } from '../services/whatsappMessageService';
 import { serializeJson } from '../utils/json';
-import { getSystemConfig } from '../services/configService';
+import {
+  DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+  DEFAULT_TEMPLATE_INTERVIEW_INVITE
+} from '../services/configService';
 import type { Prisma } from '@prisma/client';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
@@ -20,8 +23,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         }
       });
       return {
-        templateInterviewInvite: config?.templateInterviewInvite || null,
-        templateGeneralFollowup: config?.templateGeneralFollowup || null
+        templateInterviewInvite: config?.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+        templateGeneralFollowup: config?.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
       };
     } catch (err: any) {
       if (err?.code === 'P2022') {

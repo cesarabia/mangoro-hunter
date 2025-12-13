@@ -11,7 +11,9 @@ import {
   DEFAULT_ADMIN_AI_PROMPT,
   DEFAULT_ADMIN_AI_MODEL,
   DEFAULT_INTERVIEW_AI_PROMPT,
-  DEFAULT_INTERVIEW_AI_MODEL
+  DEFAULT_INTERVIEW_AI_MODEL,
+  DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+  DEFAULT_TEMPLATE_INTERVIEW_INVITE
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
@@ -27,8 +29,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   };
 
   const templatesDefaults = {
-    templateInterviewInvite: '',
-    templateGeneralFollowup: ''
+    templateInterviewInvite: DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+    templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
   };
 
   function isMissingColumnError(err: any): boolean {
@@ -265,8 +267,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return templatesDefaults;
     }
     return {
-      templateInterviewInvite: config.templateInterviewInvite || '',
-      templateGeneralFollowup: config.templateGeneralFollowup || ''
+      templateInterviewInvite: config.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+      templateGeneralFollowup: config.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
     };
   });
 
@@ -285,8 +287,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     );
     if (!updated) return;
     return {
-      templateInterviewInvite: updated.templateInterviewInvite || '',
-      templateGeneralFollowup: updated.templateGeneralFollowup || ''
+      templateInterviewInvite: updated.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+      templateGeneralFollowup: updated.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
     };
   });
 

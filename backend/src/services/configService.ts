@@ -4,11 +4,24 @@ import { SystemConfig } from '@prisma/client';
 const SINGLETON_ID = 1;
 export const DEFAULT_WHATSAPP_BASE_URL = 'https://graph.facebook.com/v20.0';
 export const DEFAULT_WHATSAPP_PHONE_ID = '1511895116748404';
+export const DEFAULT_TEMPLATE_INTERVIEW_INVITE = 'entrevista_confirmacion_1';
+export const DEFAULT_TEMPLATE_GENERAL_FOLLOWUP = 'postulacion_completar_1';
 export const DEFAULT_ADMIN_AI_PROMPT =
   'Eres Hunter Admin, un asistente en español para managers de reclutamiento. Da respuestas claras y accionables, usa herramientas cuando te lo pidan.';
 export const DEFAULT_ADMIN_AI_MODEL = 'gpt-4.1-mini';
-export const DEFAULT_INTERVIEW_AI_PROMPT =
+const LEGACY_DEFAULT_INTERVIEW_AI_PROMPT =
   'Eres Hunter Entrevistador. Haz preguntas de entrevista cortas y profesionales, enfocadas en validar experiencia, motivaciones y disponibilidad.';
+export const DEFAULT_INTERVIEW_AI_PROMPT = `
+Eres Hunter Entrevistador, coordinador de entrevistas por WhatsApp desde "Postulaciones".
+Tu objetivo es coordinar y confirmar una entrevista (no hacer la entrevista completa).
+
+Reglas:
+- Responde en 2 a 4 líneas, tono humano, empático y profesional.
+- Jamás menciones el nombre real de la empresa; usa "Postulaciones".
+- Si el candidato dice "no", "no puedo" o "no me sirve": no insistas con la misma hora. Pide 2 alternativas (día + rango horario) o ofrece cerrar con respeto.
+- Si ya quedó un horario confirmado, no lo confirmes repetidamente: agradece y explica el siguiente paso en una sola respuesta.
+- Haz una sola pregunta a la vez.
+`.trim();
 export const DEFAULT_INTERVIEW_AI_MODEL = 'gpt-4.1-mini';
 
 export async function getSystemConfig(): Promise<SystemConfig> {
@@ -170,7 +183,11 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         id: SINGLETON_ID,
         whatsappBaseUrl: DEFAULT_WHATSAPP_BASE_URL,
         whatsappPhoneId: DEFAULT_WHATSAPP_PHONE_ID,
-        botAutoReply: true
+        botAutoReply: true,
+        interviewAiPrompt: DEFAULT_INTERVIEW_AI_PROMPT,
+        interviewAiModel: DEFAULT_INTERVIEW_AI_MODEL,
+        templateInterviewInvite: DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+        templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP
       }
     });
     return existing;
@@ -181,6 +198,20 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.whatsappPhoneId) {
     updates.whatsappPhoneId = DEFAULT_WHATSAPP_PHONE_ID;
+  }
+  if (!existing.templateInterviewInvite) {
+    updates.templateInterviewInvite = DEFAULT_TEMPLATE_INTERVIEW_INVITE;
+  }
+  if (!existing.templateGeneralFollowup) {
+    updates.templateGeneralFollowup = DEFAULT_TEMPLATE_GENERAL_FOLLOWUP;
+  }
+  if (!existing.interviewAiPrompt) {
+    updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;
+  } else if (existing.interviewAiPrompt.trim() === LEGACY_DEFAULT_INTERVIEW_AI_PROMPT) {
+    updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;
+  }
+  if (!existing.interviewAiModel) {
+    updates.interviewAiModel = DEFAULT_INTERVIEW_AI_MODEL;
   }
   if (Object.keys(updates).length > 0) {
     existing = await prisma.systemConfig.update({

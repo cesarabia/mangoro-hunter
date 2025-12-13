@@ -84,15 +84,17 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   };
 
   const handleSuggest = async () => {
-    if (!conversation || conversation.aiMode === 'OFF') return;
+    if (!conversation) return;
     setLoadingAi(true);
+    setSendError(null);
     try {
       const res = await apiClient.post(`/api/conversations/${conversation.id}/ai-suggest`, { draft: text });
       if (res.suggestion) {
         setText(res.suggestion);
       }
     } catch (err) {
-      console.error(err);
+      const message = err instanceof Error ? err.message : 'No se pudo sugerir';
+      setSendError(message);
     } finally {
       setLoadingAi(false);
     }
@@ -107,8 +109,14 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     ? 'Administrador'
     : conversation.contact?.name || conversation.contact?.phone || conversation.contact?.waId;
   const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation.aiMode || 'RECRUIT';
+  const isManualMode = aiMode === 'OFF';
   const within24h = conversation.within24h !== false;
-  const templateInterviewInvite = conversation.templates?.interviewInvite || null;
+  const templateInterviewInvite = conversation.templates?.templateInterviewInvite || null;
+  const templateGeneralFollowup = conversation.templates?.templateGeneralFollowup || null;
+  const requiredTemplate =
+    aiMode === 'INTERVIEW' ? templateInterviewInvite : templateGeneralFollowup;
+  const requiredTemplateLabel =
+    aiMode === 'INTERVIEW' ? 'entrevista' : 'seguimiento';
   const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'OFF'; label: string }> = [
     { key: 'RECRUIT', label: 'Reclutamiento' },
     { key: 'INTERVIEW', label: 'Entrevista' },
@@ -116,12 +124,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   ];
 
   const handleSendTemplate = async () => {
-    if (!conversation || !templateInterviewInvite) return;
+    if (!conversation || !requiredTemplate) return;
     setTemplateSending(true);
     setSendError(null);
     try {
       await apiClient.post(`/api/conversations/${conversation.id}/send-template`, {
-        templateName: templateInterviewInvite
+        templateName: requiredTemplate
       });
       onMessageSent();
     } catch (err: any) {
@@ -213,10 +221,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
           />
           <button
             onClick={handleSuggest}
-            disabled={loadingAi || aiMode === 'OFF'}
+            disabled={loadingAi || (isManualMode && !text.trim())}
             style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#eee' }}
           >
-            {loadingAi ? 'IA...' : 'Sugerir'}
+            {loadingAi ? 'IA...' : isManualMode ? 'Mejorar' : 'Sugerir'}
           </button>
           <button
             onClick={handleSend}
@@ -227,14 +235,22 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
           </button>
         </div>
         {sendError && <div style={{ color: '#b93800', fontSize: 13 }}>{sendError}</div>}
-        {!isAdmin && !within24h && aiMode === 'INTERVIEW' && templateInterviewInvite && (
-          <button
-            onClick={handleSendTemplate}
-            disabled={templateSending}
-            style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 4, border: '1px solid #111', background: '#fff' }}
-          >
-            {templateSending ? 'Enviando plantilla...' : 'Enviar plantilla de entrevista'}
-          </button>
+        {!isAdmin && !within24h && (
+          <>
+            {requiredTemplate ? (
+              <button
+                onClick={handleSendTemplate}
+                disabled={templateSending}
+                style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 4, border: '1px solid #111', background: '#fff' }}
+              >
+                {templateSending ? 'Enviando plantilla...' : `Enviar plantilla de ${requiredTemplateLabel}`}
+              </button>
+            ) : (
+              <div style={{ fontSize: 13, color: '#b93800' }}>
+                No hay plantilla configurada para {requiredTemplateLabel}. Ve a Configuración → Plantillas WhatsApp.
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
