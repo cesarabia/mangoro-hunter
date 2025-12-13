@@ -1,33 +1,26 @@
 # STATE – mangoro-hunter
 
-## Hecho
+## Hecho (12 Dic 2025)
 
-- Definida la visión unificada de la mini-app (Hunter Core + Chat Intake + WhatsApp+CRM).
-- Elegido stack inicial:
-  - Backend: Node.js + TypeScript + Fastify + Prisma + PostgreSQL.
-  - Frontend: React + Vite (SPA).
-- Diseñado modelo de datos base en `prisma/schema.prisma`.
-- Definida arquitectura del módulo WhatsApp + CRM.
-- Creado skeleton de proyecto (backend + frontend + docs).
+- Admin IA natural operativa: comandos slash siguen disponibles pero la conversación admin se guarda y la IA responde en lenguaje natural usando herramientas (`admin_stats`, `admin_list_conversations`, etc.).
+- Configuración y SystemConfig estabilizados: nuevas columnas (admin/interview prompts, plantillas) migradas; endpoints `/api/config/*` toleran faltantes y muestran los valores reales.
+- Modo Entrevista completo:
+  - `aiMode` por conversación (Reclutamiento / Entrevista / Manual) visible en el CRM y editable desde el panel.
+  - Auto-respuesta usa el prompt correcto o se silencia en modo Manual; el botón “Sugerir” también cambia según modo.
+  - Control ventana 24h + envío de plantillas cuando expira la ventana.
+- Nombres de contactos persistentes:
+  - Se captura `profile.name` desde el webhook.
+  - Si el candidato escribe “me llamo …”, se extrae y se guarda en `Contact.name`.
+  - La lista de conversaciones muestra Nombre (línea 1) + número en la línea 2.
+- Deploy automatizado vía git (`deploy_hunter.sh`) y repositorio público https://github.com/cesarabia/mangoro-hunter sincronizado.
 
-## Pendiente (próximos pasos sugeridos)
+## Pendiente próximo sprint
 
-1. Implementar en backend:
-   - `/webhook/whatsapp` (recepción de mensajes).
-   - `/api/auth/login` (JWT simple).
-   - `/api/conversations` y `/api/conversations/:id/messages`.
-   - `/api/conversations/:id/ai-suggest` (OpenAI).
-2. Implementar en frontend:
-   - Pantalla de login.
-   - Vista de inbox con filtros por estado.
-   - Vista de conversación con envío de mensajes y botón de sugerencia IA.
-3. Probar flujo end-to-end en local con un JSON de ejemplo de webhook.
-4. Diseñar e implementar endpoints mínimos para:
-   - `Campaign`, `ApplicationSchema`, `Application`.
-   - Landing `/jobs/:campaignSlug` (solo skeleton).
-5. Integración futura con:
-   - CV Scanner Express.
-   - Form Checker Express.
+1. Diseño de agenda/slots para coordinar entrevista (flujo de confirmación posterior al modo Entrevista).
+2. Historias de plantillas adicionales (follow-up general) y carga de variables desde UI.
+3. Limpieza de pm2/env (asegurar que siempre lee `/opt/hunter/.env` solo para SERVER y `.backend/.env` para Prisma).
+4. Tests automatizados básicos (unitarios para extractores de nombres y 24h window).
+5. Revisión de métricas/admin dashboard (mostrar stats en frontend).
 
 ## Decisiones
 
