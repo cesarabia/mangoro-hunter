@@ -791,6 +791,8 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
     "gracias",
     "inmediata",
     "inmediato",
+    "toda esa informacion",
+    "toda esa información",
   ];
   if (patterns.some(p => lower.includes(p))) return true;
   if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
@@ -842,6 +844,7 @@ function parseDayTime(text: string): { day: string | null; time: string | null }
   const dayMatch = text.match(
     /(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i,
   );
+  const wordTimeMatch = text.match(/\b(una|once|diez|nueve|ocho|siete|seis|cinco|cuatro|tres|dos)\b/i);
   const timeMatch = text.match(
     /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b/i,
   );
@@ -860,6 +863,22 @@ function parseDayTime(text: string): { day: string | null; time: string | null }
     time = `${hh}:${mm}`;
   } else if (/medio ?d[ií]a/i.test(text)) {
     time = "12:00";
+  } else if (wordTimeMatch) {
+    const map: Record<string, string> = {
+      una: "13:00",
+      once: "11:00",
+      diez: "10:00",
+      nueve: "09:00",
+      ocho: "08:00",
+      siete: "07:00",
+      seis: "06:00",
+      cinco: "05:00",
+      cuatro: "04:00",
+      tres: "03:00",
+      dos: "02:00",
+    };
+    const key = wordTimeMatch[1].toLowerCase();
+    time = map[key] || null;
   }
   const day = dayMatch ? capitalize(dayMatch[1]) : null;
   return { day, time };
@@ -878,6 +897,7 @@ type AdminPendingAction =
       createdAt: number;
       updatedAt: number;
       needsConfirmation: boolean;
+      reminderSentAt?: number | null;
     }
   | {
       type: "interview_update";
@@ -892,6 +912,7 @@ type AdminPendingAction =
       createdAt: number;
       updatedAt: number;
       needsConfirmation: boolean;
+      reminderSentAt?: number | null;
     }
   | {
       type: "send_template";
@@ -906,6 +927,7 @@ type AdminPendingAction =
       updatedAt: number;
       needsConfirmation: boolean;
       draftText?: string | null;
+      reminderSentAt?: number | null;
     }
   | {
       type: "send_message";
@@ -916,6 +938,7 @@ type AdminPendingAction =
       createdAt: number;
       updatedAt: number;
       needsConfirmation: boolean;
+      reminderSentAt?: number | null;
     };
 
 function parseAdminPendingAction(raw?: string | null): AdminPendingAction | null {
@@ -931,6 +954,9 @@ function parseAdminPendingAction(raw?: string | null): AdminPendingAction | null
       }
       if (typeof parsed.needsConfirmation === "undefined") {
         parsed.needsConfirmation = true;
+      }
+      if (typeof parsed.reminderSentAt === "undefined") {
+        parsed.reminderSentAt = null;
       }
       return parsed as AdminPendingAction;
     }
@@ -1174,27 +1200,45 @@ async function handleAdminPendingAction(
     pending.type === "send_template" &&
     /mensaje simple|sin plantilla|no plantilla|solo mensaje|mensaje directo/.test(trimmed)
   ) {
-    const simpleDraft = await buildSimpleInterviewMessage(pending.targetWaId, app.log);
-    if (simpleDraft) {
-      const action: AdminPendingAction = {
-        type: "send_message",
-        targetWaId: pending.targetWaId,
-        text: simpleDraft,
-        relatedConversationId: pending.relatedConversationId,
-        awaiting: "confirm",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        needsConfirmation: true,
-      };
-      await saveAdminPendingAction(adminConversationId, action);
+    const within24h = await isCandidateWithin24h(pending.targetWaId);
+    if (!within24h) {
       await sendAdminReply(
         app,
         adminConversationId,
         adminWaId,
-        `Borrador de mensaje simple:\n${simpleDraft}\n\nResponde CONFIRMAR ENVÍO para enviarlo o CANCELAR para anular.`
+        "Fuera de ventana 24h: solo puedo enviar plantilla. Responde CONFIRMAR ENVÍO para enviar la plantilla o CANCELAR para anular."
       );
       return true;
     }
+    const simpleDraft = await buildSimpleInterviewMessage(pending.targetWaId, app.log);
+    if (!simpleDraft) {
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        "No encontré datos suficientes para armar el mensaje simple. Indícame día/hora/lugar o envía CONFIRMAR ENVÍO para la plantilla."
+      );
+      return true;
+    }
+    const action: AdminPendingAction = {
+      type: "send_message",
+      targetWaId: pending.targetWaId,
+      text: simpleDraft,
+      relatedConversationId: pending.relatedConversationId,
+      awaiting: "confirm",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      needsConfirmation: true,
+      reminderSentAt: null,
+    };
+    await saveAdminPendingAction(adminConversationId, action);
+    await sendAdminReply(
+      app,
+      adminConversationId,
+      adminWaId,
+      `Borrador de mensaje simple:\n${simpleDraft}\n\nResponde CONFIRMAR ENVÍO para enviarlo o CANCELAR para anular.`
+    );
+    return true;
   }
 
   const statusFromText = detectStatusKeyword(trimmed);
@@ -1320,15 +1364,6 @@ async function handleAdminPendingAction(
     return true;
   }
 
-  if (pending && (pending.type === "send_template" || pending.type === "send_message")) {
-    const summary =
-      pending.type === "send_template"
-        ? `Envío pendiente de plantilla ${pending.templateName} a +${pending.targetWaId}. Responde CONFIRMAR ENVÍO para enviarla o CANCELAR para anular.`
-        : `Envío pendiente de mensaje a +${pending.targetWaId}. Responde CONFIRMAR ENVÍO para enviarlo o CANCELAR para anular.`;
-    await sendAdminReply(app, adminConversationId, adminWaId, summary);
-    return true;
-  }
-
   return false;
 }
 
@@ -1395,6 +1430,17 @@ async function buildSimpleInterviewMessage(targetWaId: string, logger: any): Pro
   const time = convo.interviewTime || templates.defaultInterviewTime || "hora por definir";
   const location = convo.interviewLocation || templates.defaultInterviewLocation || "Te enviaremos la dirección exacta por este medio.";
   return `Hola, queremos coordinar tu entrevista para ${day} a las ${time} en ${location}. ¿Puedes? Responde sí/no y si no te acomoda, propón 2 alternativas de día y hora.`;
+}
+
+async function isCandidateWithin24h(waId: string): Promise<boolean> {
+  const convo = await fetchConversationByIdentifier(waId, { includeMessages: true });
+  if (!convo || !convo.messages) return true;
+  const lastInbound = convo.messages
+    .filter((m: any) => m.direction === "INBOUND")
+    .sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+  if (!lastInbound) return true;
+  const diff = Date.now() - new Date(lastInbound.timestamp).getTime();
+  return diff <= 24 * 60 * 60 * 1000;
 }
 
 function parseLooseSchedule(text: string): { day: string | null; time: string | null; location: string | null } | null {
