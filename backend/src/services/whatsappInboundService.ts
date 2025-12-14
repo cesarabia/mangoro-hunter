@@ -20,11 +20,11 @@ import { DEFAULT_AI_PROMPT } from "../constants/ai";
 import { serializeJson } from "../utils/json";
 import { getEffectiveOpenAiKey, getSuggestedReply } from "./aiService";
 import { sendWhatsAppText, SendResult } from "./whatsappMessageService";
-import { buildWaIdCandidates, normalizeWhatsAppId } from "../utils/whatsapp";
 import { processAdminCommand, fetchConversationByIdentifier, setConversationStatusByWaId } from "./whatsappAdminCommandService";
 import { generateAdminAiResponse } from "./whatsappAdminAiService";
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from "./templateService";
 import { createConversationAndMaybeSend } from "./conversationCreateService";
+import { buildWaIdCandidates, normalizeWhatsAppId } from "../utils/whatsapp";
 
 interface InboundMedia {
   type: string;
@@ -46,6 +46,62 @@ interface InboundMessageParams {
 }
 
 const UPLOADS_BASE = path.join(__dirname, "..", "uploads");
+
+type AdminEventType = "RECRUIT_READY" | "INTERVIEW_SCHEDULED" | "INTERVIEW_CONFIRMED";
+
+async function sendAdminNotification(options: {
+  app: FastifyInstance;
+  eventType: AdminEventType;
+  contact: any;
+  interviewDay?: string | null;
+  interviewTime?: string | null;
+  interviewLocation?: string | null;
+  summary?: string;
+}) {
+  const { app, eventType, contact, interviewDay, interviewTime, interviewLocation, summary } = options;
+  const config = await getSystemConfig();
+  const adminWa = normalizeWhatsAppId(config.adminWaId || "");
+  if (!adminWa) return;
+  const { conversation } = await ensureAdminConversation(adminWa, adminWa);
+  const eventKey = `${eventType}:${contact?.id || contact?.waId || contact?.phone || ""}:${interviewDay || ""}:${interviewTime || ""}`;
+  const existing = await prisma.message.findFirst({
+    where: {
+      conversationId: conversation.id,
+      text: { contains: `[REF:${eventKey}]` },
+    },
+  });
+  if (existing) return;
+
+  let text = "";
+  if (eventType === "RECRUIT_READY") {
+    text = `🟢 Reclutamiento listo: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\nResumen: ${summary || "Datos mínimos recibidos."}\nPróximo paso: revisar y contactar.`;
+  } else if (eventType === "INTERVIEW_SCHEDULED") {
+    text = `🗓️ Entrevista agendada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${interviewDay || "Día"} ${interviewTime || ""} ${interviewLocation || ""}\nEstado: PENDIENTE.`;
+  } else {
+    text = `✅ Entrevista confirmada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${interviewDay || "Día"} ${interviewTime || ""} ${interviewLocation || ""}.`;
+  }
+  const textWithRef = `${text}\n[REF:${eventKey}]`;
+  let sendStatus: "WA_SENT" | "WA_FAILED" = "WA_SENT";
+  let sendError: string | null = null;
+  try {
+    const resp = await sendWhatsAppText(adminWa, textWithRef);
+    if (!resp.success) {
+      sendStatus = "WA_FAILED";
+      sendError = resp.error || "Unknown error";
+    }
+  } catch (err: any) {
+    sendStatus = "WA_FAILED";
+    sendError = err?.message || "Unknown error";
+    app.log.warn({ err }, "Admin notification WA failed");
+  }
+  await logAdminMessage(conversation.id, "OUTBOUND", textWithRef, {
+    adminNotification: true,
+    eventType,
+    status: sendStatus,
+    error: sendError,
+    contactId: contact?.id || null,
+  });
+}
 
 async function mergeOrCreateContact(waId: string, preferredId?: string) {
   const candidates = buildWaIdCandidates(waId);
@@ -402,7 +458,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
   await maybeUpdateContactName(contact, params.profileName, effectiveText, config);
 
   if (!conversation.isAdmin) {
-    await detectInterviewSignals(conversation.id, effectiveText);
+    await detectInterviewSignals(app, conversation.id, effectiveText);
   }
 
   await maybeSendAutoReply(app, conversation.id, contact.waId, config);
@@ -532,6 +588,29 @@ export async function maybeSendAutoReply(
         read: true,
       },
     });
+
+    // Notificación admin: reclutamiento listo cuando estamos en modo RECRUIT y se envía un mensaje de cierre
+    const convoForNotif = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: { contact: true, messages: { orderBy: { timestamp: "desc" }, take: 5 } },
+    });
+    if (
+      convoForNotif &&
+      !convoForNotif.isAdmin &&
+      convoForNotif.aiMode === "RECRUIT" &&
+      suggestionText.toLowerCase().includes("equipo revisará")
+    ) {
+      const lastInbound = convoForNotif.messages?.find((m) => m.direction === "INBOUND");
+      const summary = lastInbound?.text
+        ? `Último mensaje: ${lastInbound.text.slice(0, 120)}`
+        : "Datos mínimos recibidos.";
+      await sendAdminNotification({
+        app,
+        eventType: "RECRUIT_READY",
+        contact: convoForNotif.contact,
+        summary,
+      });
+    }
   } catch (err) {
     app.log.error({ err, conversationId }, "Auto-reply processing failed");
   }
@@ -946,6 +1025,7 @@ function scoreName(value?: string | null): number {
 }
 
 async function detectInterviewSignals(
+  app: FastifyInstance,
   conversationId: string,
   text: string,
 ): Promise<void> {
@@ -974,7 +1054,10 @@ async function detectInterviewSignals(
     include: { contact: true },
   });
   if (!convo || !convo.contact?.waId) return;
-  await applyConversationInterviewUpdate(convo.contact.waId, updates, { byConversationId: conversationId });
+  await applyConversationInterviewUpdate(convo.contact.waId, updates, {
+    byConversationId: conversationId,
+    app,
+  });
 }
 
 function parseDayTime(text: string): { day: string | null; time: string | null } {
@@ -1329,7 +1412,9 @@ async function executePendingAction(params: {
   if (pendingAction.type === "interview_update") {
     if (!pendingAction.targetWaId) return false;
     try {
-      await applyConversationInterviewUpdate(pendingAction.targetWaId, pendingAction.updates);
+      await applyConversationInterviewUpdate(pendingAction.targetWaId, pendingAction.updates, {
+        app,
+      });
       const templates = await loadTemplateConfig(app.log);
       const templateName =
         templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE;
@@ -1668,7 +1753,7 @@ async function handleAdminPendingAction(
         where: { id: adminConversationId },
         data: { adminPendingAction: null, adminLastCandidateWaId: pending.targetWaId },
       });
-      await applyConversationInterviewUpdate(pending.targetWaId, pending.updates);
+      await applyConversationInterviewUpdate(pending.targetWaId, pending.updates, { app });
       await sendAdminReply(
         app,
         adminConversationId,
@@ -1697,12 +1782,16 @@ async function handleAdminPendingAction(
 
   const parsedInterview = parseInterviewInstruction(trimmed);
   if (parsedInterview && lastCandidateWaId) {
-    await applyConversationInterviewUpdate(lastCandidateWaId, {
-      interviewDay: parsedInterview.day,
-      interviewTime: parsedInterview.time,
-      interviewLocation: parsedInterview.location,
-      interviewStatus: "PENDING",
-    });
+    await applyConversationInterviewUpdate(
+      lastCandidateWaId,
+      {
+        interviewDay: parsedInterview.day,
+        interviewTime: parsedInterview.time,
+        interviewLocation: parsedInterview.location,
+        interviewStatus: "PENDING",
+      },
+      { app },
+    );
     const convo = await fetchConversationByIdentifier(lastCandidateWaId, { includeMessages: false });
     const templates = await loadTemplateConfig(app.log);
     const templateName = templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE;
@@ -1828,7 +1917,7 @@ function parseLooseSchedule(text: string): { day: string | null; time: string | 
 async function applyConversationInterviewUpdate(
   waId: string,
   updates: { interviewDay?: string | null; interviewTime?: string | null; interviewLocation?: string | null; interviewStatus?: string | null },
-  opts?: { byConversationId?: string },
+  opts?: { byConversationId?: string; app?: FastifyInstance },
 ) {
   let convo = opts?.byConversationId
     ? await prisma.conversation.findUnique({
@@ -1861,6 +1950,30 @@ async function applyConversationInterviewUpdate(
     where: { id: convo.id },
     data,
   });
+
+  if (opts?.app && convo.contact && !convo.isAdmin) {
+    const shouldNotifyScheduled =
+      (updates.interviewDay || updates.interviewTime || updates.interviewLocation) && nextStatus !== "CONFIRMED";
+    if (nextStatus === "CONFIRMED") {
+      await sendAdminNotification({
+        app: opts.app,
+        eventType: "INTERVIEW_CONFIRMED",
+        contact: convo.contact,
+        interviewDay: data.interviewDay,
+        interviewTime: data.interviewTime,
+        interviewLocation: data.interviewLocation,
+      });
+    } else if (shouldNotifyScheduled) {
+      await sendAdminNotification({
+        app: opts.app,
+        eventType: "INTERVIEW_SCHEDULED",
+        contact: convo.contact,
+        interviewDay: data.interviewDay,
+        interviewTime: data.interviewTime,
+        interviewLocation: data.interviewLocation,
+      });
+    }
+  }
 }
 
 async function handleAdminLearning(
