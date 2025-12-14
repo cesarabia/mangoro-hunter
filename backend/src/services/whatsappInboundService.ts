@@ -709,6 +709,36 @@ export async function maybeSendAutoReply(
         ) &&
         /\b(hora|horario|entrevista)\b/.test(lastInboundLower);
 
+      if (isYes && !hasScheduleDetails && !wantsReschedule) {
+        const dayText = conversation.interviewDay || "día por definir";
+        const timeText = conversation.interviewTime || "hora por definir";
+        const locationText =
+          conversation.interviewLocation || "Te enviaremos la dirección exacta por este medio.";
+        const replyText = `Quedamos para ${dayText} a las ${timeText} en ${locationText}.`;
+
+        let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+        if (waId) {
+          sendResultRaw = await sendWhatsAppText(waId, replyText);
+        }
+        const normalizedSendResult = {
+          success: sendResultRaw.success,
+          messageId:
+            "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+          error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+        };
+        await prisma.message.create({
+          data: {
+            conversationId,
+            direction: "OUTBOUND",
+            text: replyText,
+            rawPayload: serializeJson({ autoReply: true, interviewConfirmAck: true, sendResult: normalizedSendResult }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+        return;
+      }
+
       if (wantsReschedule && !hasScheduleDetails && !isYes && !isNo) {
         const lastOutbound = (conversation.messages || [])
           .filter((m) => m.direction === "OUTBOUND")
