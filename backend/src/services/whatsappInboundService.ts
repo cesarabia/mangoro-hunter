@@ -25,6 +25,7 @@ import { processAdminCommand, fetchConversationByIdentifier, setConversationStat
 import { generateAdminAiResponse } from "./whatsappAdminAiService";
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from "./templateService";
 import { createConversationAndMaybeSend } from "./conversationCreateService";
+import { getSystemConfig as loadSystemConfig } from "./configService";
 
 interface InboundMedia {
   type: string;
@@ -1160,6 +1161,34 @@ async function handleAdminPendingAction(
     return executed;
   }
 
+  if (
+    pending &&
+    pending.type === "send_template" &&
+    /mensaje simple|sin plantilla|no plantilla|solo mensaje|mensaje directo/.test(trimmed)
+  ) {
+    const simpleDraft = await buildSimpleInterviewMessage(pending.targetWaId, app.log);
+    if (simpleDraft) {
+      const action: AdminPendingAction = {
+        type: "send_message",
+        targetWaId: pending.targetWaId,
+        text: simpleDraft,
+        relatedConversationId: pending.relatedConversationId,
+        awaiting: "confirm",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        needsConfirmation: true,
+      };
+      await saveAdminPendingAction(adminConversationId, action);
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `Borrador de mensaje simple:\n${simpleDraft}\n\nResponde CONFIRMAR ENVÍO para enviarlo o CANCELAR para anular.`
+      );
+      return true;
+    }
+  }
+
   const statusFromText = detectStatusKeyword(trimmed);
   if (!pending && !statusFromText && /estado/.test(trimmed)) {
     await saveAdminPendingAction(adminConversationId, {
@@ -1348,6 +1377,16 @@ async function buildInterviewTemplatePending(targetWaId: string, logger: any): P
     },
     preview,
   };
+}
+
+async function buildSimpleInterviewMessage(targetWaId: string, logger: any): Promise<string | null> {
+  const convo = await fetchConversationByIdentifier(targetWaId, { includeMessages: false });
+  if (!convo) return null;
+  const templates = await loadTemplateConfig(logger);
+  const day = convo.interviewDay || templates.defaultInterviewDay || "día por definir";
+  const time = convo.interviewTime || templates.defaultInterviewTime || "hora por definir";
+  const location = convo.interviewLocation || templates.defaultInterviewLocation || "Te enviaremos la dirección exacta por este medio.";
+  return `Hola, queremos coordinar tu entrevista para ${day} a las ${time} en ${location}. ¿Puedes? Responde sí/no y si no te acomoda, propón 2 alternativas de día y hora.`;
 }
 
 function parseLooseSchedule(text: string): { day: string | null; time: string | null; location: string | null } | null {
