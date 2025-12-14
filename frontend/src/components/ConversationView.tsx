@@ -186,6 +186,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const primaryName = isAdmin
     ? 'Administrador'
     : candidateName || profileDisplay || 'Sin nombre';
+  const noContact = Boolean(conversation?.contact?.noContact);
   const secondaryLabel = [profileDisplay, waId ? `+${waId}` : ''].filter(Boolean).join(' · ');
   const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation?.aiMode || 'RECRUIT';
   const aiPaused = Boolean(conversation?.aiPaused);
@@ -309,6 +310,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
           <div>
             <div style={{ fontSize: 18, fontWeight: 700 }}>{primaryName}</div>
             {secondaryLabel && <div style={{ fontSize: 12, color: '#666' }}>{secondaryLabel}</div>}
+            {noContact && (
+              <div style={{ marginTop: 4, fontSize: 11, color: '#a8071a', background: '#fff1f0', border: '1px solid #ff7875', borderRadius: 6, padding: '2px 6px', display: 'inline-block' }}>
+                NO CONTACTAR
+              </div>
+            )}
           </div>
           {hasConversation && !isAdmin && (
             <button

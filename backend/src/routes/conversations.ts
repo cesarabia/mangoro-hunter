@@ -187,6 +187,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     if (!conversation || !conversation.contact.waId) {
       return reply.code(400).send({ error: 'Conversation or waId not found' });
     }
+    if (conversation.contact.noContact) {
+      return reply.code(403).send({ error: 'Contacto marcado como NO_CONTACTAR. Reactívalo antes de enviar.' });
+    }
 
     if (!conversation.isAdmin) {
       const lastInbound = await prisma.message.findFirst({
@@ -367,6 +370,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
     if (!conversation || !conversation.contact.waId) {
       return reply.code(400).send({ error: 'Conversation or waId not found' });
+    }
+    if (conversation.contact.noContact) {
+      return reply.code(403).send({ error: 'Contacto marcado como NO_CONTACTAR. Reactívalo antes de enviar.' });
     }
 
     const templates = await fetchTemplateConfigSafe();

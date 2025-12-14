@@ -27,6 +27,7 @@ model Contact {
   name          String?
   displayName   String?
   candidateName String?
+  noContact     Boolean         @default(false)
   notes         String?
   conversations Conversation[]
   applications  Application[]

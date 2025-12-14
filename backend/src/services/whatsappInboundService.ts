@@ -25,7 +25,6 @@ import { processAdminCommand, fetchConversationByIdentifier, setConversationStat
 import { generateAdminAiResponse } from "./whatsappAdminAiService";
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from "./templateService";
 import { createConversationAndMaybeSend } from "./conversationCreateService";
-import { getSystemConfig as loadSystemConfig } from "./configService";
 
 interface InboundMedia {
   type: string;
@@ -266,6 +265,11 @@ export async function handleInboundWhatsAppMessage(
     params.text ||
     "";
 
+  const optedOut = await maybeHandleOptOut(app, conversation, contact, effectiveText);
+  if (optedOut) {
+    return { conversationId: conversation.id };
+  }
+
   await maybeUpdateContactName(contact, params.profileName, effectiveText, config);
 
   if (conversation.aiMode === "INTERVIEW") {
@@ -293,6 +297,7 @@ export async function maybeSendAutoReply(
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
       include: {
+        contact: true,
         messages: {
           orderBy: { timestamp: "asc" },
         },
@@ -300,6 +305,7 @@ export async function maybeSendAutoReply(
     });
 
     if (!conversation || conversation.isAdmin) return;
+    if (conversation.contact?.noContact) return;
 
     const mode = conversation.aiMode || "RECRUIT";
     if (mode === "OFF" || conversation.aiPaused) return;
@@ -939,6 +945,15 @@ type AdminPendingAction =
       updatedAt: number;
       needsConfirmation: boolean;
       reminderSentAt?: number | null;
+    }
+  | {
+      type: "reactivate";
+      targetWaId: string | null;
+      awaiting: "confirm";
+      createdAt: number;
+      updatedAt: number;
+      needsConfirmation: boolean;
+      reminderSentAt?: number | null;
     };
 
 function parseAdminPendingAction(raw?: string | null): AdminPendingAction | null {
@@ -1021,6 +1036,21 @@ async function executePendingAction(params: {
   pendingAction: AdminPendingAction;
 }): Promise<boolean> {
   const { pendingAction, app, adminConversationId, adminWaId } = params;
+  if (pendingAction.targetWaId) {
+    const contact = await prisma.contact.findFirst({
+      where: { OR: [{ waId: pendingAction.targetWaId }, { phone: pendingAction.targetWaId }] },
+    });
+    if (contact?.noContact) {
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `No puedo enviar a +${pendingAction.targetWaId}: contacto marcado NO_CONTACTAR.`,
+      );
+      await saveAdminPendingAction(adminConversationId, null);
+      return true;
+    }
+  }
   if (pendingAction.type === "send_template") {
     try {
       const mode =
@@ -1159,6 +1189,39 @@ async function executePendingAction(params: {
       return true;
     }
   }
+  if (pendingAction.type === "reactivate") {
+    const waId = pendingAction.targetWaId;
+    if (!waId) return true;
+    try {
+      const contact = await prisma.contact.findFirst({
+        where: { OR: [{ waId }, { phone: waId }] },
+      });
+      if (!contact) {
+        await sendAdminReply(app, adminConversationId, adminWaId, `No encontré el contacto +${waId}.`);
+        await saveAdminPendingAction(adminConversationId, null);
+        return true;
+      }
+      await prisma.contact.update({
+        where: { id: contact.id },
+        data: { noContact: false },
+      });
+      await prisma.conversation.updateMany({
+        where: { contactId: contact.id },
+        data: { aiPaused: false },
+      });
+      await saveAdminPendingAction(adminConversationId, null);
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `Contacto +${waId} reactivado. Puedes volver a enviar mensajes.`,
+      );
+    } catch (err: any) {
+      app.log.error({ err }, "Reactivar contacto fallo");
+      await sendAdminReply(app, adminConversationId, adminWaId, "No se pudo reactivar el contacto.");
+    }
+    return true;
+  }
   return false;
 }
 
@@ -1239,6 +1302,40 @@ async function handleAdminPendingAction(
       `Borrador de mensaje simple:\n${simpleDraft}\n\nResponde CONFIRMAR ENVÍO para enviarlo o CANCELAR para anular.`
     );
     return true;
+  }
+
+  if (!pending) {
+    const reactivateIntent = /(reactivar|habilitar|permitir).*no contactar|quitar.*no contactar|activar contacto/i.test(
+      trimmed,
+    );
+    if (reactivateIntent) {
+      const target = extractWaIdFromText(text) || lastCandidateWaId;
+      if (!target) {
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          "Indica el número que deseas reactivar (ej: +569...).",
+        );
+        return true;
+      }
+      await saveAdminPendingAction(adminConversationId, {
+        type: "reactivate",
+        targetWaId: target,
+        awaiting: "confirm",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        needsConfirmation: true,
+        reminderSentAt: null,
+      });
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `¿Confirmas reactivar el contacto +${target}? Responde CONFIRMAR ENVÍO para proceder o CANCELAR para anular.`,
+      );
+      return true;
+    }
   }
 
   const statusFromText = detectStatusKeyword(trimmed);
@@ -1578,6 +1675,46 @@ function extractWaIdFromText(text?: string | null): string | null {
   const match = text.match(/\+?\d{9,15}/);
   if (!match) return null;
   return normalizeWhatsAppId(match[0]);
+}
+
+function isOptOutText(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    /no me env[ií]en m[aá]s|quiero dejar de postular|stop|cancelar|borrar mis datos|no contacto|no contactar/i.test(
+      lower,
+    ) || /no.*contactar/.test(lower)
+  );
+}
+
+async function maybeHandleOptOut(
+  app: FastifyInstance,
+  conversation: any,
+  contact: any,
+  text: string,
+): Promise<boolean> {
+  if (!text || !isOptOutText(text)) return false;
+  try {
+    await prisma.contact.update({
+      where: { id: contact.id },
+      data: { noContact: true },
+    });
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { aiPaused: true },
+    });
+    if (contact.waId) {
+      await sendWhatsAppText(contact.waId, "Entendido, detendremos los mensajes.");
+    }
+    await logAdminMessage(
+      conversation.id,
+      "OUTBOUND",
+      "Marcado como NO_CONTACTAR por solicitud del candidato.",
+      { system: true },
+    );
+  } catch (err) {
+    app.log.error({ err }, "Failed to mark NO_CONTACTAR");
+  }
+  return true;
 }
 
 async function detectAdminTemplateIntent(

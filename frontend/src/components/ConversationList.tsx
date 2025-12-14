@@ -114,6 +114,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const previewSource = lastMessage?.transcriptText || lastMessage?.text;
           const preview = previewSource ? previewSource.slice(0, 70) : 'Sin mensajes';
           const showStatus = !isAdmin;
+          const noContact = Boolean(c.contact?.noContact);
           return (
             <div
               key={c.id}
@@ -156,6 +157,11 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               </div>
               {showStatus && (
                 <div style={{ marginTop: 6 }}>
+                  {noContact && (
+                    <span style={{ background: '#fff1f0', border: '1px solid #ff7875', color: '#a8071a', borderRadius: 999, fontSize: 11, padding: '2px 8px', marginRight: 6 }}>
+                      NO CONTACTAR
+                    </span>
+                  )}
                   <span
                     style={{
                       background: statusStyle.background,
