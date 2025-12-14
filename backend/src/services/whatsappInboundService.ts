@@ -1140,8 +1140,14 @@ async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string | null> 
 
   if (typeof mod?.PDFParse === "function") {
     const parser = new mod.PDFParse(new Uint8Array(buffer));
-    const raw = await parser.getText();
-    const normalized = normalizeExtractedText(typeof raw === "string" ? raw : String(raw ?? ""));
+    const rawResult = await parser.getText();
+    const raw =
+      typeof rawResult === "string"
+        ? rawResult
+        : typeof rawResult?.text === "string"
+          ? rawResult.text
+          : "";
+    const normalized = normalizeExtractedText(raw);
     return normalized.length > 0 ? normalized : null;
   }
 
