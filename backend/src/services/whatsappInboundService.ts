@@ -1036,7 +1036,7 @@ async function executePendingAction(params: {
   pendingAction: AdminPendingAction;
 }): Promise<boolean> {
   const { pendingAction, app, adminConversationId, adminWaId } = params;
-  if (pendingAction.targetWaId) {
+  if (pendingAction.targetWaId && pendingAction.type !== "reactivate") {
     const candidates = buildWaIdCandidates(pendingAction.targetWaId);
     const contact = await prisma.contact.findFirst({
       where: {
