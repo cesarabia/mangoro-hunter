@@ -401,7 +401,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
 
   await maybeUpdateContactName(contact, params.profileName, effectiveText, config);
 
-  if (conversation.aiMode === "INTERVIEW") {
+  if (!conversation.isAdmin) {
     await detectInterviewSignals(conversation.id, effectiveText);
   }
 
