@@ -76,9 +76,9 @@ async function sendAdminNotification(options: {
   if (eventType === "RECRUIT_READY") {
     text = `🟢 Reclutamiento listo: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\nResumen: ${summary || "Datos mínimos recibidos."}\nPróximo paso: revisar y contactar.`;
   } else if (eventType === "INTERVIEW_SCHEDULED") {
-    text = `🗓️ Entrevista agendada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${interviewDay || "Día"} ${interviewTime || ""} ${interviewLocation || ""}\nEstado: PENDIENTE.`;
+    text = `🗓️ Entrevista agendada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: PENDIENTE.`;
   } else {
-    text = `✅ Entrevista confirmada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${interviewDay || "Día"} ${interviewTime || ""} ${interviewLocation || ""}.`;
+    text = `✅ Entrevista confirmada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}.`;
   }
   const textWithRef = `${text}\n[REF:${eventKey}]`;
   let sendStatus: "WA_SENT" | "WA_FAILED" = "WA_SENT";
@@ -101,6 +101,18 @@ async function sendAdminNotification(options: {
     error: sendError,
     contactId: contact?.id || null,
   });
+}
+
+function formatInterviewSlot(
+  day?: string | null,
+  time?: string | null,
+  location?: string | null,
+): string {
+  const dayText = (day || "").trim() || "día por definir";
+  const timeText = (time || "").trim() || "hora por definir";
+  const locationText = (location || "").trim();
+  const when = `${dayText} ${timeText}`.trim();
+  return locationText ? `${when}, ${locationText}` : when;
 }
 
 async function mergeOrCreateContact(waId: string, preferredId?: string) {
@@ -463,6 +475,8 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
 
   await maybeSendAutoReply(app, conversation.id, contact.waId, config);
 
+  await maybeNotifyRecruitmentReady(app, conversation.id);
+
   if (!isAdminSender && isAdminCommandText(params.text)) {
     await sendWhatsAppText(waId, "Comando no reconocido");
   }
@@ -494,6 +508,62 @@ export async function maybeSendAutoReply(
 
     const mode = conversation.aiMode || "RECRUIT";
     if (mode === "OFF" || conversation.aiPaused) return;
+
+    if (mode === "RECRUIT") {
+      const inboundMessages = (conversation.messages || []).filter(
+        (m) => m.direction === "INBOUND",
+      );
+      const assessment = assessRecruitmentReadiness(conversation.contact, inboundMessages);
+      const alreadyClosed = (conversation.messages || []).some(
+        (m) =>
+          m.direction === "OUTBOUND" &&
+          typeof m.text === "string" &&
+          stripAccents(m.text).toLowerCase().includes("equipo revis"),
+      );
+      if (assessment.ready && !alreadyClosed) {
+        const name =
+          assessment.fields.name ||
+          conversation.contact?.candidateName ||
+          conversation.contact?.displayName ||
+          null;
+        const greeting = name ? `Gracias, ${name}.` : "Gracias.";
+        const closingText =
+          `${greeting} Ya tenemos los datos mínimos. ` +
+          "El equipo revisará tu postulación y te contactará por este medio.";
+
+        let sendResultRaw: SendResult = {
+          success: false,
+          error: "waId is missing",
+        };
+        if (waId) {
+          sendResultRaw = await sendWhatsAppText(waId, closingText);
+        }
+
+        const normalizedSendResult = {
+          success: sendResultRaw.success,
+          messageId:
+            "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+          error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+        };
+
+        await prisma.message.create({
+          data: {
+            conversationId,
+            direction: "OUTBOUND",
+            text: closingText,
+            rawPayload: serializeJson({
+              autoReply: true,
+              recruitmentClosure: true,
+              sendResult: normalizedSendResult,
+            }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+
+        return;
+      }
+    }
 
     const context = conversation.messages
       .map((m) =>
@@ -614,6 +684,164 @@ export async function maybeSendAutoReply(
   } catch (err) {
     app.log.error({ err, conversationId }, "Auto-reply processing failed");
   }
+}
+
+async function maybeNotifyRecruitmentReady(
+  app: FastifyInstance,
+  conversationId: string,
+): Promise<void> {
+  try {
+    const convo = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        contact: true,
+        messages: {
+          orderBy: { timestamp: "desc" },
+          take: 60,
+        },
+      },
+    });
+    if (!convo || convo.isAdmin) return;
+    if (convo.contact?.noContact) return;
+    if ((convo.aiMode || "RECRUIT") !== "RECRUIT") return;
+
+    const messages = convo.messages || [];
+    const hasClosureMessage = messages.some((m) => {
+      if (m.direction !== "OUTBOUND") return false;
+      if (!m.text) return false;
+      return stripAccents(m.text).toLowerCase().includes("equipo revis");
+    });
+    if (!hasClosureMessage) return;
+
+    const inboundMessages = messages.filter((m) => m.direction === "INBOUND");
+    const assessment = assessRecruitmentReadiness(convo.contact, inboundMessages);
+    if (!assessment.ready) return;
+
+    await sendAdminNotification({
+      app,
+      eventType: "RECRUIT_READY",
+      contact: convo.contact,
+      summary: assessment.summary,
+    });
+  } catch (err) {
+    app.log.warn({ err, conversationId }, "Recruitment readiness check failed");
+  }
+}
+
+function assessRecruitmentReadiness(
+  contact: any,
+  inboundMessages: Array<{ text?: string | null; transcriptText?: string | null }>,
+): {
+  ready: boolean;
+  summary: string;
+  fields: {
+    name: string | null;
+    location: string | null;
+    rut: string | null;
+    experience: string | null;
+    availability: string | null;
+    email: string | null;
+  };
+} {
+  const name =
+    (contact?.candidateName && !isSuspiciousCandidateName(contact.candidateName)
+      ? String(contact.candidateName)
+      : null) ||
+    (contact?.displayName && !isSuspiciousCandidateName(contact.displayName)
+      ? String(contact.displayName)
+      : null) ||
+    null;
+
+  const texts = inboundMessages
+    .map((m) => (m.transcriptText || m.text || "").trim())
+    .filter(Boolean);
+
+  const rut = findFirstValue(texts, extractChileRut);
+  const email = findFirstValue(texts, extractEmail);
+  const location = findFirstValue(texts, extractLocation);
+  const experience = findFirstValue(texts, extractExperienceSnippet);
+  const availability = findFirstValue(texts, extractAvailabilitySnippet);
+
+  const ready = Boolean(name && location && rut && experience && availability);
+
+  const summaryLines = [
+    name ? `Nombre: ${name}` : null,
+    location ? `Comuna/Ciudad: ${location}` : null,
+    rut ? `RUT: ${rut}` : null,
+    experience ? `Experiencia: ${experience}` : null,
+    availability ? `Disponibilidad: ${availability}` : null,
+    email ? `Email: ${email}` : null,
+  ].filter(Boolean) as string[];
+
+  return {
+    ready,
+    summary: summaryLines.length > 0 ? summaryLines.join(" | ") : "Datos mínimos recibidos.",
+    fields: { name, location, rut, experience, availability, email },
+  };
+}
+
+function findFirstValue(
+  texts: string[],
+  extractor: (text: string) => string | null,
+): string | null {
+  for (const text of texts) {
+    const value = extractor(text);
+    if (value) return value;
+  }
+  return null;
+}
+
+function extractChileRut(text: string): string | null {
+  if (!text) return null;
+  const match =
+    text.match(/\b\d{1,2}\.?\d{3}\.?\d{3}-?[\dkK]\b/) ||
+    text.match(/\b\d{7,8}-?[\dkK]\b/);
+  if (!match) return null;
+  return match[0].toUpperCase();
+}
+
+function extractEmail(text: string): string | null {
+  if (!text) return null;
+  const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match ? match[0] : null;
+}
+
+function extractLocation(text: string): string | null {
+  if (!text) return null;
+  const labelMatch = text.match(
+    /\b(?:comuna|ciudad|localidad|sector|zona)\s*[:\-]\s*([A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60})/i,
+  );
+  if (labelMatch?.[1]) {
+    return normalizeName(labelMatch[1]) || labelMatch[1].trim();
+  }
+  const verbMatch = text.match(
+    /\b(?:vivo|resido|soy)\s+(?:en|de)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60})/i,
+  );
+  if (verbMatch?.[1]) {
+    return normalizeName(verbMatch[1]) || verbMatch[1].trim();
+  }
+  return null;
+}
+
+function extractExperienceSnippet(text: string): string | null {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (/no tengo experiencia|sin experiencia/.test(lower)) return "sin experiencia";
+  const yearsMatch = text.match(/\b(\d{1,2})\s*(?:año|años)\b/i);
+  if (yearsMatch?.[1]) return `${yearsMatch[1]} años`;
+  if (/experienc/.test(lower)) return "con experiencia";
+  if (/trabaj|ventas/.test(lower)) return "menciona trabajo/ventas";
+  return null;
+}
+
+function extractAvailabilitySnippet(text: string): string | null {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (/inmediata|inmediato/.test(lower)) return "inmediata";
+  if (/disponibil/.test(lower)) return "menciona disponibilidad";
+  if (/full\s*time|part\s*time/.test(lower)) return "full/part time";
+  if (/turno|horario/.test(lower)) return "menciona horario";
+  return null;
 }
 
 function buildInboundText(text?: string, media?: InboundMedia | null): string {
@@ -818,9 +1046,16 @@ async function maybeUpdateContactName(
   if (display && display !== contact.displayName) {
     updates.displayName = display;
   }
-  const candidate = extractNameFromText(fallbackText);
+  const existingCandidate = contact.candidateName?.trim() || null;
+  const labeledParts = extractLabeledNameParts(fallbackText);
+  const candidateFromLabels = buildCandidateNameFromLabels({
+    existingCandidate,
+    display,
+    labeledParts,
+  });
+  const candidate = candidateFromLabels || extractNameFromText(fallbackText);
   if (candidate && isValidName(candidate) && !isSuspiciousCandidateName(candidate)) {
-    const existing = contact.candidateName?.trim() || null;
+    const existing = existingCandidate;
     const existingScore = scoreName(existing);
     const candidateScore = scoreName(candidate);
     const sameAsDisplay =
@@ -881,19 +1116,21 @@ function extractNameFromText(text?: string): string | null {
   );
   if (match && match[1]) {
     const normalized = normalizeName(match[1]);
-    if (isValidName(normalized)) return normalized;
+    if (isValidName(normalized) && normalized && !containsDataLabel(normalized)) return normalized;
   }
   // pattern: "Ignacio, Santiago", take first part
   const firstChunk = cleaned.split(/[,;-]/)[0]?.trim();
   if (isValidName(firstChunk)) {
-    return normalizeName(firstChunk);
+    const normalized = normalizeName(firstChunk);
+    if (normalized && !containsDataLabel(normalized)) return normalized;
+    return null;
   }
   if (
     /^[A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60}$/i.test(cleaned) &&
     cleaned.split(/\s+/).filter(Boolean).length <= 4
   ) {
     const normalized = normalizeName(cleaned);
-    if (isValidName(normalized)) return normalized;
+    if (isValidName(normalized) && normalized && !containsDataLabel(normalized)) return normalized;
   }
   return null;
 }
@@ -990,6 +1227,7 @@ async function extractNameWithAi(text: string, config: SystemConfig): Promise<st
 
 function isSuspiciousCandidateName(value?: string | null): boolean {
   if (!value) return true;
+  if (containsDataLabel(value)) return true;
   const lower = value.toLowerCase();
   const patterns = [
     "hola quiero postular",
@@ -1015,6 +1253,137 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
   return false;
 }
 
+function containsDataLabel(value: string): boolean {
+  const lowered = stripAccents(value).toLowerCase();
+  const labels = [
+    "apellido",
+    "apellidos",
+    "nombre",
+    "nombres",
+    "comuna",
+    "ciudad",
+    "region",
+    "rut",
+    "run",
+    "correo",
+    "email",
+    "mail",
+    "disponibilidad",
+    "experiencia",
+    "edad",
+    "telefono",
+    "celular",
+    "direccion",
+  ];
+  return labels.some((label) => new RegExp(`\\b${label}\\b`, "i").test(lowered));
+}
+
+function stripAccents(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function extractLabeledNameParts(text?: string): { givenName: string | null; familyName: string | null } {
+  if (!text) return { givenName: null, familyName: null };
+  const givenName = extractLabeledNameValue(text, ["nombre", "nombres"], 3);
+  const familyName = extractLabeledNameValue(text, ["apellido", "apellidos"], 3);
+  return { givenName, familyName };
+}
+
+function extractLabeledNameValue(text: string, labels: string[], maxWords: number): string | null {
+  const labelPattern = new RegExp(`(?:^|\\b)(?:${labels.join("|")})\\s*[:\\-]?\\s*`, "i");
+  const match = labelPattern.exec(text);
+  if (!match) return null;
+  const start = match.index + match[0].length;
+  const remainder = text.slice(start);
+  const firstChunk = remainder.split(/[\n,;|]/)[0] || "";
+  if (!firstChunk.trim()) return null;
+  const tokens = firstChunk
+    .split(/\s+/)
+    .map((token) => token.replace(/[^A-Za-zÁÉÍÓÚáéíóúÑñ]/g, ""))
+    .filter(Boolean);
+  const stopWords = new Set(
+    [
+      "rut",
+      "run",
+      "correo",
+      "email",
+      "mail",
+      "comuna",
+      "ciudad",
+      "region",
+      "dirección",
+      "direccion",
+      "telefono",
+      "teléfono",
+      "celular",
+      "experiencia",
+      "disponibilidad",
+      "edad",
+    ].map((w) => stripAccents(w).toLowerCase()),
+  );
+  const accepted: string[] = [];
+  for (const token of tokens) {
+    const normalized = stripAccents(token).toLowerCase();
+    if (!normalized) continue;
+    if (stopWords.has(normalized)) break;
+    accepted.push(token);
+    if (accepted.length >= maxWords) break;
+  }
+  const candidate = accepted.join(" ").trim();
+  if (!candidate) return null;
+  const normalizedCandidate = normalizeName(candidate);
+  if (!normalizedCandidate || !isValidName(normalizedCandidate) || containsDataLabel(normalizedCandidate)) {
+    return null;
+  }
+  return normalizedCandidate;
+}
+
+function buildCandidateNameFromLabels(params: {
+  existingCandidate: string | null;
+  display: string | null;
+  labeledParts: { givenName: string | null; familyName: string | null };
+}): string | null {
+  const { existingCandidate, display, labeledParts } = params;
+  const givenName = labeledParts.givenName;
+  const familyName = labeledParts.familyName;
+  if (givenName && familyName) {
+    const merged = normalizeName(`${givenName} ${familyName}`);
+    return merged && isValidName(merged) && !isSuspiciousCandidateName(merged) ? merged : null;
+  }
+
+  if (givenName && !familyName) {
+    const normalized = normalizeName(givenName);
+    if (!normalized || !isValidName(normalized) || isSuspiciousCandidateName(normalized)) {
+      return null;
+    }
+    if (!existingCandidate) return normalized;
+    const existingNormalized = normalizeName(existingCandidate);
+    if (!existingNormalized || isSuspiciousCandidateName(existingNormalized)) return normalized;
+    return null;
+  }
+
+  if (!familyName) return null;
+
+  const existingNormalized = existingCandidate ? normalizeName(existingCandidate) : null;
+  if (existingNormalized && !isSuspiciousCandidateName(existingNormalized)) {
+    const words = existingNormalized.split(/\s+/).filter(Boolean);
+    if (words.length === 1) {
+      const merged = normalizeName(`${existingNormalized} ${familyName}`);
+      return merged && isValidName(merged) && !isSuspiciousCandidateName(merged) ? merged : null;
+    }
+  }
+
+  if (display && !existingNormalized) {
+    const displayWords = display.split(/\s+/).filter(Boolean);
+    if (displayWords.length === 1) {
+      const merged = normalizeName(`${display} ${familyName}`);
+      return merged && isValidName(merged) && !isSuspiciousCandidateName(merged) ? merged : null;
+    }
+  }
+
+  return null;
+}
+
 function scoreName(value?: string | null): number {
   if (!value) return 0;
   const words = value.trim().split(/\s+/).filter(Boolean);
@@ -1029,14 +1398,32 @@ async function detectInterviewSignals(
   conversationId: string,
   text: string,
 ): Promise<void> {
+  const convo = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: { contact: true },
+  });
+  if (!convo || !convo.contact?.waId) return;
+  const isInterviewContext =
+    convo.aiMode === "INTERVIEW" ||
+    Boolean(convo.interviewDay || convo.interviewTime || convo.interviewLocation || convo.interviewStatus);
+  if (!isInterviewContext) return;
+
   const lower = text.toLowerCase();
   const updates: Record<string, string | null> = {};
   let statusUpdate: string | null = null;
 
-  if (/\bconfirm(o|ar)?\b/.test(lower)) {
+  const isYes =
+    /\bconfirm(o|ar)?\b/.test(lower) ||
+    /^(si|sí|ok|dale|listo|perfecto)\b/.test(lower) ||
+    /\b(me sirve|de acuerdo)\b/.test(lower);
+  const isNo =
+    /\bno (puedo|sirve|voy|asistir|ir)\b/.test(lower) ||
+    /^no\s*[,!.?¿¡]*\s*$/.test(lower) ||
+    /^no\b(?!\s+tengo\b)/.test(lower);
+
+  if (isYes) {
     statusUpdate = "CONFIRMED";
-  }
-  if (/\bno (puedo|sirve|voy|asistir|ir)\b/.test(lower) || /^no\b/.test(lower)) {
+  } else if (isNo) {
     statusUpdate = "CANCELLED";
   }
 
@@ -1049,11 +1436,6 @@ async function detectInterviewSignals(
   }
 
   if (Object.keys(updates).length === 0) return;
-  const convo = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-    include: { contact: true },
-  });
-  if (!convo || !convo.contact?.waId) return;
   await applyConversationInterviewUpdate(convo.contact.waId, updates, {
     byConversationId: conversationId,
     app,
@@ -1078,6 +1460,7 @@ function parseDayTime(text: string): { day: string | null; time: string | null }
     const suffix = timeMatch[3]?.toLowerCase();
     if (suffix?.includes("p") && hour < 12) hour += 12;
     if (suffix?.includes("a") && hour === 12) hour = 0;
+    if (!suffix && hour >= 1 && hour <= 7) hour += 12;
     const hh = hour.toString().padStart(2, "0");
     const mm = minutes.toString().padStart(2, "0");
     time = `${hh}:${mm}`;
@@ -1089,13 +1472,13 @@ function parseDayTime(text: string): { day: string | null; time: string | null }
       once: "11:00",
       diez: "10:00",
       nueve: "09:00",
-      ocho: "08:00",
-      siete: "07:00",
-      seis: "06:00",
-      cinco: "05:00",
-      cuatro: "04:00",
-      tres: "03:00",
-      dos: "02:00",
+      ocho: "20:00",
+      siete: "19:00",
+      seis: "18:00",
+      cinco: "17:00",
+      cuatro: "16:00",
+      tres: "15:00",
+      dos: "14:00",
     };
     const key = wordTimeMatch[1].toLowerCase();
     time = map[key] || null;
@@ -1499,6 +1882,18 @@ async function executePendingAction(params: {
   if (pendingAction.type === "reset_chat") {
     const target = pendingAction.targetWaId;
     if (!target) return true;
+    const config = await getSystemConfig();
+    const configuredTest = config.testPhoneNumber ? normalizeWhatsAppId(config.testPhoneNumber) : null;
+    if (!configuredTest || target !== configuredTest) {
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        "Acción bloqueada: reset permitido solo para el número de pruebas configurado.",
+      );
+      await saveAdminPendingAction(adminConversationId, null);
+      return true;
+    }
     const candidates = buildWaIdCandidates(target);
     const contacts = await prisma.contact.findMany({
       where: {
@@ -1509,7 +1904,12 @@ async function executePendingAction(params: {
       },
     });
     if (contacts.length === 0) {
-      await sendAdminReply(app, adminConversationId, adminWaId, `No encontré el contacto +${target}.`);
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `No encontré el contacto +${target}. Igual dejé el chat de pruebas limpio.`,
+      );
       await saveAdminPendingAction(adminConversationId, null);
       return true;
     }
@@ -1524,16 +1924,8 @@ async function executePendingAction(params: {
         await tx.message.deleteMany({ where: { conversationId: { in: conversationIds } } });
         await tx.conversation.deleteMany({ where: { id: { in: conversationIds } } });
       }
-      await tx.contact.updateMany({
-        where: { id: { in: contactIds } },
-        data: {
-          candidateName: null,
-          name: null,
-          displayName: null,
-          noContact: false,
-          updatedAt: new Date(),
-        },
-      });
+      await tx.application.deleteMany({ where: { contactId: { in: contactIds } } });
+      await tx.contact.deleteMany({ where: { id: { in: contactIds } } });
     });
     await saveAdminPendingAction(adminConversationId, null);
     await sendAdminReply(
@@ -1662,19 +2054,25 @@ async function handleAdminPendingAction(
 
     const resetIntent = /(reset|reiniciar|borrar).*conversaci[oó]n|reset chat/i.test(trimmed);
     if (resetIntent) {
+      const configuredTest = config.testPhoneNumber ? normalizeWhatsAppId(config.testPhoneNumber) : null;
       const target =
         extractWaIdFromText(text) ||
-        (config.testPhoneNumber ? normalizeWhatsAppId(config.testPhoneNumber) : null);
-      const allowed = [
-        normalizeWhatsAppId(config.adminWaId),
-        config.testPhoneNumber ? normalizeWhatsAppId(config.testPhoneNumber) : null,
-      ].filter(Boolean) as string[];
-      if (!target || !allowed.includes(target)) {
+        configuredTest;
+      if (!configuredTest) {
         await sendAdminReply(
           app,
           adminConversationId,
           adminWaId,
-          "Solo puedo resetear el chat del número de pruebas configurado. Indica ese número o actualiza Configuración.",
+          "No hay número de pruebas configurado. Ve a Configuración → Plantillas y define 'testPhoneNumber'.",
+        );
+        return true;
+      }
+      if (!target || target !== configuredTest) {
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          `Solo puedo resetear el chat del número de pruebas configurado (+${configuredTest}).`,
         );
         return true;
       }
@@ -1691,7 +2089,7 @@ async function handleAdminPendingAction(
         app,
         adminConversationId,
         adminWaId,
-        `¿Confirmas resetear el chat de +${target}? Responde CONFIRMAR ENVÍO para proceder o CANCELAR para anular.`,
+        `¿Confirmas resetear SOLO el chat de pruebas (+${target})? Responde CONFIRMAR ENVÍO para proceder o CANCELAR para anular.`,
       );
       return true;
     }
@@ -1837,15 +2235,41 @@ function detectStatusKeyword(text: string): "NEW" | "OPEN" | "CLOSED" | null {
 }
 
 function parseInterviewInstruction(text: string): { day: string | null; time: string | null; location: string | null } | null {
-  if (!/entrevista|agenda|agendar|coordinar/.test(text)) return null;
-  const { day, time } = parseDayTime(text);
+  const normalized = stripAccents(text || "").toLowerCase();
+  if (!/entrevista|entrevistad|agenda|agendar|coordinar/.test(normalized)) return null;
+  const { day, time } = parseDayTime(normalized);
   let location: string | null = null;
-  const locMatch = text.match(/en\s+([A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s,.-]{3,60})$/i);
+  const locMatch = normalized.match(
+    /en\s+([a-z0-9\s,.-]{3,80}?)(?:\s+para\b.*)?$/i,
+  );
   if (locMatch) {
-    location = locMatch[1].trim();
+    location = normalizeInterviewLocation(locMatch[1]);
   }
   if (!day && !time && !location) return null;
   return { day, time, location };
+}
+
+function normalizeInterviewLocation(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value
+    .replace(/\s+/g, " ")
+    .replace(/^[,.\-–—\s]+/, "")
+    .replace(/[,.\-–—\s]+$/, "")
+    .trim();
+  if (!trimmed) return null;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return null;
+  return words
+    .map((word) => {
+      if (!word) return word;
+      const first = word.charAt(0);
+      const rest = word.slice(1);
+      if (/[a-z]/i.test(first)) {
+        return `${first.toUpperCase()}${rest}`;
+      }
+      return word;
+    })
+    .join(" ");
 }
 
 async function buildInterviewTemplatePending(targetWaId: string, logger: any): Promise<{ action: AdminPendingAction; preview: string } | null> {
@@ -1926,6 +2350,12 @@ async function applyConversationInterviewUpdate(
       })
     : await fetchConversationByIdentifier(waId, { includeMessages: false });
   if (!convo) return;
+  const previous = {
+    interviewDay: convo.interviewDay || null,
+    interviewTime: convo.interviewTime || null,
+    interviewLocation: convo.interviewLocation || null,
+    interviewStatus: convo.interviewStatus || null,
+  };
   const nextStatus =
     typeof updates.interviewStatus !== "undefined"
       ? updates.interviewStatus
@@ -1952,9 +2382,15 @@ async function applyConversationInterviewUpdate(
   });
 
   if (opts?.app && convo.contact && !convo.isAdmin) {
-    const shouldNotifyScheduled =
-      (updates.interviewDay || updates.interviewTime || updates.interviewLocation) && nextStatus !== "CONFIRMED";
-    if (nextStatus === "CONFIRMED") {
+    const scheduleChanged =
+      (data.interviewDay || null) !== previous.interviewDay ||
+      (data.interviewTime || null) !== previous.interviewTime ||
+      (data.interviewLocation || null) !== previous.interviewLocation;
+    const statusBecameConfirmed =
+      nextStatus === "CONFIRMED" && previous.interviewStatus !== "CONFIRMED";
+    const hasCompleteSchedule = Boolean(data.interviewDay && data.interviewTime);
+
+    if (statusBecameConfirmed) {
       await sendAdminNotification({
         app: opts.app,
         eventType: "INTERVIEW_CONFIRMED",
@@ -1963,7 +2399,7 @@ async function applyConversationInterviewUpdate(
         interviewTime: data.interviewTime,
         interviewLocation: data.interviewLocation,
       });
-    } else if (shouldNotifyScheduled) {
+    } else if (scheduleChanged && nextStatus !== "CONFIRMED" && hasCompleteSchedule) {
       await sendAdminNotification({
         app: opts.app,
         eventType: "INTERVIEW_SCHEDULED",
