@@ -462,6 +462,11 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
     params.text ||
     "";
 
+  const optedIn = await maybeHandleOptIn(app, conversation, contact, effectiveText);
+  if (optedIn) {
+    contact.noContact = false;
+  }
+
   const optedOut = await maybeHandleOptOut(app, conversation, contact, effectiveText);
   if (optedOut) {
     return { conversationId: conversation.id };
@@ -1867,7 +1872,7 @@ async function executePendingAction(params: {
       }
       await prisma.contact.updateMany({
         where: { id: { in: contactIds } },
-        data: { noContact: false },
+        data: { noContact: false, noContactAt: null, noContactReason: null },
       });
       await prisma.conversation.updateMany({
         where: { contactId: { in: contactIds } },
@@ -2544,6 +2549,86 @@ function isOptOutText(text: string): boolean {
   return false;
 }
 
+function getOptOutReason(text: string): string {
+  const lower = stripAccents(text).toLowerCase();
+  if (/\bstop\b/.test(lower)) return "STOP";
+  if (/\bunsubscribe\b/.test(lower)) return "UNSUBSCRIBE";
+  if (/darme de baja|darse de baja/.test(lower)) return "DAR_DE_BAJA";
+  if (/no me envien mas|no me escriban mas|no quiero recibir( mas)? mensajes/.test(lower)) return "NO_MAS_MENSAJES";
+  if (/no quiero que me escriban|no quiero que me contacten/.test(lower)) return "NO_CONTACTAR";
+  if (/\bno contactar\b|\bno contacto\b/.test(lower) || /no.*contactar/.test(lower)) return "NO_CONTACTAR";
+  if (/borrar mis datos|eliminar mis datos/.test(lower)) return "BORRAR_DATOS";
+  if (/quiero dejar de postular/.test(lower)) return "DEJAR_DE_POSTULAR";
+  return "OPTOUT_EXPLICITO";
+}
+
+function isOptInText(text: string): boolean {
+  const lower = stripAccents(text).toLowerCase().trim();
+  if (!lower) return false;
+  if (/no quiero que me contacten|no quiero que me escriban|no me contacten|no me escriban/.test(lower)) {
+    return false;
+  }
+  if (/^(start|iniciar|reactivar)\b/.test(lower)) return true;
+  return (
+    /ahora (si|sí) quiero que me (contacten|escriban)/.test(lower) ||
+    /quiero que me (contacten|escriban)/.test(lower) ||
+    /pueden (contactarme|contactar|escribirme|escribir|hablarme|llamarme)/.test(lower) ||
+    /pueden volver a (contactarme|escribirme)/.test(lower) ||
+    /reactivar (mi )?contacto/.test(lower) ||
+    /quitar (el )?no contactar|quitar no contactar/.test(lower) ||
+    /desbloquear/.test(lower)
+  );
+}
+
+async function maybeHandleOptIn(
+  app: FastifyInstance,
+  conversation: any,
+  contact: any,
+  text: string,
+): Promise<boolean> {
+  if (!contact?.noContact) return false;
+  if (!text || !isOptInText(text)) return false;
+  try {
+    const candidates = buildWaIdCandidates(contact.waId || contact.phone);
+    const contacts = await prisma.contact.findMany({
+      where: {
+        OR: [
+          { waId: { in: candidates } },
+          { phone: { in: candidates } },
+          { id: contact.id },
+        ],
+      },
+      select: { id: true },
+    });
+    const contactIds = contacts.map((c) => c.id);
+    if (contactIds.length === 0) {
+      contactIds.push(contact.id);
+    }
+    await prisma.contact.updateMany({
+      where: { id: { in: contactIds } },
+      data: { noContact: false, noContactAt: null, noContactReason: null },
+    });
+    await prisma.conversation.updateMany({
+      where: { contactId: { in: contactIds } },
+      data: { aiPaused: false },
+    });
+    await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        direction: "OUTBOUND",
+        text: "Opt-in detectado: contacto reactivado automáticamente.",
+        rawPayload: serializeJson({ system: true, noContactAction: "AUTO_OPTIN" }),
+        timestamp: new Date(),
+        read: true,
+      },
+    });
+  } catch (err) {
+    app.log.error({ err }, "Failed to auto-reactivate NO_CONTACTAR contact");
+    return false;
+  }
+  return true;
+}
+
 async function maybeHandleOptOut(
   app: FastifyInstance,
   conversation: any,
@@ -2567,9 +2652,11 @@ async function maybeHandleOptOut(
     if (contactIds.length === 0) {
       contactIds.push(contact.id);
     }
+    const now = new Date();
+    const reason = `Opt-out candidato: ${getOptOutReason(text)}`;
     await prisma.contact.updateMany({
       where: { id: { in: contactIds } },
-      data: { noContact: true },
+      data: { noContact: true, noContactAt: now, noContactReason: reason },
     });
     await prisma.conversation.updateMany({
       where: { contactId: { in: contactIds } },

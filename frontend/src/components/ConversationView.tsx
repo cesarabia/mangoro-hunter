@@ -6,6 +6,60 @@ interface ConversationViewProps {
   onMessageSent: () => void;
 }
 
+const safeParseJson = (value: any) => {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const toDate = (value: any): Date | null => {
+  if (!value) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatMessageTime = (value: any) => {
+  const date = toDate(value);
+  if (!date) return '';
+  return new Intl.DateTimeFormat('es-CL', { hour: '2-digit', minute: '2-digit' }).format(date);
+};
+
+const formatMessageDayKey = (value: any) => {
+  const date = toDate(value);
+  if (!date) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const formatMessageDayLabel = (value: any) => {
+  const date = toDate(value);
+  if (!date) return '';
+  return new Intl.DateTimeFormat('es-CL', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit'
+  }).format(date);
+};
+
+const formatFullTimestamp = (value: any) => {
+  const date = toDate(value);
+  if (!date) return '';
+  return new Intl.DateTimeFormat('es-CL', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(date);
+};
+
 const isSuspiciousCandidateName = (value?: string | null) => {
   if (!value) return true;
   const lower = value.toLowerCase();
@@ -44,6 +98,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const [interviewLocation, setInterviewLocation] = useState('');
   const [interviewStatus, setInterviewStatus] = useState('');
   const [interviewSaving, setInterviewSaving] = useState(false);
+  const [noContactPanelOpen, setNoContactPanelOpen] = useState(false);
+  const [noContactReasonDraft, setNoContactReasonDraft] = useState('');
+  const [noContactSaving, setNoContactSaving] = useState(false);
+  const [noContactError, setNoContactError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!conversation) {
@@ -55,6 +113,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setInterviewTime('');
       setInterviewLocation('');
       setInterviewStatus('');
+      setNoContactPanelOpen(false);
+      setNoContactReasonDraft('');
+      setNoContactSaving(false);
+      setNoContactError(null);
       return;
     }
     setAutoScrollEnabled(true);
@@ -67,6 +129,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     setInterviewTime(conversation.interviewTime || '');
     setInterviewLocation(conversation.interviewLocation || '');
     setInterviewStatus(conversation.interviewStatus || '');
+    setNoContactPanelOpen(false);
+    setNoContactReasonDraft('');
+    setNoContactSaving(false);
+    setNoContactError(null);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -110,6 +176,50 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setSendError(err.message || 'No se pudo enviar el mensaje');
     } finally {
       setLoadingSend(false);
+    }
+  };
+
+  const handleSetNoContact = async () => {
+    if (!conversation || noContactSaving) return;
+    const reason = noContactReasonDraft.trim();
+    if (reason.length < 3) {
+      setNoContactError('Ingresa un motivo (mínimo 3 caracteres).');
+      return;
+    }
+    const ok = window.confirm(`¿Confirmas marcar NO_CONTACTAR a ${primaryName}?`);
+    if (!ok) return;
+    setNoContactSaving(true);
+    setNoContactError(null);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/no-contact`, {
+        noContact: true,
+        reason
+      });
+      setNoContactPanelOpen(false);
+      setNoContactReasonDraft('');
+      onMessageSent();
+    } catch (err: any) {
+      setNoContactError(err.message || 'No se pudo marcar NO_CONTACTAR');
+    } finally {
+      setNoContactSaving(false);
+    }
+  };
+
+  const handleReactivateContact = async () => {
+    if (!conversation || noContactSaving) return;
+    const ok = window.confirm(`¿Confirmas reactivar el contacto ${primaryName}?`);
+    if (!ok) return;
+    setNoContactSaving(true);
+    setNoContactError(null);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/no-contact`, { noContact: false });
+      setNoContactPanelOpen(false);
+      setNoContactReasonDraft('');
+      onMessageSent();
+    } catch (err: any) {
+      setNoContactError(err.message || 'No se pudo reactivar el contacto');
+    } finally {
+      setNoContactSaving(false);
     }
   };
 
@@ -187,6 +297,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     ? 'Administrador'
     : candidateName || profileDisplay || 'Sin nombre';
   const noContact = Boolean(conversation?.contact?.noContact);
+  const noContactAt = conversation?.contact?.noContactAt || null;
+  const noContactReason = conversation?.contact?.noContactReason || null;
+  const noContactAtLabel = noContactAt ? formatFullTimestamp(noContactAt) : '';
   const secondaryLabel = [profileDisplay, waId ? `+${waId}` : ''].filter(Boolean).join(' · ');
   const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation?.aiMode || 'RECRUIT';
   const aiPaused = Boolean(conversation?.aiPaused);
@@ -310,9 +423,77 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
           <div>
             <div style={{ fontSize: 18, fontWeight: 700 }}>{primaryName}</div>
             {secondaryLabel && <div style={{ fontSize: 12, color: '#666' }}>{secondaryLabel}</div>}
-            {noContact && (
-              <div style={{ marginTop: 4, fontSize: 11, color: '#a8071a', background: '#fff1f0', border: '1px solid #ff7875', borderRadius: 6, padding: '2px 6px', display: 'inline-block' }}>
-                NO CONTACTAR
+            {noContact ? (
+              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ fontSize: 11, color: '#a8071a', background: '#fff1f0', border: '1px solid #ff7875', borderRadius: 8, padding: '6px 8px', display: 'inline-block', maxWidth: 520 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 2 }}>NO CONTACTAR</div>
+                  <div style={{ color: '#a8071a' }}>
+                    {noContactAt ? (
+                      <span title={noContactAtLabel}>Activado: {formatMessageTime(noContactAt)}</span>
+                    ) : (
+                      <span>Activado: (sin timestamp)</span>
+                    )}
+                    {noContactReason ? ` · Motivo: ${noContactReason}` : ''}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={handleReactivateContact}
+                    disabled={noContactSaving}
+                    style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#fff', fontSize: 12 }}
+                  >
+                    {noContactSaving ? 'Procesando…' : 'Reactivar contacto'}
+                  </button>
+                </div>
+                {noContactError && <div style={{ fontSize: 12, color: '#b93800' }}>{noContactError}</div>}
+              </div>
+            ) : (
+              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => {
+                      setNoContactPanelOpen(value => !value);
+                      setNoContactError(null);
+                    }}
+                    disabled={noContactSaving}
+                    style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                  >
+                    Marcar NO_CONTACTAR
+                  </button>
+                </div>
+                {noContactPanelOpen && (
+                  <div style={{ border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa', maxWidth: 520 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Motivo (visible en CRM)</div>
+                    <textarea
+                      value={noContactReasonDraft}
+                      onChange={e => setNoContactReasonDraft(e.target.value)}
+                      rows={2}
+                      style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 13, resize: 'vertical' }}
+                      placeholder="Ej: solicitó no recibir mensajes / contacto erróneo / spam…"
+                    />
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        onClick={handleSetNoContact}
+                        disabled={noContactSaving}
+                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+                      >
+                        {noContactSaving ? 'Procesando…' : 'Confirmar NO_CONTACTAR'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setNoContactPanelOpen(false);
+                          setNoContactReasonDraft('');
+                          setNoContactError(null);
+                        }}
+                        disabled={noContactSaving}
+                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                    {noContactError && <div style={{ marginTop: 6, fontSize: 12, color: '#b93800' }}>{noContactError}</div>}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -407,50 +588,105 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
         style={{ flex: 1, padding: 16, overflowY: 'auto', background: '#fafafa', minHeight: 0 }}
       >
         {hasConversation ? (
-          conversation?.messages?.map((m: any) => (
-            <div
-              key={m.id}
-              style={{
-                marginBottom: 8,
-                display: 'flex',
-                justifyContent: m.direction === 'OUTBOUND' ? 'flex-end' : 'flex-start'
-              }}
-            >
-              <div
-                style={{
-                  maxWidth: '70%',
-                  padding: '8px 10px',
-                  borderRadius: 12,
-                  background: m.direction === 'OUTBOUND' ? '#d1e7dd' : '#fff',
-                  border: '1px solid #eee',
-                  fontSize: 14,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6
-                }}
-              >
-                <div>{m.text || describeMedia(m) || '(sin texto)'}</div>
-                {m.mediaType && (
-                  <div style={{ fontSize: 12, color: '#555', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span>{describeMedia(m)}</span>
-                    {m.mediaPath && (
-                      <button
-                        onClick={() => handleDownload(m)}
-                        style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc', background: '#f8f8f8', fontSize: 12 }}
+          (() => {
+            const items: React.ReactNode[] = [];
+            let lastDayKey = '';
+            for (const m of conversation?.messages || []) {
+              const dayKey = formatMessageDayKey(m.timestamp);
+              if (dayKey && dayKey !== lastDayKey) {
+                lastDayKey = dayKey;
+                items.push(
+                  <div key={`day-${dayKey}`} style={{ display: 'flex', justifyContent: 'center', margin: '12px 0' }}>
+                    <span style={{ fontSize: 12, color: '#666', background: '#fff', border: '1px solid #eee', borderRadius: 999, padding: '4px 10px' }}>
+                      {formatMessageDayLabel(m.timestamp)}
+                    </span>
+                  </div>
+                );
+              }
+
+              const payload = safeParseJson(m.rawPayload);
+              const isSystem = Boolean(payload?.system);
+              const time = formatMessageTime(m.timestamp);
+              const full = formatFullTimestamp(m.timestamp);
+
+              if (isSystem) {
+                items.push(
+                  <div key={m.id} style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
+                    <div style={{ maxWidth: 520, textAlign: 'center' }}>
+                      <div style={{ fontSize: 12, color: '#666', background: '#fff', border: '1px dashed #ddd', borderRadius: 10, padding: '8px 10px' }}>
+                        {m.text || '(evento del sistema)'}
+                      </div>
+                      {time && (
+                        <div style={{ marginTop: 4, fontSize: 11, color: '#888' }} title={full}>
+                          {time}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+                continue;
+              }
+
+              items.push(
+                <div
+                  key={m.id}
+                  style={{
+                    marginBottom: 8,
+                    display: 'flex',
+                    justifyContent: m.direction === 'OUTBOUND' ? 'flex-end' : 'flex-start'
+                  }}
+                >
+                  <div
+                    style={{
+                      maxWidth: '70%',
+                      padding: '8px 10px',
+                      borderRadius: 12,
+                      background: m.direction === 'OUTBOUND' ? '#d1e7dd' : '#fff',
+                      border: '1px solid #eee',
+                      fontSize: 14,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 6
+                    }}
+                  >
+                    <div>{m.text || describeMedia(m) || '(sin texto)'}</div>
+                    {m.mediaType && (
+                      <div style={{ fontSize: 12, color: '#555', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span>{describeMedia(m)}</span>
+                        {m.mediaPath && (
+                          <button
+                            onClick={() => handleDownload(m)}
+                            style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc', background: '#f8f8f8', fontSize: 12 }}
+                          >
+                            Descargar
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {m.transcriptText && (
+                      <div style={{ fontSize: 12, color: '#333', background: '#f6f6f6', padding: '6px 8px', borderRadius: 8 }}>
+                        Transcripción: {m.transcriptText}
+                      </div>
+                    )}
+                    {time && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: '#666',
+                          display: 'flex',
+                          justifyContent: 'flex-end'
+                        }}
+                        title={full}
                       >
-                        Descargar
-                      </button>
+                        {time}
+                      </div>
                     )}
                   </div>
-                )}
-                {m.transcriptText && (
-                  <div style={{ fontSize: 12, color: '#333', background: '#f6f6f6', padding: '6px 8px', borderRadius: 8 }}>
-                    Transcripción: {m.transcriptText}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))
+                </div>
+              );
+            }
+            return items;
+          })()
         ) : (
           <div style={{ padding: 8, color: '#666' }}>Selecciona una conversación</div>
         )}

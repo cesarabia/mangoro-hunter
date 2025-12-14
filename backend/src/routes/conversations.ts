@@ -42,6 +42,23 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     return contact;
   }
 
+  async function logSystemMessage(conversationId: string, text: string, rawPayload?: any) {
+    await prisma.message.create({
+      data: {
+        conversationId,
+        direction: 'OUTBOUND',
+        text,
+        rawPayload: serializeJson({ system: true, ...(rawPayload || {}) }),
+        timestamp: new Date(),
+        read: true
+      }
+    });
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: new Date() }
+    }).catch(() => {});
+  }
+
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const conversations = await prisma.conversation.findMany({
       include: {
@@ -173,6 +190,66 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       within24h,
       templates
     };
+  });
+
+  app.patch('/:id/no-contact', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { noContact?: boolean; reason?: string | null };
+
+    if (typeof body.noContact !== 'boolean') {
+      return reply.code(400).send({ error: '"noContact" debe ser boolean' });
+    }
+
+    const conversation = await prisma.conversation.findUnique({
+      where: { id },
+      include: { contact: true }
+    });
+
+    if (!conversation) {
+      return reply.code(404).send({ error: 'Conversation not found' });
+    }
+    if (conversation.isAdmin) {
+      return reply.code(400).send({ error: 'NO_CONTACTAR no aplica a conversación admin' });
+    }
+
+    const contactId = conversation.contactId;
+    const nextNoContact = body.noContact;
+    const rawReason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    const now = new Date();
+    const actor = (request as any)?.user?.userId || null;
+
+    if (nextNoContact) {
+      const reason = rawReason || 'Marcado manualmente desde CRM';
+      await prisma.contact.update({
+        where: { id: contactId },
+        data: { noContact: true, noContactAt: now, noContactReason: reason }
+      });
+      await prisma.conversation.updateMany({
+        where: { contactId },
+        data: { aiPaused: true }
+      });
+      await logSystemMessage(
+        id,
+        `🔕 Marcado como NO_CONTACTAR. Motivo: ${reason}`,
+        { noContactAction: 'SET', source: 'UI', reason, actor }
+      );
+      return { success: true };
+    }
+
+    await prisma.contact.update({
+      where: { id: contactId },
+      data: { noContact: false, noContactAt: null, noContactReason: null }
+    });
+    await prisma.conversation.updateMany({
+      where: { contactId },
+      data: { aiPaused: false }
+    });
+    await logSystemMessage(
+      id,
+      '✅ Contacto reactivado (NO_CONTACTAR desactivado).',
+      { noContactAction: 'UNSET', source: 'UI', actor }
+    );
+    return { success: true };
   });
 
   app.post('/:id/messages', { preValidation: [app.authenticate] }, async (request, reply) => {
