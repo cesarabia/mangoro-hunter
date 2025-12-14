@@ -642,6 +642,14 @@ async function maybeUpdateContactName(
       currentCandidate = aiName;
     }
   }
+  if (
+    currentCandidate &&
+    !isSuspiciousCandidateName(currentCandidate) &&
+    contact.candidateName &&
+    contact.candidateName !== currentCandidate
+  ) {
+    updates.candidateName = currentCandidate;
+  }
   if (Object.keys(updates).length === 0) return;
   await prisma.contact.update({
     where: { id: contact.id },
