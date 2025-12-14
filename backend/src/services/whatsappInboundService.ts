@@ -20,7 +20,7 @@ import { DEFAULT_AI_PROMPT } from "../constants/ai";
 import { serializeJson } from "../utils/json";
 import { getEffectiveOpenAiKey, getSuggestedReply } from "./aiService";
 import { sendWhatsAppText, SendResult } from "./whatsappMessageService";
-import { normalizeWhatsAppId } from "../utils/whatsapp";
+import { buildWaIdCandidates, normalizeWhatsAppId } from "../utils/whatsapp";
 import { processAdminCommand, fetchConversationByIdentifier, setConversationStatusByWaId } from "./whatsappAdminCommandService";
 import { generateAdminAiResponse } from "./whatsappAdminAiService";
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from "./templateService";
@@ -1037,8 +1037,14 @@ async function executePendingAction(params: {
 }): Promise<boolean> {
   const { pendingAction, app, adminConversationId, adminWaId } = params;
   if (pendingAction.targetWaId) {
+    const candidates = buildWaIdCandidates(pendingAction.targetWaId);
     const contact = await prisma.contact.findFirst({
-      where: { OR: [{ waId: pendingAction.targetWaId }, { phone: pendingAction.targetWaId }] },
+      where: {
+        OR: [
+          { waId: { in: candidates } },
+          { phone: { in: candidates } },
+        ],
+      },
     });
     if (contact?.noContact) {
       await sendAdminReply(
@@ -1193,20 +1199,27 @@ async function executePendingAction(params: {
     const waId = pendingAction.targetWaId;
     if (!waId) return true;
     try {
-      const contact = await prisma.contact.findFirst({
-        where: { OR: [{ waId }, { phone: waId }] },
+      const candidates = buildWaIdCandidates(waId);
+      const contacts = await prisma.contact.findMany({
+        where: {
+          OR: [
+            { waId: { in: candidates } },
+            { phone: { in: candidates } },
+          ],
+        },
       });
-      if (!contact) {
+      const contactIds = contacts.map((c) => c.id);
+      if (contactIds.length === 0) {
         await sendAdminReply(app, adminConversationId, adminWaId, `No encontré el contacto +${waId}.`);
         await saveAdminPendingAction(adminConversationId, null);
         return true;
       }
-      await prisma.contact.update({
-        where: { id: contact.id },
+      await prisma.contact.updateMany({
+        where: { id: { in: contactIds } },
         data: { noContact: false },
       });
       await prisma.conversation.updateMany({
-        where: { contactId: contact.id },
+        where: { contactId: { in: contactIds } },
         data: { aiPaused: false },
       });
       await saveAdminPendingAction(adminConversationId, null);
@@ -1694,12 +1707,27 @@ async function maybeHandleOptOut(
 ): Promise<boolean> {
   if (!text || !isOptOutText(text)) return false;
   try {
-    await prisma.contact.update({
-      where: { id: contact.id },
+    const candidates = buildWaIdCandidates(contact.waId || contact.phone);
+    const contacts = await prisma.contact.findMany({
+      where: {
+        OR: [
+          { waId: { in: candidates } },
+          { phone: { in: candidates } },
+          { id: contact.id },
+        ],
+      },
+      select: { id: true },
+    });
+    const contactIds = contacts.map((c) => c.id);
+    if (contactIds.length === 0) {
+      contactIds.push(contact.id);
+    }
+    await prisma.contact.updateMany({
+      where: { id: { in: contactIds } },
       data: { noContact: true },
     });
-    await prisma.conversation.update({
-      where: { id: conversation.id },
+    await prisma.conversation.updateMany({
+      where: { contactId: { in: contactIds } },
       data: { aiPaused: true },
     });
     if (contact.waId) {
