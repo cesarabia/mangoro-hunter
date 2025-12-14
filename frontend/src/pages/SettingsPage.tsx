@@ -110,8 +110,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [testSendStatus, setTestSendStatus] = useState<string | null>(null);
   const [testSendError, setTestSendError] = useState<string | null>(null);
   const [sendingTest, setSendingTest] = useState(false);
+  const [resetStatus, setResetStatus] = useState<string | null>(null);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
   const getModelOptions = (current: string) => {
-    const base = ['gpt-4.1-mini', 'gpt-5-mini', 'gpt-5-mini-2025-08-07', 'gpt-5-chat-latest'];
+    const base = ['gpt-4.1-mini', 'gpt-5-chat-latest'];
     return base.includes(current) ? base : [...base, current];
   };
 
@@ -265,6 +268,27 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       setAiPromptError(err.message || 'No se pudo guardar el prompt');
     } finally {
       setSavingAiPrompt(false);
+    }
+  };
+
+  const handleResetTestConversation = async () => {
+    if (!testPhoneNumber) {
+      setResetError('Configura primero el Número de pruebas.');
+      return;
+    }
+    if (!window.confirm('¿Seguro que quieres borrar la conversación del número de pruebas?')) {
+      return;
+    }
+    setResetting(true);
+    setResetStatus(null);
+    setResetError(null);
+    try {
+      const res = (await apiClient.post('/api/config/reset-test-conversation', {})) as any;
+      setResetStatus(res?.message || 'Conversación de prueba reseteada.');
+    } catch (err: any) {
+      setResetError(err.message || 'No se pudo resetear la conversación de prueba');
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -735,6 +759,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   />
                 </label>
+                <button
+                  type="button"
+                  onClick={handleResetTestConversation}
+                  disabled={resetting}
+                  style={{ alignSelf: 'flex-start', padding: '8px 12px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
+                >
+                  {resetting ? 'Reseteando...' : 'Reset conversación de prueba'}
+                </button>
+                {resetStatus && <p style={{ color: 'green' }}>{resetStatus}</p>}
+                {resetError && <p style={{ color: 'red' }}>{resetError}</p>}
                 {templateStatus && <p style={{ color: 'green' }}>{templateStatus}</p>}
                 {templateError && <p style={{ color: 'red' }}>{templateError}</p>}
                 <button

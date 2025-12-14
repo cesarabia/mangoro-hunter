@@ -684,8 +684,22 @@ function isValidName(value?: string | null): boolean {
   if (trimmed.length < 2) return false;
   if (/[^A-Za-zÁÉÍÓÚáéíóúÑñ\s]/.test(trimmed)) return false;
   const lower = trimmed.toLowerCase();
-  const blacklist = ["hola", "buenas", "buenos", "gracias", "ok", "vale", "hello", "hey", "hi"];
+  const blacklist = [
+    "hola",
+    "buenas",
+    "buenos",
+    "gracias",
+    "ok",
+    "vale",
+    "hello",
+    "hey",
+    "hi",
+    "confirmo",
+    "postular",
+  ];
   if (blacklist.includes(lower)) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length > 3) return false;
   if (!trimmed.includes(" ") && trimmed.length < 3) return false;
   return true;
 }
@@ -740,6 +754,7 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
   const lower = value.toLowerCase();
   const patterns = [
     "hola quiero postular",
+    "hola",
     "quiero postular",
     "postular",
     "no puedo",
@@ -753,6 +768,7 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
   if (patterns.some(p => lower.includes(p))) return true;
   if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
   if (/medio ?d[ií]a/i.test(value)) return true;
+  if (/\b\d{1,2}:\d{2}\b/.test(value)) return true;
   return false;
 }
 
@@ -830,6 +846,8 @@ type AdminPendingAction =
       targetWaId: string | null;
       awaiting: "status";
       createdAt: number;
+      updatedAt: number;
+      needsConfirmation: boolean;
     }
   | {
       type: "interview_update";
@@ -842,6 +860,8 @@ type AdminPendingAction =
         interviewStatus?: string | null;
       };
       createdAt: number;
+      updatedAt: number;
+      needsConfirmation: boolean;
     }
   | {
       type: "send_template";
@@ -853,6 +873,9 @@ type AdminPendingAction =
       mode?: "RECRUIT" | "INTERVIEW" | "OFF";
       awaiting: "confirm";
       createdAt: number;
+      updatedAt: number;
+      needsConfirmation: boolean;
+      draftText?: string | null;
     }
   | {
       type: "send_message";
@@ -861,6 +884,8 @@ type AdminPendingAction =
       relatedConversationId?: string | null;
       awaiting: "confirm";
       createdAt: number;
+      updatedAt: number;
+      needsConfirmation: boolean;
     };
 
 function parseAdminPendingAction(raw?: string | null): AdminPendingAction | null {
@@ -871,6 +896,12 @@ function parseAdminPendingAction(raw?: string | null): AdminPendingAction | null
       if (!parsed.createdAt) {
         parsed.createdAt = Date.now();
       }
+      if (!parsed.updatedAt) {
+        parsed.updatedAt = parsed.createdAt;
+      }
+      if (typeof parsed.needsConfirmation === "undefined") {
+        parsed.needsConfirmation = true;
+      }
       return parsed as AdminPendingAction;
     }
   } catch {
@@ -880,6 +911,9 @@ function parseAdminPendingAction(raw?: string | null): AdminPendingAction | null
 }
 
 async function saveAdminPendingAction(conversationId: string, action: AdminPendingAction | null) {
+  if (action) {
+    action.updatedAt = Date.now();
+  }
   await prisma.conversation.update({
     where: { id: conversationId },
     data: { adminPendingAction: action ? JSON.stringify(action) : null },
@@ -894,6 +928,34 @@ function isConfirmSend(text: string): boolean {
 function isCancelPending(text: string): boolean {
   const normalized = text.toLowerCase();
   return /(cancelar|anular|olvidar)/.test(normalized);
+}
+
+async function refreshPendingBeforeSend(action: AdminPendingAction, text: string, logger: any) {
+  if (action.type !== "send_template") return;
+  const config = await getSystemConfig();
+  const templates = await loadTemplateConfig(logger);
+  const parsed = parseLooseSchedule(text.toLowerCase());
+  if (parsed && action.mode === "INTERVIEW" && (parsed.day || parsed.time || parsed.location)) {
+    await applyConversationInterviewUpdate(action.targetWaId, {
+      interviewDay: parsed.day,
+      interviewTime: parsed.time,
+      interviewLocation: parsed.location,
+      interviewStatus: "PENDING",
+    });
+  }
+  const convo = await fetchConversationByIdentifier(action.targetWaId, { includeMessages: false });
+  const finalVars = resolveTemplateVariables(
+    action.templateName,
+    action.variables,
+    templates,
+    {
+      interviewDay: convo?.interviewDay,
+      interviewTime: convo?.interviewTime,
+      interviewLocation: convo?.interviewLocation,
+    },
+  );
+  action.variables = finalVars;
+  action.relatedConversationId = convo?.id || action.relatedConversationId || null;
 }
 
 async function executePendingAction(params: {
@@ -918,6 +980,10 @@ async function executePendingAction(params: {
       });
       const success = result.sendResult?.success;
       if (success) {
+        await prisma.conversation.updateMany({
+          where: { isAdmin: true },
+          data: { adminLastCandidateWaId: pendingAction.targetWaId },
+        });
         await saveAdminPendingAction(adminConversationId, null);
         await sendAdminReply(
           app,
@@ -1053,6 +1119,25 @@ async function handleAdminPendingAction(
     select: { adminPendingAction: true },
   });
   const pending = parseAdminPendingAction(adminConvo?.adminPendingAction);
+  if (pending && isCancelPending(trimmed)) {
+    await saveAdminPendingAction(adminConversationId, null);
+    await sendAdminReply(app, adminConversationId, adminWaId, "Acción pendiente cancelada.");
+    return true;
+  }
+  if (
+    pending &&
+    pending.needsConfirmation &&
+    (isConfirmSend(trimmed) || /^(si|sí|ok|dale|confirmo)/i.test(trimmed))
+  ) {
+    await refreshPendingBeforeSend(pending, text, app.log);
+    const executed = await executePendingAction({
+      app,
+      adminConversationId,
+      adminWaId,
+      pendingAction: pending,
+    });
+    return executed;
+  }
 
   const statusFromText = detectStatusKeyword(trimmed);
   if (!pending && !statusFromText && /estado/.test(trimmed)) {
@@ -1061,6 +1146,8 @@ async function handleAdminPendingAction(
       targetWaId: lastCandidateWaId || null,
       awaiting: "status",
       createdAt: Date.now(),
+      updatedAt: Date.now(),
+      needsConfirmation: false,
     });
     await sendAdminReply(
       app,
@@ -1146,6 +1233,8 @@ async function handleAdminPendingAction(
       relatedConversationId: convo?.id || null,
       awaiting: "confirm",
       createdAt: Date.now(),
+      updatedAt: Date.now(),
+      needsConfirmation: true,
       mode: "INTERVIEW",
     });
     const locationText = parsedInterview.location || "Te enviaremos la dirección exacta por este medio.";
@@ -1157,6 +1246,15 @@ async function handleAdminPendingAction(
         parsedInterview.time || "hora por definir"
       } en ${locationText}. ¿Deseas que envíe la plantilla de entrevista? Responde CONFIRMAR ENVÍO.`,
     );
+    return true;
+  }
+
+  if (pending && (pending.type === "send_template" || pending.type === "send_message")) {
+    const summary =
+      pending.type === "send_template"
+        ? `Envío pendiente de plantilla ${pending.templateName} a +${pending.targetWaId}. Responde CONFIRMAR ENVÍO para enviarla o CANCELAR para anular.`
+        : `Envío pendiente de mensaje a +${pending.targetWaId}. Responde CONFIRMAR ENVÍO para enviarlo o CANCELAR para anular.`;
+    await sendAdminReply(app, adminConversationId, adminWaId, summary);
     return true;
   }
 
@@ -1177,6 +1275,17 @@ function parseInterviewInstruction(text: string): { day: string | null; time: st
   const { day, time } = parseDayTime(text);
   let location: string | null = null;
   const locMatch = text.match(/en\s+([A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s,.-]{3,60})$/i);
+  if (locMatch) {
+    location = locMatch[1].trim();
+  }
+  if (!day && !time && !location) return null;
+  return { day, time, location };
+}
+
+function parseLooseSchedule(text: string): { day: string | null; time: string | null; location: string | null } | null {
+  const { day, time } = parseDayTime(text);
+  let location: string | null = null;
+  const locMatch = text.match(/en\s+([A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s,.-]{3,60})/i);
   if (locMatch) {
     location = locMatch[1].trim();
   }
@@ -1366,6 +1475,8 @@ async function detectAdminTemplateIntent(
       relatedConversationId: null,
       awaiting: "confirm",
       createdAt: Date.now(),
+      updatedAt: Date.now(),
+      needsConfirmation: true,
       mode,
     },
   };

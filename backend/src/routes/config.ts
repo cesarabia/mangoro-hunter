@@ -29,6 +29,8 @@ import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { prisma } from '../db/client';
 import { sendWhatsAppTemplate } from '../services/whatsappMessageService';
 import { serializeJson } from '../utils/json';
+import fs from 'fs/promises';
+import path from 'path';
 
 export async function registerConfigRoutes(app: FastifyInstance) {
   const whatsappDefaults = {
@@ -468,6 +470,62 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     return {
       adminEmail: config.adminEmail
     };
+  });
+
+  app.post('/reset-test-conversation', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await getSystemConfig();
+    const waId = normalizeWhatsAppId(config.testPhoneNumber || '');
+    if (!waId) {
+      return reply.code(400).send({ error: 'Configura primero el Número de pruebas.' });
+    }
+    try {
+      const dbPath = path.resolve(__dirname, '../../../dev.db');
+      const backupName = `dev-backup-${new Date()
+        .toISOString()
+        .replace(/[-:T]/g, '')
+        .slice(0, 14)}-testreset.db`;
+      const backupPath = path.join(path.dirname(dbPath), backupName);
+      await fs.copyFile(dbPath, backupPath);
+    } catch (err) {
+      request.log.error({ err }, 'No se pudo hacer backup antes de reset de pruebas');
+      return reply.code(500).send({ error: 'No se pudo hacer backup de la base de datos' });
+    }
+
+    try {
+      const contact = await prisma.contact.findFirst({
+        where: {
+          OR: [{ waId }, { phone: waId }]
+        }
+      });
+      if (!contact) {
+        return { success: true, message: 'No existe conversación de pruebas para limpiar.' };
+      }
+      const conversations = await prisma.conversation.findMany({
+        where: { contactId: contact.id, isAdmin: false },
+        select: { id: true }
+      });
+      const ids = conversations.map(c => c.id);
+      await prisma.$transaction([
+        prisma.message.deleteMany({ where: { conversationId: { in: ids } } }),
+        prisma.conversation.deleteMany({ where: { id: { in: ids } } }),
+        prisma.contact.update({
+          where: { id: contact.id },
+          data: {
+            candidateName: null,
+            name: null,
+            displayName: null,
+            updatedAt: new Date()
+          }
+        })
+      ]);
+      return { success: true, message: 'Conversación de prueba reseteada.' };
+    } catch (err) {
+      request.log.error({ err }, 'Reset de conversación de pruebas falló');
+      return reply.code(500).send({ error: 'No se pudo resetear la conversación de prueba' });
+    }
   });
 }
 

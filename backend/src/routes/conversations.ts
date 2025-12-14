@@ -8,6 +8,39 @@ import { loadTemplateConfig, resolveTemplateVariables } from '../services/templa
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
   const fetchTemplateConfigSafe = () => loadTemplateConfig(app.log);
+  const isSuspiciousCandidateName = (value?: string | null) => {
+    if (!value) return true;
+    const lower = value.toLowerCase();
+    const patterns = [
+      'hola quiero postular',
+      'quiero postular',
+      'postular',
+      'hola',
+      'buenas',
+      'confirmo',
+      'no puedo',
+      'no me sirve',
+      'ok',
+      'si pero',
+      'gracias'
+    ];
+    if (patterns.some(p => lower.includes(p))) return true;
+    if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
+    if (/medio ?d[ií]a/i.test(value)) return true;
+    if (/\b\d{1,2}:\d{2}\b/.test(value)) return true;
+    return false;
+  };
+
+  async function sanitizeContact(contact: any) {
+    if (contact?.candidateName && isSuspiciousCandidateName(contact.candidateName)) {
+      await prisma.contact.update({
+        where: { id: contact.id },
+        data: { candidateName: null }
+      }).catch(() => {});
+      contact.candidateName = null;
+    }
+    return contact;
+  }
 
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const conversations = await prisma.conversation.findMany({
@@ -43,7 +76,20 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       }, {});
     }
 
-    return conversations.map(conversation => ({
+    const sanitizedContacts = await Promise.all(
+      conversations.map(async conversation => {
+        if (conversation.contact && isSuspiciousCandidateName(conversation.contact.candidateName)) {
+          await prisma.contact.update({
+            where: { id: conversation.contact.id },
+            data: { candidateName: null }
+          }).catch(() => {});
+          conversation.contact.candidateName = null;
+        }
+        return conversation;
+      })
+    );
+
+    return sanitizedContacts.map(conversation => ({
       ...conversation,
       unreadCount: unreadMap[conversation.id] || 0
     }));
@@ -119,6 +165,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
     return {
       ...conversation,
+      contact: await sanitizeContact(conversation.contact),
       status: normalizedStatus,
       aiMode: normalizedMode,
       aiPaused: Boolean(conversation.aiPaused),

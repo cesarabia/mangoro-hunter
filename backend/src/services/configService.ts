@@ -49,15 +49,18 @@ export function normalizeModelId(value?: string | null): string | null {
   if (!trimmed) return null;
   const lower = trimmed.toLowerCase().replace(/\s+/g, '-');
   const aliases: Record<string, string> = {
-    'gpt-5-mini': 'gpt-5-mini',
-    'gpt5-mini': 'gpt-5-mini',
-    'gpt-5-mini-2025-08-07': 'gpt-5-mini-2025-08-07',
-    'gpt-5-chat-latest': 'gpt-5-chat-latest',
-    'gpt-4.1-mini': 'gpt-4.1-mini',
-    'gpt-41-mini': 'gpt-4.1-mini',
-    'gpt-4.1-mini-2024-12-17': 'gpt-4.1-mini-2024-12-17'
+    "gpt-5-mini": "gpt-5-chat-latest",
+    "gpt5-mini": "gpt-5-chat-latest",
+    "gpt-5-mini-2025-08-07": "gpt-5-chat-latest",
+    "gpt-5-chat-latest": "gpt-5-chat-latest",
+    "gpt-4.1-mini": "gpt-4.1-mini",
+    "gpt-41-mini": "gpt-4.1-mini",
+    "gpt-4.1-mini-2024-12-17": "gpt-4.1-mini",
   };
-  return aliases[lower] || lower;
+  const mapped = aliases[lower] || lower;
+  const allowed = new Set(["gpt-4.1-mini", "gpt-5-chat-latest"]);
+  if (allowed.has(mapped)) return mapped;
+  return "gpt-4.1-mini";
 }
 
 export async function updateWhatsAppConfig(input: {
