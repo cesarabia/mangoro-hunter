@@ -753,9 +753,12 @@ async function extractNameWithAi(text: string, config: SystemConfig): Promise<st
     const confidence: number = typeof parsed?.confidence === "number" ? parsed.confidence : 0;
     if (!fullName || confidence < 0.4) return null;
     const normalized = normalizeName(fullName);
-    if (normalized && isValidName(normalized) && !isSuspiciousCandidateName(normalized)) {
-      return normalized;
+    if (!normalized || !isValidName(normalized) || isSuspiciousCandidateName(normalized)) {
+      return null;
     }
+    const words = normalized.split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > 3) return null;
+    return normalized;
   } catch (err) {
     console.warn("AI name extraction failed", err);
   }
@@ -777,6 +780,8 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
     "mediodia",
     "confirmar",
     "gracias",
+    "inmediata",
+    "inmediato",
   ];
   if (patterns.some(p => lower.includes(p))) return true;
   if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
@@ -1174,6 +1179,19 @@ async function handleAdminPendingAction(
     return true;
   }
 
+  if (!pending && lastCandidateWaId && /fecha guardada|confirmar entrevista|mensaje.*entrevista|usa ese texto/.test(trimmed)) {
+    const prep = await buildInterviewTemplatePending(lastCandidateWaId, app.log);
+    if (prep) {
+      await saveAdminPendingAction(adminConversationId, prep.action);
+      await prisma.conversation.update({
+        where: { id: adminConversationId },
+        data: { adminLastCandidateWaId: lastCandidateWaId },
+      });
+      await sendAdminReply(app, adminConversationId, adminWaId, prep.preview);
+      return true;
+    }
+  }
+
   if (pending && pending.type === "status" && pending.awaiting === "status") {
     if (statusFromText && pending.targetWaId) {
       await setConversationStatusByWaId(pending.targetWaId, statusFromText);
@@ -1296,6 +1314,40 @@ function parseInterviewInstruction(text: string): { day: string | null; time: st
   }
   if (!day && !time && !location) return null;
   return { day, time, location };
+}
+
+async function buildInterviewTemplatePending(targetWaId: string, logger: any): Promise<{ action: AdminPendingAction; preview: string } | null> {
+  const convo = await fetchConversationByIdentifier(targetWaId, { includeMessages: false });
+  if (!convo) return null;
+  const templates = await loadTemplateConfig(logger);
+  const templateName = templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE;
+  const variables = resolveTemplateVariables(templateName, [], templates, {
+    interviewDay: convo.interviewDay,
+    interviewTime: convo.interviewTime,
+    interviewLocation: convo.interviewLocation,
+  });
+  const preview = [
+    `Destino: +${targetWaId}`,
+    `Plantilla: ${templateName}`,
+    `Vars: {{1}}=${variables[0] || "día"}, {{2}}=${variables[1] || "hora"}, {{3}}=${variables[2] || "lugar"}`,
+    'Responde CONFIRMAR ENVÍO para enviarla o CANCELAR para anular.'
+  ].join('\n');
+  return {
+    action: {
+      type: "send_template",
+      targetWaId,
+      templateName,
+      variables,
+      templateLanguageCode: templates.templateLanguageCode || null,
+      relatedConversationId: convo.id,
+      awaiting: "confirm",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      needsConfirmation: true,
+      mode: "INTERVIEW",
+    },
+    preview,
+  };
 }
 
 function parseLooseSchedule(text: string): { day: string | null; time: string | null; location: string | null } | null {
