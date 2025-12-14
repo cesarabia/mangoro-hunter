@@ -548,7 +548,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
   }
 
   const nameSourceText =
-    isAttachment && extractedText ? `${effectiveText}\n\n${extractedText}`.trim() : effectiveText;
+    isAttachment && extractedText ? `${extractedText}\n\n${effectiveText}`.trim() : effectiveText;
   await maybeUpdateContactName(contact, params.profileName, nameSourceText, config);
 
   if (!conversation.isAdmin) {
@@ -1540,7 +1540,7 @@ function extractNameFromText(text?: string): string | null {
   }
 
   // Standalone name (high confidence): allow short plain names like "Ignacio González" or "Ignacio, Providencia"
-  const firstChunk = cleaned.split(/[,;-]/)[0]?.trim() || "";
+  const firstChunk = cleaned.split(/[\n,;-]/)[0]?.trim() || "";
   const candidateChunk = firstChunk && firstChunk.length < cleaned.length ? firstChunk : cleaned;
   const normalizedLower = stripAccents(candidateChunk).toLowerCase();
   const hasDisqualifyingIntent =
