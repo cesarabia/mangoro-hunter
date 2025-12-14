@@ -278,24 +278,28 @@ export async function handleInboundWhatsAppMessage(
     if (wantsAttachmentSummary) {
       const currentIsAttachment =
         params.media?.type === "image" || params.media?.type === "document";
-      let extractedText = currentIsAttachment
-        ? (refreshedAdminMessage?.transcriptText || "").trim()
-        : "";
-      if (!extractedText) {
-        const recentMedia = await prisma.message.findFirst({
-          where: {
-            conversationId: adminThread.conversation.id,
-            direction: "INBOUND",
-            mediaType: { in: ["image", "document"] },
-            transcriptText: { not: null },
-          },
-          orderBy: { timestamp: "desc" },
-        });
-        extractedText = (recentMedia?.transcriptText || "").trim();
+      if (currentIsAttachment) {
+        const extractedText = (refreshedAdminMessage?.transcriptText || "").trim();
+        const replyText = extractedText
+          ? buildAdminAttachmentSummary(extractedText)
+          : "Recibí el adjunto, pero no pude extraer texto. ¿Puedes reenviarlo en PDF legible o una imagen más nítida?";
+        await sendAdminReply(app, adminThread.conversation.id, waId, replyText);
+        return { conversationId: adminThread.conversation.id };
       }
+
+      const recentMedia = await prisma.message.findFirst({
+        where: {
+          conversationId: adminThread.conversation.id,
+          direction: "INBOUND",
+          mediaType: { in: ["image", "document"] },
+          transcriptText: { not: null },
+        },
+        orderBy: { timestamp: "desc" },
+      });
+      const extractedText = (recentMedia?.transcriptText || "").trim();
       const replyText = extractedText
         ? buildAdminAttachmentSummary(extractedText)
-        : "Recibí el adjunto, pero no pude extraer texto. ¿Puedes reenviarlo en PDF legible o una imagen más nítida?";
+        : "No encuentro un adjunto reciente con texto extraído. ¿Puedes reenviarlo en PDF legible o imagen más nítida?";
       await sendAdminReply(app, adminThread.conversation.id, waId, replyText);
       return { conversationId: adminThread.conversation.id };
     }
@@ -647,6 +651,45 @@ export async function maybeSendAutoReply(
       }
     }
 
+    const lastInbound = (conversation.messages || [])
+      .filter((m) => m.direction === "INBOUND")
+      .slice(-1)[0];
+    if (
+      mode === "INTERVIEW" &&
+      (lastInbound?.mediaType === "image" || lastInbound?.mediaType === "document")
+    ) {
+      const lastOutbound = (conversation.messages || [])
+        .filter((m) => m.direction === "OUTBOUND")
+        .slice(-1)[0];
+      const lastOutboundText = stripAccents((lastOutbound?.text || "").toLowerCase());
+      const alreadyAcked = lastOutboundText.includes("recibimos tu adjunto");
+      if (!alreadyAcked) {
+        const ackText =
+          "Gracias, recibimos tu adjunto. Si necesitas cambiar la entrevista, indícame 2 alternativas (día y hora).";
+        let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+        if (waId) {
+          sendResultRaw = await sendWhatsAppText(waId, ackText);
+        }
+        const normalizedSendResult = {
+          success: sendResultRaw.success,
+          messageId:
+            "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+          error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+        };
+        await prisma.message.create({
+          data: {
+            conversationId,
+            direction: "OUTBOUND",
+            text: ackText,
+            rawPayload: serializeJson({ autoReply: true, attachmentAck: true, sendResult: normalizedSendResult }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+      }
+      return;
+    }
+
     const context = conversation.messages
       .map((m) => {
         const line = buildAiMessageText(m);
@@ -680,7 +723,17 @@ export async function maybeSendAutoReply(
       return;
     }
 
-    if (actions.length > 0) {
+    const lastInboundText = (lastInbound?.transcriptText || lastInbound?.text || "").trim();
+    const lastInboundLower = stripAccents(lastInboundText).toLowerCase();
+    const parsedInbound = lastInboundText ? parseDayTime(lastInboundText) : { day: null, time: null };
+    const hasInterviewSignal =
+      Boolean(parsedInbound.day || parsedInbound.time) ||
+      /\b(confirm|si|sí|ok|dale|listo|perfecto|no puedo|no\s*$|reagend|reprogram|cambiar|cancel|entrevista|hora|horario)\b/.test(
+        lastInboundLower,
+      );
+
+    const allowInterviewActions = mode === "INTERVIEW" && hasInterviewSignal;
+    if (allowInterviewActions && actions.length > 0) {
       for (const action of actions) {
         if (action.type === "interview_update") {
           await applyInterviewAction(conversationId, action);
@@ -1084,11 +1137,23 @@ function decodeBase64Payload(value: string): Buffer | null {
 
 async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string | null> {
   const mod: any = await import("pdf-parse");
-  const pdfParse = mod?.default || mod;
-  const result = await pdfParse(buffer);
-  const raw = typeof result?.text === "string" ? result.text : "";
-  const normalized = normalizeExtractedText(raw);
-  return normalized.length > 0 ? normalized : null;
+
+  if (typeof mod?.PDFParse === "function") {
+    const parser = new mod.PDFParse(new Uint8Array(buffer));
+    const raw = await parser.getText();
+    const normalized = normalizeExtractedText(typeof raw === "string" ? raw : String(raw ?? ""));
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  const pdfParseCandidate = mod?.default || mod;
+  if (typeof pdfParseCandidate === "function") {
+    const result = await pdfParseCandidate(buffer);
+    const raw = typeof result?.text === "string" ? result.text : typeof result === "string" ? result : "";
+    const normalized = normalizeExtractedText(raw);
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  throw new Error("pdf-parse: export inválido");
 }
 
 async function extractTextFromDocxBuffer(buffer: Buffer): Promise<string | null> {
