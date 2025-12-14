@@ -1455,7 +1455,7 @@ function parseDayTime(text: string): { day: string | null; time: string | null }
   );
   const wordTimeMatch = text.match(/\b(una|once|diez|nueve|ocho|siete|seis|cinco|cuatro|tres|dos)\b/i);
   const timeMatch = text.match(
-    /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b/i,
+    /\b(\d{1,2})(?:[:\s](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b/i,
   );
   let time: string | null = null;
   if (timeMatch) {
