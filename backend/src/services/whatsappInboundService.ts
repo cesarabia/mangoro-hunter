@@ -158,6 +158,72 @@ export async function handleInboundWhatsAppMessage(
       return { conversationId: adminThread.conversation.id };
     }
 
+    const wantsSimpleMessage = /mensaje simple|sin plantilla|no plantilla|solo mensaje|mensaje directo/i.test(
+      trimmedEffective,
+    );
+    if (wantsSimpleMessage) {
+      const targetWaId =
+        extractWaIdFromText(trimmedEffective) || adminThread.conversation.adminLastCandidateWaId;
+      if (!targetWaId) {
+        await sendAdminReply(
+          app,
+          adminThread.conversation.id,
+          waId,
+          "Indica a qué número debo enviar el mensaje simple (ej: +569...).",
+        );
+        return { conversationId: adminThread.conversation.id };
+      }
+      const within24h = await isCandidateWithin24h(targetWaId);
+      if (!within24h) {
+        await sendAdminReply(
+          app,
+          adminThread.conversation.id,
+          waId,
+          "Fuera de ventana 24h: solo puedo enviar plantilla. Responde CONFIRMAR ENVÍO para usar la plantilla o CANCELAR para anular.",
+        );
+        return { conversationId: adminThread.conversation.id };
+      }
+      const explicitDraft =
+        trimmedEffective.includes(":") && trimmedEffective.split(":").slice(1).join(":").trim();
+      const draftText =
+        (explicitDraft && explicitDraft.length > 0 ? explicitDraft : null) ||
+        (await buildSimpleInterviewMessage(targetWaId, app.log));
+      if (!draftText) {
+        await sendAdminReply(
+          app,
+          adminThread.conversation.id,
+          waId,
+          "No encontré datos para armar el mensaje simple. Dame el texto a enviar o confirma si prefieres plantilla.",
+        );
+        return { conversationId: adminThread.conversation.id };
+      }
+      const targetConvo = await fetchConversationByIdentifier(targetWaId, { includeMessages: false });
+      const action: AdminPendingAction = {
+        type: "send_message",
+        targetWaId,
+        text: draftText,
+        relatedConversationId: targetConvo?.id ?? null,
+        awaiting: "confirm",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        needsConfirmation: true,
+        reminderSentAt: null,
+      };
+      await saveAdminPendingAction(adminThread.conversation.id, action);
+      await prisma.conversation.update({
+        where: { id: adminThread.conversation.id },
+        data: { adminLastCandidateWaId: targetWaId },
+      });
+      adminThread.conversation.adminLastCandidateWaId = targetWaId;
+      await sendAdminReply(
+        app,
+        adminThread.conversation.id,
+        waId,
+        `Borrador de mensaje simple:\n${draftText}\n\nResponde CONFIRMAR ENVÍO para enviarlo o CANCELAR para anular.`,
+      );
+      return { conversationId: adminThread.conversation.id };
+    }
+
     const templateIntent = await detectAdminTemplateIntent(
       trimmedEffective,
       config,
