@@ -690,6 +690,74 @@ export async function maybeSendAutoReply(
       return;
     }
 
+    if (mode === "INTERVIEW") {
+      const lastInboundText = (lastInbound?.transcriptText || lastInbound?.text || "").trim();
+      const lastInboundLower = stripAccents(lastInboundText).toLowerCase();
+      const parsedInbound = lastInboundText ? parseDayTime(lastInboundText) : { day: null, time: null };
+      const hasScheduleDetails = Boolean(parsedInbound.day || parsedInbound.time);
+      const isYes =
+        /\bconfirm(o|ar)?\b/.test(lastInboundLower) ||
+        /^(si|sí|ok|dale|listo|perfecto)\b/.test(lastInboundLower) ||
+        /\b(me sirve|de acuerdo)\b/.test(lastInboundLower);
+      const isNo =
+        /\bno (puedo|sirve|voy|asistir|ir)\b/.test(lastInboundLower) ||
+        /^no\s*[,!.?¿¡]*\s*$/.test(lastInboundLower) ||
+        /^no\b(?!\s+tengo\b)/.test(lastInboundLower);
+      const wantsReschedule =
+        /\b(reagend|reagendar|reprogram|reprogramar|cambiar|cambio|modificar|mover|cancelar|cancelacion|cancelación)\b/.test(
+          lastInboundLower,
+        ) &&
+        /\b(hora|horario|entrevista)\b/.test(lastInboundLower);
+
+      if (wantsReschedule && !hasScheduleDetails && !isYes && !isNo) {
+        const lastOutbound = (conversation.messages || [])
+          .filter((m) => m.direction === "OUTBOUND")
+          .slice(-1)[0];
+        const lastOutboundText = stripAccents((lastOutbound?.text || "").toLowerCase());
+        const alreadyAskedAlternatives =
+          lastOutboundText.includes("2 alternativas") ||
+          lastOutboundText.includes("dos alternativas") ||
+          lastOutboundText.includes("2 horarios") ||
+          lastOutboundText.includes("dos horarios");
+
+        if (!alreadyAskedAlternatives) {
+          if (conversation.interviewStatus === "CONFIRMED") {
+            await prisma.conversation
+              .update({
+                where: { id: conversationId },
+                data: { interviewStatus: "PENDING" },
+              })
+              .catch(() => {});
+          }
+
+          const replyText =
+            "Entiendo perfecto. ¿Qué 2 horarios (día y hora) te acomodan para proponerte una alternativa?\n" +
+            "Si prefieres, también puedo dejar la coordinación en pausa.";
+          let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+          if (waId) {
+            sendResultRaw = await sendWhatsAppText(waId, replyText);
+          }
+          const normalizedSendResult = {
+            success: sendResultRaw.success,
+            messageId:
+              "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+            error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+          };
+          await prisma.message.create({
+            data: {
+              conversationId,
+              direction: "OUTBOUND",
+              text: replyText,
+              rawPayload: serializeJson({ autoReply: true, rescheduleRequest: true, sendResult: normalizedSendResult }),
+              timestamp: new Date(),
+              read: true,
+            },
+          });
+        }
+        return;
+      }
+    }
+
     const context = conversation.messages
       .map((m) => {
         const line = buildAiMessageText(m);
@@ -726,11 +794,13 @@ export async function maybeSendAutoReply(
     const lastInboundText = (lastInbound?.transcriptText || lastInbound?.text || "").trim();
     const lastInboundLower = stripAccents(lastInboundText).toLowerCase();
     const parsedInbound = lastInboundText ? parseDayTime(lastInboundText) : { day: null, time: null };
-    const hasInterviewSignal =
-      Boolean(parsedInbound.day || parsedInbound.time) ||
-      /\b(confirm|si|sí|ok|dale|listo|perfecto|no puedo|no\s*$|reagend|reprogram|cambiar|cancel|entrevista|hora|horario)\b/.test(
-        lastInboundLower,
-      );
+    const hasExplicitYesNo =
+      /\bconfirm(o|ar)?\b/.test(lastInboundLower) ||
+      /^(si|sí|ok|dale|listo|perfecto)\b/.test(lastInboundLower) ||
+      /\b(no puedo|me sirve|de acuerdo)\b/.test(lastInboundLower) ||
+      /^no\s*[,!.?¿¡]*\s*$/.test(lastInboundLower) ||
+      /^no\b(?!\s+tengo\b)/.test(lastInboundLower);
+    const hasInterviewSignal = Boolean(parsedInbound.day || parsedInbound.time) || hasExplicitYesNo;
 
     const allowInterviewActions = mode === "INTERVIEW" && hasInterviewSignal;
     if (allowInterviewActions && actions.length > 0) {
@@ -747,13 +817,16 @@ export async function maybeSendAutoReply(
             interviewDay: true,
             interviewTime: true,
             interviewLocation: true,
+            interviewStatus: true,
           },
         });
-        const locationText =
-          convo?.interviewLocation || "Te enviaremos la dirección exacta por este medio.";
-        const dayText = convo?.interviewDay || "día por definir";
-        const timeText = convo?.interviewTime || "hora por definir";
-        suggestionText = `Quedamos para ${dayText} a las ${timeText} en ${locationText}.`;
+        if (convo?.interviewStatus === "CONFIRMED") {
+          const locationText =
+            convo?.interviewLocation || "Te enviaremos la dirección exacta por este medio.";
+          const dayText = convo?.interviewDay || "día por definir";
+          const timeText = convo?.interviewTime || "hora por definir";
+          suggestionText = `Quedamos para ${dayText} a las ${timeText} en ${locationText}.`;
+        }
       }
     }
 
