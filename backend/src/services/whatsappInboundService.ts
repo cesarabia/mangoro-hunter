@@ -1206,11 +1206,17 @@ async function executePendingAction(params: {
           app.log,
         );
         if (simpleDraft) {
+          const targetConvo =
+            pendingAction.relatedConversationId ||
+            (await fetchConversationByIdentifier(pendingAction.targetWaId, {
+              includeMessages: false,
+            }))?.id ||
+            null;
           const sendResult = await sendWhatsAppText(pendingAction.targetWaId, simpleDraft);
-          if (sendResult.success && pendingAction.relatedConversationId) {
+          if (sendResult.success && targetConvo) {
             await prisma.message.create({
               data: {
-                conversationId: pendingAction.relatedConversationId,
+                conversationId: targetConvo,
                 direction: "OUTBOUND",
                 text: simpleDraft,
                 rawPayload: serializeJson({ adminSend: true, sendResult }),
