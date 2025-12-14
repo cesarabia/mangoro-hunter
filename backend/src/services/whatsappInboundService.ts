@@ -47,12 +47,79 @@ interface InboundMessageParams {
 
 const UPLOADS_BASE = path.join(__dirname, "..", "uploads");
 
+async function mergeOrCreateContact(waId: string, preferredId?: string) {
+  const candidates = buildWaIdCandidates(waId);
+  let contacts = await prisma.contact.findMany({
+    where: {
+      OR: [
+        { waId: { in: candidates } },
+        { phone: { in: candidates } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  if (preferredId && !contacts.find((c) => c.id === preferredId)) {
+    const preferred = await prisma.contact.findUnique({ where: { id: preferredId } });
+    if (preferred) contacts = [preferred, ...contacts];
+  }
+  if (contacts.length === 0) {
+    return prisma.contact.create({
+      data: {
+        waId: normalizeWhatsAppId(waId),
+        phone: waId,
+      },
+    });
+  }
+  let primary =
+    contacts.find((c) => c.id === preferredId) ||
+    contacts.find((c) => c.candidateName) ||
+    contacts[0];
+  const secondaries = contacts.filter((c) => c.id !== primary.id);
+  const canonicalWaId =
+    normalizeWhatsAppId(primary.waId || primary.phone || waId) || primary.waId || waId;
+  const canonicalPhone = primary.phone || (canonicalWaId ? `+${canonicalWaId}` : null);
+
+  await prisma.$transaction(async (tx) => {
+    for (const sec of secondaries) {
+      await tx.conversation.updateMany({
+        where: { contactId: sec.id },
+        data: { contactId: primary.id },
+      });
+      await tx.application.updateMany({
+        where: { contactId: sec.id },
+        data: { contactId: primary.id },
+      });
+      await tx.contact.update({
+        where: { id: sec.id },
+        data: { waId: null, phone: null },
+      });
+      await tx.contact.delete({ where: { id: sec.id } });
+    }
+    await tx.contact.update({
+      where: { id: primary.id },
+      data: {
+        waId: canonicalWaId,
+        phone: canonicalPhone ?? undefined,
+      },
+    });
+  });
+
+  const refreshed = await prisma.contact.findUnique({ where: { id: primary.id } });
+  if (refreshed) return refreshed;
+  return prisma.contact.create({
+    data: {
+      waId: normalizeWhatsAppId(waId),
+      phone: waId,
+    },
+  });
+}
+
 export async function handleInboundWhatsAppMessage(
   app: FastifyInstance,
   params: InboundMessageParams,
 ): Promise<{ conversationId: string }> {
   const config = params.config ?? (await getSystemConfig());
-  const waId = params.from;
+  const waId = normalizeWhatsAppId(params.from) || params.from;
   const normalizedAdmin = normalizeWhatsAppId(config.adminWaId);
   const normalizedSender = normalizeWhatsAppId(waId);
   const isAdminSender =
@@ -142,6 +209,7 @@ export async function handleInboundWhatsAppMessage(
       adminThread.conversation.adminLastCandidateWaId || null,
       trimmedEffective,
       normalizedAdmin,
+      config,
     );
     if (handledPending) {
       return { conversationId: adminThread.conversation.id };
@@ -257,21 +325,16 @@ export async function handleInboundWhatsAppMessage(
     });
     const pendingNoteAction =
       pendingAction || parseAdminPendingAction(adminThread.conversation.adminPendingAction);
-    const note =
-      pendingNoteAction && (pendingNoteAction.type === "send_template" || pendingNoteAction.type === "send_message")
-        ? `\n\nNota: hay un envío pendiente para +${pendingNoteAction.targetWaId}. Responde CONFIRMAR ENVÍO para ejecutarlo o escribe cancelar para anular.`
-        : "";
-    await sendAdminReply(app, adminThread.conversation.id, waId, `${aiResponse}${note}`);
-    return { conversationId: adminThread.conversation.id };
-  }
+  const note =
+    pendingNoteAction && (pendingNoteAction.type === "send_template" || pendingNoteAction.type === "send_message")
+      ? `\n\nNota: hay un envío pendiente para +${pendingNoteAction.targetWaId}. Responde CONFIRMAR ENVÍO para ejecutarlo o escribe cancelar para anular.`
+      : "";
+  await sendAdminReply(app, adminThread.conversation.id, waId, `${aiResponse}${note}`);
+  return { conversationId: adminThread.conversation.id };
+}
 
-  let contact = await prisma.contact.findUnique({ where: { waId } });
-  if (!contact) {
-    contact = await prisma.contact.create({
-      data: { waId, phone: waId },
-    });
-  }
-  await maybeUpdateContactName(contact, params.profileName, params.text, config);
+const contact = (await mergeOrCreateContact(waId))!;
+await maybeUpdateContactName(contact, params.profileName, params.text, config);
 
   let conversation = await prisma.conversation.findFirst({
     where: { contactId: contact.id, isAdmin: false },
@@ -906,10 +969,12 @@ async function detectInterviewSignals(
   }
 
   if (Object.keys(updates).length === 0) return;
-  await prisma.conversation.update({
+  const convo = await prisma.conversation.findUnique({
     where: { id: conversationId },
-    data: updates,
+    include: { contact: true },
   });
+  if (!convo || !convo.contact?.waId) return;
+  await applyConversationInterviewUpdate(convo.contact.waId, updates, { byConversationId: conversationId });
 }
 
 function parseDayTime(text: string): { day: string | null; time: string | null } {
@@ -1014,6 +1079,15 @@ type AdminPendingAction =
     }
   | {
       type: "reactivate";
+      targetWaId: string | null;
+      awaiting: "confirm";
+      createdAt: number;
+      updatedAt: number;
+      needsConfirmation: boolean;
+      reminderSentAt?: number | null;
+    }
+  | {
+      type: "reset_chat";
       targetWaId: string | null;
       awaiting: "confirm";
       createdAt: number;
@@ -1125,6 +1199,36 @@ async function executePendingAction(params: {
   }
   if (pendingAction.type === "send_template") {
     try {
+      const within24 = await isCandidateWithin24h(pendingAction.targetWaId);
+      if (within24) {
+        const simpleDraft = await buildSimpleInterviewMessage(
+          pendingAction.targetWaId,
+          app.log,
+        );
+        if (simpleDraft) {
+          const sendResult = await sendWhatsAppText(pendingAction.targetWaId, simpleDraft);
+          if (sendResult.success && pendingAction.relatedConversationId) {
+            await prisma.message.create({
+              data: {
+                conversationId: pendingAction.relatedConversationId,
+                direction: "OUTBOUND",
+                text: simpleDraft,
+                rawPayload: serializeJson({ adminSend: true, sendResult }),
+                timestamp: new Date(),
+                read: true,
+              },
+            });
+          }
+          await saveAdminPendingAction(adminConversationId, null);
+          await sendAdminReply(
+            app,
+            adminConversationId,
+            adminWaId,
+            `Mensaje simple enviado a +${pendingAction.targetWaId} (dentro de 24h).`,
+          );
+          return true;
+        }
+      }
       const mode =
         pendingAction.mode ||
         (pendingAction.templateName?.includes("entrevista") ? "INTERVIEW" : "RECRUIT");
@@ -1301,6 +1405,54 @@ async function executePendingAction(params: {
     }
     return true;
   }
+  if (pendingAction.type === "reset_chat") {
+    const target = pendingAction.targetWaId;
+    if (!target) return true;
+    const candidates = buildWaIdCandidates(target);
+    const contacts = await prisma.contact.findMany({
+      where: {
+        OR: [
+          { waId: { in: candidates } },
+          { phone: { in: candidates } },
+        ],
+      },
+    });
+    if (contacts.length === 0) {
+      await sendAdminReply(app, adminConversationId, adminWaId, `No encontré el contacto +${target}.`);
+      await saveAdminPendingAction(adminConversationId, null);
+      return true;
+    }
+    const contactIds = contacts.map((c) => c.id);
+    const conversations = await prisma.conversation.findMany({
+      where: { contactId: { in: contactIds } },
+      select: { id: true },
+    });
+    const conversationIds = conversations.map((c) => c.id);
+    await prisma.$transaction(async (tx) => {
+      if (conversationIds.length > 0) {
+        await tx.message.deleteMany({ where: { conversationId: { in: conversationIds } } });
+        await tx.conversation.deleteMany({ where: { id: { in: conversationIds } } });
+      }
+      await tx.contact.updateMany({
+        where: { id: { in: contactIds } },
+        data: {
+          candidateName: null,
+          name: null,
+          displayName: null,
+          noContact: false,
+          updatedAt: new Date(),
+        },
+      });
+    });
+    await saveAdminPendingAction(adminConversationId, null);
+    await sendAdminReply(
+      app,
+      adminConversationId,
+      adminWaId,
+      `Conversación de +${target} reiniciada solo para pruebas.`,
+    );
+    return true;
+  }
   return false;
 }
 
@@ -1310,6 +1462,7 @@ async function handleAdminPendingAction(
   lastCandidateWaId: string | null,
   text: string,
   adminWaId: string,
+  config: SystemConfig,
 ): Promise<boolean> {
   const trimmed = text.trim().toLowerCase();
   const adminConvo = await prisma.conversation.findUnique({
@@ -1412,6 +1565,42 @@ async function handleAdminPendingAction(
         adminConversationId,
         adminWaId,
         `¿Confirmas reactivar el contacto +${target}? Responde CONFIRMAR ENVÍO para proceder o CANCELAR para anular.`,
+      );
+      return true;
+    }
+
+    const resetIntent = /(reset|reiniciar|borrar).*conversaci[oó]n|reset chat/i.test(trimmed);
+    if (resetIntent) {
+      const target =
+        extractWaIdFromText(text) ||
+        (config.testPhoneNumber ? normalizeWhatsAppId(config.testPhoneNumber) : null);
+      const allowed = [
+        normalizeWhatsAppId(config.adminWaId),
+        config.testPhoneNumber ? normalizeWhatsAppId(config.testPhoneNumber) : null,
+      ].filter(Boolean) as string[];
+      if (!target || !allowed.includes(target)) {
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          "Solo puedo resetear el chat del número de pruebas configurado. Indica ese número o actualiza Configuración.",
+        );
+        return true;
+      }
+      await saveAdminPendingAction(adminConversationId, {
+        type: "reset_chat",
+        targetWaId: target,
+        awaiting: "confirm",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        needsConfirmation: true,
+        reminderSentAt: null,
+      });
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `¿Confirmas resetear el chat de +${target}? Responde CONFIRMAR ENVÍO para proceder o CANCELAR para anular.`,
       );
       return true;
     }
@@ -1633,20 +1822,38 @@ function parseLooseSchedule(text: string): { day: string | null; time: string | 
 async function applyConversationInterviewUpdate(
   waId: string,
   updates: { interviewDay?: string | null; interviewTime?: string | null; interviewLocation?: string | null; interviewStatus?: string | null },
+  opts?: { byConversationId?: string },
 ) {
-  const convo = await fetchConversationByIdentifier(waId, { includeMessages: false });
+  let convo = opts?.byConversationId
+    ? await prisma.conversation.findUnique({
+        where: { id: opts.byConversationId },
+        include: { contact: true },
+      })
+    : await fetchConversationByIdentifier(waId, { includeMessages: false });
   if (!convo) return;
+  const nextStatus =
+    typeof updates.interviewStatus !== "undefined"
+      ? updates.interviewStatus
+      : convo.interviewStatus ||
+        ((updates.interviewDay || updates.interviewTime || updates.interviewLocation) ? "PENDING" : null);
+  const data: any = {
+    aiMode: !convo.isAdmin ? "INTERVIEW" : convo.aiMode,
+    interviewDay:
+      typeof updates.interviewDay !== "undefined" ? updates.interviewDay : convo.interviewDay,
+    interviewTime:
+      typeof updates.interviewTime !== "undefined" ? updates.interviewTime : convo.interviewTime,
+    interviewLocation:
+      typeof updates.interviewLocation !== "undefined"
+        ? updates.interviewLocation
+        : convo.interviewLocation,
+    interviewStatus: nextStatus,
+  };
+  if (!convo.isAdmin && (nextStatus === "CONFIRMED" || updates.interviewDay || updates.interviewTime)) {
+    data.status = "OPEN";
+  }
   await prisma.conversation.update({
     where: { id: convo.id },
-    data: {
-      aiMode: "INTERVIEW",
-      interviewDay: typeof updates.interviewDay !== "undefined" ? updates.interviewDay : convo.interviewDay,
-      interviewTime: typeof updates.interviewTime !== "undefined" ? updates.interviewTime : convo.interviewTime,
-      interviewLocation:
-        typeof updates.interviewLocation !== "undefined" ? updates.interviewLocation : convo.interviewLocation,
-      interviewStatus:
-        typeof updates.interviewStatus !== "undefined" ? updates.interviewStatus : convo.interviewStatus,
-    },
+    data,
   });
 }
 
