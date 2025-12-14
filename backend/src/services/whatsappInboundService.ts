@@ -1228,7 +1228,14 @@ async function extractNameWithAi(text: string, config: SystemConfig): Promise<st
 function isSuspiciousCandidateName(value?: string | null): boolean {
   if (!value) return true;
   if (containsDataLabel(value)) return true;
-  const lower = value.toLowerCase();
+  const lower = stripAccents(value).toLowerCase();
+  // Never treat intent/commands as names (prevents candidateName degradation).
+  if (/\b(cancelar|cancelacion|cancelación|reagend|reagendar|reprogram|reprogramar|cambiar|cambio|modificar|mover)\b/.test(lower)) {
+    return true;
+  }
+  if (/\b(entrevista|hora|horario|reagendar|reagendemos|reagenden)\b/.test(lower) && /\b(cancelar|cambiar|reagend|reprogram|mover)\b/.test(lower)) {
+    return true;
+  }
   const patterns = [
     "hola quiero postular",
     "hola",
@@ -2020,9 +2027,14 @@ async function handleAdminPendingAction(
   }
 
   if (!pending) {
-    const reactivateIntent = /(reactivar|habilitar|permitir).*no contactar|quitar.*no contactar|activar contacto/i.test(
-      trimmed,
-    );
+    const trimmedNormalized = stripAccents(trimmed).toLowerCase();
+    const reactivateIntent =
+      /\b(reactivar|reactiva|habilitar|habilita|permitir|permite|activar|activa|desbloquear|desbloquea|quitar|quita|sacar|saca|levantar|levanta|remover|remove)\b/.test(
+        trimmedNormalized,
+      ) &&
+      /\b(no\s*contactar|no\s*contacto|contacto|contactar|n[uú]mero|numero|whatsapp|bloqueo|bloquead[oa])\b/.test(
+        trimmedNormalized,
+      );
     if (reactivateIntent) {
       const target = extractWaIdFromText(text) || lastCandidateWaId;
       if (!target) {
@@ -2519,12 +2531,17 @@ function extractWaIdFromText(text?: string | null): string | null {
 }
 
 function isOptOutText(text: string): boolean {
-  const lower = text.toLowerCase();
-  return (
-    /no me env[ií]en m[aá]s|quiero dejar de postular|stop|cancelar|borrar mis datos|no contacto|no contactar/i.test(
-      lower,
-    ) || /no.*contactar/.test(lower)
-  );
+  const lower = stripAccents(text).toLowerCase();
+  // NO_CONTACTAR only for explicit opt-out / compliance intent.
+  if (/\b(stop|unsubscribe)\b/.test(lower)) return true;
+  if (/no me envien mas|no me escriban mas|no quiero recibir( mas)? mensajes/.test(lower)) return true;
+  if (/no quiero que me escriban|no quiero que me contacten/.test(lower)) return true;
+  if (/darme de baja|darse de baja|quiero darme de baja/.test(lower)) return true;
+  if (/borrar mis datos|eliminar mis datos/.test(lower)) return true;
+  if (/\bno contactar\b|\bno contacto\b/.test(lower)) return true;
+  if (/no.*contactar/.test(lower)) return true;
+  if (/quiero dejar de postular/.test(lower)) return true;
+  return false;
 }
 
 async function maybeHandleOptOut(
