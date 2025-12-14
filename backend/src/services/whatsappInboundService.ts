@@ -485,11 +485,11 @@ async function processMediaAttachment(
       data: { mediaPath: relativePath, mediaMime: mimeType || null },
     });
 
-    if (media.type === "audio" || media.type === "voice") {
-      const transcription = await transcribeAudio(
-        absolutePath,
-        options.config,
-        app,
+  if (media.type === "audio" || media.type === "voice") {
+    const transcription = await transcribeAudio(
+      absolutePath,
+      options.config,
+      app,
       );
       if (transcription.text) {
         await prisma.message.update({
@@ -508,6 +508,19 @@ async function processMediaAttachment(
           data: { text: fallback, transcriptText: null },
         });
       }
+    }
+    if (media.type === "image" || media.type === "document") {
+      const fallback =
+        media.type === "image"
+          ? "Recibimos tu imagen. Si es tu CV, por favor envía un PDF legible o texto con experiencia y disponibilidad."
+          : "Recibimos tu archivo. Si es tu CV, asegúrate que sea legible en PDF y envía un resumen breve de experiencia y disponibilidad.";
+      await prisma.message.update({
+        where: { id: options.messageId },
+        data: {
+          transcriptText: fallback,
+          text: fallback,
+        },
+      });
     }
   } catch (err) {
     app.log.error(
@@ -822,6 +835,9 @@ function parseDayTime(text: string): { day: string | null; time: string | null }
   if (timeMatch) {
     let hour = parseInt(timeMatch[1], 10);
     const minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+    if (hour > 23 || minutes > 59) {
+      return { day: dayMatch ? capitalize(dayMatch[1]) : null, time: null };
+    }
     const suffix = timeMatch[3]?.toLowerCase();
     if (suffix?.includes("p") && hour < 12) hour += 12;
     if (suffix?.includes("a") && hour === 12) hour = 0;
