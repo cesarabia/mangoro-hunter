@@ -22,9 +22,14 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       'no me sirve',
       'ok',
       'si pero',
-      'gracias'
+      'gracias',
+      'inmediata',
+      'inmediato'
     ];
     if (patterns.some(p => lower.includes(p))) return true;
+    if (/\b(cancelar|cancelaci[oó]n|reagend|reprogram|cambiar|modificar|mover)\b/i.test(lower)) return true;
+    if (/\b(cv|cb|curric|curr[íi]cul|vitae|adjunt|archivo|documento|imagen|foto|pdf|word|docx)\b/i.test(lower)) return true;
+    if (/\b(tengo|adjunto|envio|envi[ée]|enviar|mando|mand[ée]|subo)\b/i.test(lower)) return true;
     if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
     if (/medio ?d[ií]a/i.test(value)) return true;
     if (/\b\d{1,2}:\d{2}\b/.test(value)) return true;

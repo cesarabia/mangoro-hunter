@@ -33,6 +33,7 @@ interface InboundMedia {
   sha256?: string;
   filename?: string;
   caption?: string;
+  dataBase64?: string;
 }
 
 interface InboundMessageParams {
@@ -221,11 +222,7 @@ export async function handleInboundWhatsAppMessage(
     const refreshedAdminMessage = await prisma.message.findUnique({
       where: { id: adminMessage.id },
     });
-    const effectiveText =
-      refreshedAdminMessage?.transcriptText ||
-      refreshedAdminMessage?.text ||
-      params.text ||
-      "";
+    const effectiveText = buildPolicyText(params, refreshedAdminMessage);
 
     const candidateFromText = extractWaIdFromText(effectiveText);
     if (candidateFromText) {
@@ -268,6 +265,38 @@ export async function handleInboundWhatsAppMessage(
       if (response) {
         await sendAdminReply(app, adminThread.conversation.id, waId, response);
       }
+      return { conversationId: adminThread.conversation.id };
+    }
+
+    const normalizedEffective = stripAccents(trimmedEffective).toLowerCase();
+    const wantsAttachmentSummary =
+      !trimmedEffective.startsWith("/") &&
+      isAttachmentSummaryRequest(trimmedEffective) &&
+      (params.media?.type === "image" ||
+        params.media?.type === "document" ||
+        /\b(documento|archivo|imagen|adjunto)\b/.test(normalizedEffective));
+    if (wantsAttachmentSummary) {
+      const currentIsAttachment =
+        params.media?.type === "image" || params.media?.type === "document";
+      let extractedText = currentIsAttachment
+        ? (refreshedAdminMessage?.transcriptText || "").trim()
+        : "";
+      if (!extractedText) {
+        const recentMedia = await prisma.message.findFirst({
+          where: {
+            conversationId: adminThread.conversation.id,
+            direction: "INBOUND",
+            mediaType: { in: ["image", "document"] },
+            transcriptText: { not: null },
+          },
+          orderBy: { timestamp: "desc" },
+        });
+        extractedText = (recentMedia?.transcriptText || "").trim();
+      }
+      const replyText = extractedText
+        ? buildAdminAttachmentSummary(extractedText)
+        : "Recibí el adjunto, pero no pude extraer texto. ¿Puedes reenviarlo en PDF legible o una imagen más nítida?";
+      await sendAdminReply(app, adminThread.conversation.id, waId, replyText);
       return { conversationId: adminThread.conversation.id };
     }
 
@@ -456,11 +485,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
   const latestMessage = await prisma.message.findUnique({
     where: { id: message.id },
   });
-  const effectiveText =
-    latestMessage?.transcriptText ||
-    latestMessage?.text ||
-    params.text ||
-    "";
+  const effectiveText = buildPolicyText(params, latestMessage);
 
   const optedIn = await maybeHandleOptIn(app, conversation, contact, effectiveText);
   if (optedIn) {
@@ -473,7 +498,58 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
     return { conversationId: conversation.id };
   }
 
-  await maybeUpdateContactName(contact, params.profileName, effectiveText, config);
+  const mediaType = params.media?.type || null;
+  const isAttachment = mediaType === "image" || mediaType === "document";
+  const extractedText = (latestMessage?.transcriptText || "").trim();
+  if (isAttachment && !extractedText) {
+    const lastOutbound = await prisma.message.findFirst({
+      where: { conversationId: conversation.id, direction: "OUTBOUND" },
+      orderBy: { timestamp: "desc" },
+    });
+    const lastOutboundText = stripAccents((lastOutbound?.text || "").toLowerCase());
+    const alreadyAsked = lastOutboundText.includes("no pude leer el adjunto");
+    if (!alreadyAsked) {
+      const question =
+        mediaType === "image"
+          ? "Recibí tu imagen, pero no pude leer el adjunto con claridad. ¿Puedes reenviarla más nítida o escribir en un mensaje: nombre y apellido, comuna/ciudad, RUT, experiencia y disponibilidad?"
+          : "Recibí tu archivo, pero no pude leer el adjunto. ¿Puedes reenviarlo en PDF legible o escribir en un mensaje: nombre y apellido, comuna/ciudad, RUT, experiencia y disponibilidad?";
+      let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+      if (contact.waId) {
+        sendResultRaw = await sendWhatsAppText(contact.waId, question);
+      }
+      const normalizedSendResult = {
+        success: sendResultRaw.success,
+        messageId:
+          "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+        error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+      };
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          direction: "OUTBOUND",
+          text: question,
+          rawPayload: serializeJson({
+            autoReply: true,
+            attachmentUnreadable: true,
+            sendResult: normalizedSendResult,
+          }),
+          timestamp: new Date(),
+          read: true,
+        },
+      });
+      await prisma.conversation
+        .update({
+          where: { id: conversation.id },
+          data: { updatedAt: new Date() },
+        })
+        .catch(() => {});
+    }
+    return { conversationId: conversation.id };
+  }
+
+  const nameSourceText =
+    isAttachment && extractedText ? `${effectiveText}\n\n${extractedText}`.trim() : effectiveText;
+  await maybeUpdateContactName(contact, params.profileName, nameSourceText, config);
 
   if (!conversation.isAdmin) {
     await detectInterviewSignals(app, conversation.id, effectiveText);
@@ -572,11 +648,10 @@ export async function maybeSendAutoReply(
     }
 
     const context = conversation.messages
-      .map((m) =>
-        m.direction === "INBOUND"
-          ? `Candidato: ${m.text}`
-          : `Agente: ${m.text}`,
-      )
+      .map((m) => {
+        const line = buildAiMessageText(m);
+        return m.direction === "INBOUND" ? `Candidato: ${line}` : `Agente: ${line}`;
+      })
       .join("\n");
 
     let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
@@ -857,6 +932,115 @@ function buildInboundText(text?: string, media?: InboundMedia | null): string {
   return mediaLabel || "(mensaje recibido)";
 }
 
+function buildPolicyText(
+  params: Pick<InboundMessageParams, "text" | "media">,
+  message?: {
+    mediaType?: string | null;
+    text?: string | null;
+    transcriptText?: string | null;
+  } | null,
+): string {
+  const rawText = (params.text || "").trim();
+  const caption = (params.media?.caption || "").trim();
+  const mediaType = message?.mediaType || params.media?.type || null;
+
+  if (mediaType === "audio" || mediaType === "voice") {
+    return (message?.transcriptText || message?.text || rawText || caption || "").trim();
+  }
+
+  if (mediaType === "image" || mediaType === "document" || mediaType === "sticker") {
+    return (rawText || caption || "").trim();
+  }
+
+  return (message?.text || rawText || "").trim();
+}
+
+function truncateText(text: string, maxLength: number): string {
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function buildAiMessageText(m: {
+  text?: string | null;
+  transcriptText?: string | null;
+  mediaType?: string | null;
+}): string {
+  const base = (m.text || "").trim();
+  const transcript = (m.transcriptText || "").trim();
+  if (!transcript || transcript === base) return base || "(sin texto)";
+  if (m.mediaType === "audio" || m.mediaType === "voice") return transcript || base || "(sin texto)";
+  const snippet = truncateText(transcript, 2000);
+  if (!base) return `[Adjunto transcrito]\n${snippet}`;
+  return `${base}\n[Adjunto transcrito]\n${snippet}`;
+}
+
+function isAttachmentSummaryRequest(text: string): boolean {
+  const normalized = stripAccents((text || "").trim()).toLowerCase();
+  if (!normalized) return false;
+  return (
+    /(?:que|qué)\s+(?:dice|trae|contiene)/.test(normalized) ||
+    /(?:que|qué)\s+informaci[oó]n/.test(normalized) ||
+    /\b(resume|resumen|resumir|analiza|analizar|leer|transcrib|ocr)\b/.test(normalized)
+  );
+}
+
+function guessNameFromDocumentText(text: string): string | null {
+  if (!text) return null;
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines.slice(0, 12)) {
+    const normalized = normalizeName(line);
+    if (!normalized) continue;
+    if (!isValidName(normalized)) continue;
+    if (containsDataLabel(normalized)) continue;
+    if (isSuspiciousCandidateName(normalized)) continue;
+    return normalized;
+  }
+  return null;
+}
+
+function extractPhoneSnippet(text: string): string | null {
+  if (!text) return null;
+  const match = text.match(/\+?\d{9,15}/);
+  if (!match) return null;
+  return match[0];
+}
+
+function buildAdminAttachmentSummary(extractedText: string): string {
+  const cleaned = normalizeExtractedText(extractedText || "");
+  const labeledParts = extractLabeledNameParts(cleaned);
+  const nameFromLabels = buildCandidateNameFromLabels({
+    existingCandidate: null,
+    display: null,
+    labeledParts,
+  });
+  const name = nameFromLabels || extractNameFromText(cleaned) || guessNameFromDocumentText(cleaned);
+  const rut = extractChileRut(cleaned);
+  const email = extractEmail(cleaned);
+  const phone = extractPhoneSnippet(cleaned);
+  const location = extractLocation(cleaned);
+  const experience = extractExperienceSnippet(cleaned);
+  const availability = extractAvailabilitySnippet(cleaned);
+
+  const lines = [
+    "📎 Resumen del adjunto (basado en texto extraído):",
+    `- Nombre: ${name || "No aparece"}`,
+    `- RUT: ${rut || "No aparece"}`,
+    `- Email: ${email || "No aparece"}`,
+    `- Teléfono: ${phone || "No aparece"}`,
+    `- Comuna/Ciudad: ${location || "No aparece"}`,
+    `- Experiencia: ${experience || "No aparece"}`,
+    `- Disponibilidad: ${availability || "No aparece"}`,
+    "",
+    "Fragmento:",
+    truncateText(cleaned, 450) || "(sin texto)",
+  ];
+  return lines.join("\n");
+}
+
 function renderMediaLabel(media?: InboundMedia | null): string | null {
   if (!media) return null;
   if (media.type === "voice" || media.type === "audio") {
@@ -877,6 +1061,142 @@ function renderMediaLabel(media?: InboundMedia | null): string | null {
   return "Mensaje multimedia recibido";
 }
 
+function normalizeExtractedText(text: string): string {
+  return text
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function decodeBase64Payload(value: string): Buffer | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const base64 = trimmed.includes("base64,") ? trimmed.split("base64,").pop() || "" : trimmed;
+  if (!base64) return null;
+  try {
+    return Buffer.from(base64, "base64");
+  } catch {
+    return null;
+  }
+}
+
+async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string | null> {
+  const mod: any = await import("pdf-parse");
+  const pdfParse = mod?.default || mod;
+  const result = await pdfParse(buffer);
+  const raw = typeof result?.text === "string" ? result.text : "";
+  const normalized = normalizeExtractedText(raw);
+  return normalized.length > 0 ? normalized : null;
+}
+
+async function extractTextFromDocxBuffer(buffer: Buffer): Promise<string | null> {
+  const mod: any = await import("mammoth");
+  const mammoth = mod?.default || mod;
+  const result = await mammoth.extractRawText({ buffer });
+  const raw = typeof result?.value === "string" ? result.value : "";
+  const normalized = normalizeExtractedText(raw);
+  return normalized.length > 0 ? normalized : null;
+}
+
+async function extractTextFromImageWithAi(
+  buffer: Buffer,
+  mimeType: string | null | undefined,
+  config: SystemConfig,
+  app: FastifyInstance,
+): Promise<{ text: string | null; error?: string | null }> {
+  try {
+    const apiKey = getEffectiveOpenAiKey(config);
+    if (!apiKey) return { text: null, error: "Sin clave de OpenAI" };
+    const client = new OpenAI({ apiKey });
+    const url = `data:${mimeType || "image/jpeg"};base64,${buffer.toString("base64")}`;
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "Eres un sistema de OCR. Extrae solo el texto visible en la imagen. " +
+            "No inventes ni infieras. Si no hay texto legible, devuelve texto vacío.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Devuelve JSON con {\"text\": \"...\"}." },
+            { type: "image_url", image_url: { url } },
+          ] as any,
+        },
+      ],
+    });
+    const raw = completion.choices?.[0]?.message?.content || "";
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = null;
+    }
+    const extracted = typeof parsed?.text === "string" ? parsed.text : "";
+    const normalized = normalizeExtractedText(extracted);
+    return { text: normalized.length > 0 ? normalized : null };
+  } catch (err) {
+    app.log.warn({ err }, "Image OCR failed");
+    const message = err instanceof Error ? err.message : "OCR falló";
+    return { text: null, error: message };
+  }
+}
+
+async function extractTextFromAttachment(params: {
+  mediaType: string;
+  mimeType: string | null | undefined;
+  buffer: Buffer;
+  config: SystemConfig;
+  app: FastifyInstance;
+}): Promise<{ text: string | null; error?: string | null; method?: string | null }> {
+  const { mediaType, mimeType, buffer, config, app } = params;
+  const lowerMime = (mimeType || "").toLowerCase();
+
+  if (mediaType === "image") {
+    const ocr = await extractTextFromImageWithAi(buffer, mimeType, config, app);
+    return { text: ocr.text, error: ocr.error || null, method: ocr.text ? "openai_ocr" : null };
+  }
+
+  if (mediaType === "document") {
+    try {
+      if (lowerMime.includes("pdf")) {
+        const text = await extractTextFromPdfBuffer(buffer);
+        return { text, method: text ? "pdf_parse" : null, error: text ? null : "Sin texto en PDF" };
+      }
+      if (
+        lowerMime.includes("wordprocessingml") ||
+        lowerMime.includes("officedocument") ||
+        lowerMime.includes("docx")
+      ) {
+        const text = await extractTextFromDocxBuffer(buffer);
+        return { text, method: text ? "mammoth_docx" : null, error: text ? null : "Sin texto en DOCX" };
+      }
+      if (lowerMime.startsWith("text/")) {
+        const raw = buffer.toString("utf8");
+        const normalized = normalizeExtractedText(raw);
+        return {
+          text: normalized.length > 0 ? normalized : null,
+          method: normalized.length > 0 ? "text_plain" : null,
+          error: normalized.length > 0 ? null : "Sin texto en archivo",
+        };
+      }
+      return { text: null, error: `Tipo de documento no soportado (${mimeType || "desconocido"})`, method: null };
+    } catch (err) {
+      app.log.warn({ err, mimeType }, "Document text extraction failed");
+      const message = err instanceof Error ? err.message : "Extracción fallida";
+      return { text: null, error: message, method: null };
+    }
+  }
+
+  return { text: null, error: `Media no soportada (${mediaType})`, method: null };
+}
+
 async function processMediaAttachment(
   app: FastifyInstance,
   options: {
@@ -888,39 +1208,55 @@ async function processMediaAttachment(
   },
 ): Promise<void> {
   const media = options.media;
-  if (!media || !media.id || !options.waId) return;
-  if (!options.config?.whatsappToken) return;
+  if (!media || !options.waId) return;
 
   try {
-    const baseUrl = (options.config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL)
-      .replace(/\/$/, "");
-    const infoRes = await fetch(`${baseUrl}/${media.id}`, {
-      headers: { Authorization: `Bearer ${options.config.whatsappToken}` },
-    });
-    if (!infoRes.ok) {
-      app.log.warn(
-        { conversationId: options.conversationId, mediaId: media.id },
-        "No se pudo obtener metadata de media",
-      );
-      return;
-    }
-    const mediaInfo = (await infoRes.json()) as any;
-    const mediaUrl = mediaInfo.url;
-    const mimeType = media.mimeType || mediaInfo.mime_type;
-    if (!mediaUrl) return;
-
-    const downloadRes = await fetch(mediaUrl, {
-      headers: { Authorization: `Bearer ${options.config.whatsappToken}` },
-    });
-    if (!downloadRes.ok) {
-      app.log.warn(
-        { conversationId: options.conversationId, mediaId: media.id },
-        "No se pudo descargar media",
-      );
-      return;
+    const inlineBuffer = media.dataBase64 ? decodeBase64Payload(media.dataBase64) : null;
+    const hasInline = Boolean(inlineBuffer);
+    if (!hasInline) {
+      if (!media.id) return;
+      if (!options.config?.whatsappToken) return;
     }
 
-    const buffer = Buffer.from(await downloadRes.arrayBuffer());
+    let buffer: Buffer;
+    let mimeType: string | null | undefined = media.mimeType || null;
+
+    if (hasInline && inlineBuffer) {
+      buffer = inlineBuffer;
+    } else {
+      const baseUrl = (options.config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL).replace(
+        /\/$/,
+        "",
+      );
+      const infoRes = await fetch(`${baseUrl}/${media.id}`, {
+        headers: { Authorization: `Bearer ${options.config.whatsappToken}` },
+      });
+      if (!infoRes.ok) {
+        app.log.warn(
+          { conversationId: options.conversationId, mediaId: media.id },
+          "No se pudo obtener metadata de media",
+        );
+        return;
+      }
+      const mediaInfo = (await infoRes.json()) as any;
+      const mediaUrl = mediaInfo.url;
+      mimeType = mimeType || mediaInfo.mime_type || null;
+      if (!mediaUrl) return;
+
+      const downloadRes = await fetch(mediaUrl, {
+        headers: { Authorization: `Bearer ${options.config.whatsappToken}` },
+      });
+      if (!downloadRes.ok) {
+        app.log.warn(
+          { conversationId: options.conversationId, mediaId: media.id },
+          "No se pudo descargar media",
+        );
+        return;
+      }
+
+      buffer = Buffer.from(await downloadRes.arrayBuffer());
+    }
+
     const extension = pickExtension(mimeType, media.type);
     const dir = path.join(UPLOADS_BASE, options.waId);
     await fs.mkdir(dir, { recursive: true });
@@ -934,42 +1270,113 @@ async function processMediaAttachment(
       data: { mediaPath: relativePath, mediaMime: mimeType || null },
     });
 
-  if (media.type === "audio" || media.type === "voice") {
-    const transcription = await transcribeAudio(
-      absolutePath,
-      options.config,
-      app,
-      );
+    const existing = await prisma.message.findUnique({ where: { id: options.messageId } });
+    const rawPayloadObj = (() => {
+      try {
+        return existing?.rawPayload ? JSON.parse(existing.rawPayload) : {};
+      } catch {
+        return { rawPayload: existing?.rawPayload || null };
+      }
+    })();
+
+    if (media.type === "audio" || media.type === "voice") {
+      const transcription = await transcribeAudio(absolutePath, options.config, app);
       if (transcription.text) {
         await prisma.message.update({
           where: { id: options.messageId },
-          data: { transcriptText: transcription.text, text: transcription.text },
+          data: {
+            transcriptText: transcription.text,
+            text: transcription.text,
+            rawPayload: serializeJson({
+              ...rawPayloadObj,
+              attachment: {
+                type: media.type,
+                mimeType: mimeType || null,
+                filename: media.filename || null,
+                sha256: media.sha256 || null,
+                sizeBytes: buffer.length,
+                extracted: { success: true, method: "openai_transcribe", chars: transcription.text.length },
+              },
+            }),
+          },
         });
-        await prisma.conversation.update({
-          where: { id: options.conversationId },
-          data: { updatedAt: new Date() },
-        });
-      } else if (transcription.error) {
-        const fallback =
-          "Audio recibido pero no se pudo transcribir. Envía el detalle por texto, por favor.";
+      } else {
         await prisma.message.update({
           where: { id: options.messageId },
-          data: { text: fallback, transcriptText: null },
+          data: {
+            transcriptText: null,
+            rawPayload: serializeJson({
+              ...rawPayloadObj,
+              attachment: {
+                type: media.type,
+                mimeType: mimeType || null,
+                filename: media.filename || null,
+                sha256: media.sha256 || null,
+                sizeBytes: buffer.length,
+                extracted: {
+                  success: false,
+                  method: "openai_transcribe",
+                  error: transcription.error || "Sin texto",
+                },
+              },
+            }),
+          },
         });
       }
+
+      await prisma.conversation
+        .update({
+          where: { id: options.conversationId },
+          data: { updatedAt: new Date() },
+        })
+        .catch(() => {});
+      return;
     }
+
     if (media.type === "image" || media.type === "document") {
-      const fallback =
-        media.type === "image"
-          ? "Recibimos tu imagen. Si es tu CV, por favor envía un PDF legible o texto con experiencia y disponibilidad."
-          : "Recibimos tu archivo. Si es tu CV, asegúrate que sea legible en PDF y envía un resumen breve de experiencia y disponibilidad.";
+      const extracted = await extractTextFromAttachment({
+        mediaType: media.type,
+        mimeType,
+        buffer,
+        config: options.config,
+        app,
+      });
+
+      const normalized = extracted.text ? normalizeExtractedText(extracted.text) : null;
+      const maxChars = 12000;
+      const finalText = normalized ? truncateText(normalized, maxChars) : null;
+      const truncated = Boolean(normalized && normalized.length > maxChars);
+
       await prisma.message.update({
         where: { id: options.messageId },
         data: {
-          transcriptText: fallback,
-          text: fallback,
+          transcriptText: finalText,
+          rawPayload: serializeJson({
+            ...rawPayloadObj,
+            attachment: {
+              type: media.type,
+              mimeType: mimeType || null,
+              filename: media.filename || null,
+              sha256: media.sha256 || null,
+              sizeBytes: buffer.length,
+              extracted: {
+                success: Boolean(finalText),
+                method: extracted.method || null,
+                chars: finalText ? finalText.length : 0,
+                truncated,
+                error: extracted.error || null,
+              },
+            },
+          }),
         },
       });
+
+      await prisma.conversation
+        .update({
+          where: { id: options.conversationId },
+          data: { updatedAt: new Date() },
+        })
+        .catch(() => {});
     }
   } catch (err) {
     app.log.error(
@@ -1117,26 +1524,43 @@ function extractNameFromText(text?: string): string | null {
   if (!text) return null;
   const cleaned = text.trim();
   if (!cleaned) return null;
-  const match = cleaned.match(
-    /(?:mi nombre es|me llamo|soy)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60})/i,
+  const directMatch = cleaned.match(
+    /(?:mi nombre es|me llamo)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60})/i,
   );
-  if (match && match[1]) {
-    const normalized = normalizeName(match[1]);
-    if (isValidName(normalized) && normalized && !containsDataLabel(normalized)) return normalized;
+  if (directMatch?.[1]) {
+    const normalized = normalizeName(directMatch[1]);
+    if (
+      normalized &&
+      isValidName(normalized) &&
+      !containsDataLabel(normalized) &&
+      !isSuspiciousCandidateName(normalized)
+    ) {
+      return normalized;
+    }
   }
-  // pattern: "Ignacio, Santiago", take first part
-  const firstChunk = cleaned.split(/[,;-]/)[0]?.trim();
-  if (isValidName(firstChunk)) {
-    const normalized = normalizeName(firstChunk);
-    if (normalized && !containsDataLabel(normalized)) return normalized;
-    return null;
-  }
-  if (
-    /^[A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60}$/i.test(cleaned) &&
-    cleaned.split(/\s+/).filter(Boolean).length <= 4
-  ) {
-    const normalized = normalizeName(cleaned);
-    if (isValidName(normalized) && normalized && !containsDataLabel(normalized)) return normalized;
+
+  // Standalone name (high confidence): allow short plain names like "Ignacio González" or "Ignacio, Providencia"
+  const firstChunk = cleaned.split(/[,;-]/)[0]?.trim() || "";
+  const candidateChunk = firstChunk && firstChunk.length < cleaned.length ? firstChunk : cleaned;
+  const normalizedLower = stripAccents(candidateChunk).toLowerCase();
+  const hasDisqualifyingIntent =
+    /\b(tengo|adjunt|env[ií]o|enviar|mando|mand[ée]|quiero|quisiera|necesito|busco|postul|cancel|reagen|reprogra|confirm|disponib)\b/.test(
+      normalizedLower,
+    ) ||
+    /\b(cv|curric|curr[íi]cul|vitae|pdf|word|docx|documento|archivo|imagen|foto)\b/.test(
+      normalizedLower,
+    );
+  if (hasDisqualifyingIntent) return null;
+  if (/^[A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60}$/.test(candidateChunk)) {
+    const normalized = normalizeName(candidateChunk);
+    if (
+      normalized &&
+      isValidName(normalized) &&
+      !containsDataLabel(normalized) &&
+      !isSuspiciousCandidateName(normalized)
+    ) {
+      return normalized;
+    }
   }
   return null;
 }
@@ -1185,10 +1609,10 @@ function isValidName(value?: string | null): boolean {
 
 function shouldTryAiNameExtraction(text?: string | null): boolean {
   if (!text) return false;
-  const lower = text.toLowerCase();
-  if (/(me llamo|mi nombre|soy\s+[a-záéíóúñ])/i.test(lower)) return true;
-  if (/nombre\s*[:\-]/i.test(lower)) return true;
-  if (/,/.test(text)) return true;
+  const lower = stripAccents(text).toLowerCase();
+  if (/(me llamo|mi nombre)/.test(lower)) return true;
+  if (/\bsoy\s+(?!de\b|del\b|la\b|el\b|una\b|un\b)/.test(lower)) return true;
+  if (/nombre\s*[:\-]/.test(lower)) return true;
   return false;
 }
 
@@ -1240,6 +1664,12 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
     return true;
   }
   if (/\b(entrevista|hora|horario|reagendar|reagendemos|reagenden)\b/.test(lower) && /\b(cancelar|cambiar|reagend|reprogram|mover)\b/.test(lower)) {
+    return true;
+  }
+  if (/\b(cv|cb|curric|curr[íi]cul|vitae|adjunt|archivo|documento|imagen|foto|pdf|word|docx)\b/.test(lower)) {
+    return true;
+  }
+  if (/\b(tengo|adjunto|envio|envi[ée]|enviar|mando|mand[ée]|subo)\b/.test(lower)) {
     return true;
   }
   const patterns = [

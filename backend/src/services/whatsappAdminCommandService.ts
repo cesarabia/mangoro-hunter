@@ -23,6 +23,20 @@ const STATUS_LABELS: Record<string, string> = {
   CLOSED: 'Cerrado'
 };
 
+function buildAiMessageText(message: {
+  text?: string | null;
+  transcriptText?: string | null;
+  mediaType?: string | null;
+}): string {
+  const base = (message.text || '').trim();
+  const transcript = (message.transcriptText || '').trim();
+  if (!transcript || transcript === base) return base || '(sin texto)';
+  if (message.mediaType === 'audio' || message.mediaType === 'voice') return transcript || base || '(sin texto)';
+  const snippet = truncateText(transcript, 2000);
+  if (!base) return `[Adjunto transcrito]\n${snippet}`;
+  return `${base}\n[Adjunto transcrito]\n${snippet}`;
+}
+
 export function getAdminHelpText(): string {
   return 'Puedo mostrar pendientes, listar candidatos, resumir conversaciones y cambiar estados. Ejemplos: "/pendientes", "/resumen 569...", "/estado 569... seguimiento".';
 }
@@ -213,7 +227,7 @@ export async function adminGetConversationDetails(waId: string) {
     messages: sortedMessages.map(message => ({
       id: message.id,
       direction: message.direction,
-      text: message.text,
+      text: buildAiMessageText(message),
       timestamp: message.timestamp
     }))
   };
@@ -228,10 +242,16 @@ export async function summarizeConversationByWaId(
     return { summary: null, label: null };
   }
 
-  const messages = (conversation.messages || []) as Array<{ direction: string; text: string }>;
-  const lines = messages.map(message =>
-    `${message.direction === 'INBOUND' ? 'Candidato' : 'Agente'}: ${message.text}`
-  );
+  const messages = (conversation.messages || []) as Array<{
+    direction: string;
+    text: string;
+    transcriptText?: string | null;
+    mediaType?: string | null;
+  }>;
+  const lines = messages.map(message => {
+    const line = buildAiMessageText(message);
+    return `${message.direction === 'INBOUND' ? 'Candidato' : 'Agente'}: ${line}`;
+  });
   const context = lines.slice(-40);
   const summary = await summarizeConversationForAdmin(context, config);
   const label = conversation.contact?.name || conversation.contact?.waId || conversation.contact?.phone || null;

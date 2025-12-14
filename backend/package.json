@@ -14,7 +14,9 @@
     "@prisma/client": "^5.0.0",
     "dotenv": "^16.0.0",
     "fastify": "^4.0.0",
-    "openai": "^4.0.0"
+    "mammoth": "^1.11.0",
+    "openai": "^4.0.0",
+    "pdf-parse": "^2.4.5"
   },
   "devDependencies": {
     "prisma": "^5.0.0",

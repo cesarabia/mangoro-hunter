@@ -12,6 +12,26 @@ import {
 import { DEFAULT_AI_PROMPT, DEFAULT_MANUAL_SUGGEST_PROMPT } from '../constants/ai';
 import OpenAI from 'openai';
 
+function truncateText(text: string, maxLength: number): string {
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function buildAiMessageText(m: {
+  text?: string | null;
+  transcriptText?: string | null;
+  mediaType?: string | null;
+}): string {
+  const base = (m.text || '').trim();
+  const transcript = (m.transcriptText || '').trim();
+  if (!transcript || transcript === base) return base || '(sin texto)';
+  if (m.mediaType === 'audio' || m.mediaType === 'voice') return transcript || base || '(sin texto)';
+  const snippet = truncateText(transcript, 2000);
+  if (!base) return `[Adjunto transcrito]\n${snippet}`;
+  return `${base}\n[Adjunto transcrito]\n${snippet}`;
+}
+
 export async function registerAiRoutes(app: FastifyInstance) {
   app.post('/:id/ai-suggest', { preValidation: [app.authenticate] }, async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -41,7 +61,10 @@ export async function registerAiRoutes(app: FastifyInstance) {
 
     const recentMessages = conversation.messages.slice(-15);
     const context = recentMessages
-      .map(m => (m.direction === 'INBOUND' ? `Candidato: ${m.text}` : `Agente: ${m.text}`))
+      .map(m => {
+        const line = buildAiMessageText(m);
+        return m.direction === 'INBOUND' ? `Candidato: ${line}` : `Agente: ${line}`;
+      })
       .join('\n');
 
     const config = await getSystemConfig();
