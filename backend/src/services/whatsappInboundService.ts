@@ -13,6 +13,8 @@ import {
   DEFAULT_AI_MODEL,
   DEFAULT_WHATSAPP_BASE_URL,
   updateAdminAiConfig,
+  normalizeModelId,
+  DEFAULT_TEMPLATE_INTERVIEW_INVITE,
 } from "./configService";
 import { DEFAULT_AI_PROMPT } from "../constants/ai";
 import { serializeJson } from "../utils/json";
@@ -43,19 +45,7 @@ interface InboundMessageParams {
   config?: SystemConfig;
 }
 
-interface PendingAdminSend {
-  targetWaId: string;
-  mode: "RECRUIT" | "INTERVIEW" | "OFF";
-  templateName: string;
-  variables: string[];
-  previewText: string;
-  createdAt: number;
-  allowed: boolean;
-}
-
-const pendingAdminSends = new Map<string, PendingAdminSend>();
 const UPLOADS_BASE = path.join(__dirname, "..", "uploads");
-const ADMIN_PENDING_TTL_MS = 30 * 60 * 1000;
 
 export async function handleInboundWhatsAppMessage(
   app: FastifyInstance,
@@ -115,15 +105,21 @@ export async function handleInboundWhatsAppMessage(
       data: { updatedAt: new Date() },
     });
 
-    clearStaleAdminIntent(normalizedAdmin);
     const trimmedEffective = (effectiveText || "").trim();
-    if (trimmedEffective.toUpperCase() === "CONFIRMAR ENVÍO") {
-      const handled = await maybeConfirmAdminSend(
+    const pendingAction = parseAdminPendingAction(adminThread.conversation.adminPendingAction);
+    if (pendingAction && isCancelPending(trimmedEffective)) {
+      await saveAdminPendingAction(adminThread.conversation.id, null);
+      await sendAdminReply(app, adminThread.conversation.id, waId, "Envío pendiente cancelado.");
+      return { conversationId: adminThread.conversation.id };
+    }
+    if (pendingAction && isConfirmSend(trimmedEffective)) {
+      const executed = await executePendingAction({
         app,
-        adminThread.conversation.id,
-        normalizedAdmin,
-      );
-      if (handled) {
+        adminConversationId: adminThread.conversation.id,
+        adminWaId: waId,
+        pendingAction,
+      });
+      if (executed) {
         return { conversationId: adminThread.conversation.id };
       }
     }
@@ -166,16 +162,17 @@ export async function handleInboundWhatsAppMessage(
       trimmedEffective,
       config,
       app,
+      adminThread.conversation.id,
     );
     if (templateIntent) {
-      pendingAdminSends.set(normalizedAdmin, templateIntent);
-      if (templateIntent.targetWaId) {
+      await saveAdminPendingAction(adminThread.conversation.id, templateIntent.action);
+      if (templateIntent.action.targetWaId) {
         await prisma.conversation.update({
           where: { id: adminThread.conversation.id },
-          data: { adminLastCandidateWaId: templateIntent.targetWaId },
+          data: { adminLastCandidateWaId: templateIntent.action.targetWaId },
         });
         adminThread.conversation.adminLastCandidateWaId =
-          templateIntent.targetWaId;
+          templateIntent.action.targetWaId;
       }
       await sendAdminReply(
         app,
@@ -192,7 +189,13 @@ export async function handleInboundWhatsAppMessage(
       config,
       lastCandidateWaId: adminThread.conversation.adminLastCandidateWaId,
     });
-    await sendAdminReply(app, adminThread.conversation.id, waId, aiResponse);
+    const pendingNoteAction =
+      pendingAction || parseAdminPendingAction(adminThread.conversation.adminPendingAction);
+    const note =
+      pendingNoteAction && (pendingNoteAction.type === "send_template" || pendingNoteAction.type === "send_message")
+        ? `\n\nNota: hay un envío pendiente para +${pendingNoteAction.targetWaId}. Responde CONFIRMAR ENVÍO para ejecutarlo o escribe cancelar para anular.`
+        : "";
+    await sendAdminReply(app, adminThread.conversation.id, waId, `${aiResponse}${note}`);
     return { conversationId: adminThread.conversation.id };
   }
 
@@ -202,7 +205,7 @@ export async function handleInboundWhatsAppMessage(
       data: { waId, phone: waId },
     });
   }
-  await maybeUpdateContactName(contact, params.profileName, params.text);
+  await maybeUpdateContactName(contact, params.profileName, params.text, config);
 
   let conversation = await prisma.conversation.findFirst({
     where: { contactId: contact.id, isAdmin: false },
@@ -262,7 +265,7 @@ export async function handleInboundWhatsAppMessage(
     params.text ||
     "";
 
-  await maybeUpdateContactName(contact, params.profileName, effectiveText);
+  await maybeUpdateContactName(contact, params.profileName, effectiveText, config);
 
   if (conversation.aiMode === "INTERVIEW") {
     await detectInterviewSignals(conversation.id, effectiveText);
@@ -309,14 +312,17 @@ export async function maybeSendAutoReply(
       .join("\n");
 
     let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
-    let model: string | undefined = config.aiModel?.trim() || DEFAULT_AI_MODEL;
+    let model: string | undefined =
+      normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
     if (mode === "INTERVIEW") {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
       prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}\n\n` +
         "Instrucciones obligatorias de sistema: " +
         "No inventes direcciones; si te piden dirección exacta, responde que se enviará por este medio. " +
         "Cuando propongas o confirmes fecha/hora/lugar de entrevista, agrega al final un bloque <hunter_action>{\"type\":\"interview_update\",\"day\":\"<Día>\",\"time\":\"<HH:mm>\",\"location\":\"<Lugar>\",\"status\":\"<CONFIRMED|PENDING|CANCELLED>\"}</hunter_action>.";
-      model = config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL;
+      model =
+        normalizeModelId(config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL) ||
+        DEFAULT_INTERVIEW_AI_MODEL;
     }
 
     const suggestionRaw = await getSuggestedReply(context, {
@@ -574,6 +580,7 @@ async function maybeUpdateContactName(
   },
   profileName?: string,
   fallbackText?: string,
+  config?: SystemConfig,
 ) {
   const updates: Record<string, string | null> = {};
   if (contact.candidateName && isSuspiciousCandidateName(contact.candidateName)) {
@@ -605,6 +612,21 @@ async function maybeUpdateContactName(
   }
   if (!updates.candidateName && !contact.candidateName && display && !updates.name && !contact.name) {
     updates.name = display;
+  }
+  let currentCandidate = updates.candidateName ?? contact.candidateName ?? null;
+  if (
+    (!currentCandidate || isSuspiciousCandidateName(currentCandidate)) &&
+    config &&
+    shouldTryAiNameExtraction(fallbackText)
+  ) {
+    const aiName = await extractNameWithAi(fallbackText || "", config);
+    if (aiName && isValidName(aiName) && !isSuspiciousCandidateName(aiName)) {
+      updates.candidateName = aiName;
+      if (!updates.name && !contact.name) {
+        updates.name = aiName;
+      }
+      currentCandidate = aiName;
+    }
   }
   if (Object.keys(updates).length === 0) return;
   await prisma.contact.update({
@@ -666,6 +688,51 @@ function isValidName(value?: string | null): boolean {
   if (blacklist.includes(lower)) return false;
   if (!trimmed.includes(" ") && trimmed.length < 3) return false;
   return true;
+}
+
+function shouldTryAiNameExtraction(text?: string | null): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  if (/(me llamo|mi nombre|soy\s+[a-záéíóúñ])/i.test(lower)) return true;
+  if (/nombre\s*[:\-]/i.test(lower)) return true;
+  if (/,/.test(text)) return true;
+  return false;
+}
+
+async function extractNameWithAi(text: string, config: SystemConfig): Promise<string | null> {
+  const apiKey = getEffectiveOpenAiKey(config);
+  if (!apiKey) return null;
+  const client = new OpenAI({ apiKey });
+  const model =
+    normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+  try {
+    const completion = await client.chat.completions.create({
+      model,
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Extrae el nombre propio del candidato solo si se identifica explícitamente (ej: \"me llamo X\", \"soy X\"). Devuelve JSON {\"full_name\": string|null, \"confidence\": number}. No inventes ni supongas; si no hay nombre claro, usa null.",
+        },
+        { role: "user", content: text },
+      ],
+      max_tokens: 60,
+      response_format: { type: "json_object" },
+    });
+    const raw = completion.choices?.[0]?.message?.content || "";
+    const parsed = JSON.parse(raw);
+    const fullName: string | null = parsed?.full_name || parsed?.name || null;
+    const confidence: number = typeof parsed?.confidence === "number" ? parsed.confidence : 0;
+    if (!fullName || confidence < 0.4) return null;
+    const normalized = normalizeName(fullName);
+    if (normalized && isValidName(normalized) && !isSuspiciousCandidateName(normalized)) {
+      return normalized;
+    }
+  } catch (err) {
+    console.warn("AI name extraction failed", err);
+  }
+  return null;
 }
 
 function isSuspiciousCandidateName(value?: string | null): boolean {
@@ -762,6 +829,7 @@ type AdminPendingAction =
       type: "status";
       targetWaId: string | null;
       awaiting: "status";
+      createdAt: number;
     }
   | {
       type: "interview_update";
@@ -773,7 +841,204 @@ type AdminPendingAction =
         interviewLocation?: string | null;
         interviewStatus?: string | null;
       };
+      createdAt: number;
+    }
+  | {
+      type: "send_template";
+      targetWaId: string;
+      templateName: string;
+      variables?: string[];
+      templateLanguageCode?: string | null;
+      relatedConversationId?: string | null;
+      mode?: "RECRUIT" | "INTERVIEW" | "OFF";
+      awaiting: "confirm";
+      createdAt: number;
+    }
+  | {
+      type: "send_message";
+      targetWaId: string;
+      text: string;
+      relatedConversationId?: string | null;
+      awaiting: "confirm";
+      createdAt: number;
     };
+
+function parseAdminPendingAction(raw?: string | null): AdminPendingAction | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.type === "string") {
+      if (!parsed.createdAt) {
+        parsed.createdAt = Date.now();
+      }
+      return parsed as AdminPendingAction;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function saveAdminPendingAction(conversationId: string, action: AdminPendingAction | null) {
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { adminPendingAction: action ? JSON.stringify(action) : null },
+  });
+}
+
+function isConfirmSend(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return /confirmar\s*env[ií]o/.test(normalized);
+}
+
+function isCancelPending(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return /(cancelar|anular|olvidar)/.test(normalized);
+}
+
+async function executePendingAction(params: {
+  app: FastifyInstance;
+  adminConversationId: string;
+  adminWaId: string;
+  pendingAction: AdminPendingAction;
+}): Promise<boolean> {
+  const { pendingAction, app, adminConversationId, adminWaId } = params;
+  if (pendingAction.type === "send_template") {
+    try {
+      const mode =
+        pendingAction.mode ||
+        (pendingAction.templateName?.includes("entrevista") ? "INTERVIEW" : "RECRUIT");
+      const result = await createConversationAndMaybeSend({
+        phoneE164: pendingAction.targetWaId,
+        mode,
+        status: "OPEN",
+        sendTemplateNow: true,
+        variables: pendingAction.variables,
+        templateNameOverride: pendingAction.templateName,
+      });
+      const success = result.sendResult?.success;
+      if (success) {
+        await saveAdminPendingAction(adminConversationId, null);
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          `Plantilla ${pendingAction.templateName} enviada a +${pendingAction.targetWaId}.`,
+        );
+      } else {
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          `No se pudo enviar a +${pendingAction.targetWaId}: ${
+            result.sendResult?.error || "Error"
+          }`,
+        );
+      }
+      return true;
+    } catch (err: any) {
+      app.log.error({ err, pendingAction }, "Error ejecutando envío pendiente");
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `Error al enviar: ${err?.message || "No se pudo ejecutar el envío pendiente"}`,
+      );
+      return true;
+    }
+  }
+  if (pendingAction.type === "send_message") {
+    try {
+      const sendResult = await sendWhatsAppText(pendingAction.targetWaId, pendingAction.text);
+      if (sendResult.success) {
+        if (pendingAction.relatedConversationId) {
+          await prisma.message.create({
+            data: {
+              conversationId: pendingAction.relatedConversationId,
+              direction: "OUTBOUND",
+              text: pendingAction.text,
+              rawPayload: serializeJson({ adminSend: true, sendResult }),
+              timestamp: new Date(),
+              read: true,
+            },
+          });
+        }
+        await saveAdminPendingAction(adminConversationId, null);
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          `Mensaje enviado a +${pendingAction.targetWaId}.`,
+        );
+      } else {
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          `No se pudo enviar a +${pendingAction.targetWaId}: ${
+            (sendResult as any).error || "Error"
+          }`,
+        );
+      }
+      return true;
+    } catch (err: any) {
+      app.log.error({ err, pendingAction }, "Error ejecutando mensaje pendiente");
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `Error al enviar mensaje: ${err?.message || "No se pudo enviar"}`,
+      );
+      return true;
+    }
+  }
+  if (pendingAction.type === "interview_update") {
+    if (!pendingAction.targetWaId) return false;
+    try {
+      await applyConversationInterviewUpdate(pendingAction.targetWaId, pendingAction.updates);
+      const templates = await loadTemplateConfig(app.log);
+      const templateName =
+        templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE;
+      const result = await createConversationAndMaybeSend({
+        phoneE164: pendingAction.targetWaId,
+        mode: "INTERVIEW",
+        status: "OPEN",
+        sendTemplateNow: true,
+        variables: [],
+        templateNameOverride: templateName,
+      });
+      if (result.sendResult?.success) {
+        await saveAdminPendingAction(adminConversationId, null);
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          `Entrevista actualizada y plantilla ${templateName} enviada a +${pendingAction.targetWaId}.`,
+        );
+      } else {
+        await sendAdminReply(
+          app,
+          adminConversationId,
+          adminWaId,
+          `Entrevista actualizada, pero no se pudo enviar la plantilla: ${
+            result.sendResult?.error || "Error"
+          }`,
+        );
+      }
+      return true;
+    } catch (err: any) {
+      app.log.error({ err, pendingAction }, "Error ejecutando entrevista pendiente");
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `Error al actualizar/enviar: ${err?.message || "No se pudo completar la acción"}`,
+      );
+      return true;
+    }
+  }
+  return false;
+}
 
 async function handleAdminPendingAction(
   app: FastifyInstance,
@@ -787,21 +1052,15 @@ async function handleAdminPendingAction(
     where: { id: adminConversationId },
     select: { adminPendingAction: true },
   });
-  const pending = adminConvo?.adminPendingAction
-    ? (JSON.parse(adminConvo.adminPendingAction) as AdminPendingAction)
-    : null;
+  const pending = parseAdminPendingAction(adminConvo?.adminPendingAction);
 
   const statusFromText = detectStatusKeyword(trimmed);
   if (!pending && !statusFromText && /estado/.test(trimmed)) {
-    await prisma.conversation.update({
-      where: { id: adminConversationId },
-      data: {
-        adminPendingAction: JSON.stringify({
-          type: "status",
-          targetWaId: lastCandidateWaId || null,
-          awaiting: "status",
-        }),
-      },
+    await saveAdminPendingAction(adminConversationId, {
+      type: "status",
+      targetWaId: lastCandidateWaId || null,
+      awaiting: "status",
+      createdAt: Date.now(),
     });
     await sendAdminReply(
       app,
@@ -871,22 +1130,23 @@ async function handleAdminPendingAction(
       interviewLocation: parsedInterview.location,
       interviewStatus: "PENDING",
     });
+    const convo = await fetchConversationByIdentifier(lastCandidateWaId, { includeMessages: false });
+    const templates = await loadTemplateConfig(app.log);
+    const templateName = templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE;
     await prisma.conversation.update({
       where: { id: adminConversationId },
-      data: {
-        adminLastCandidateWaId: lastCandidateWaId,
-        adminPendingAction: JSON.stringify({
-          type: "interview_update",
-          targetWaId: lastCandidateWaId,
-          awaiting: "confirm",
-          updates: {
-            interviewDay: parsedInterview.day,
-            interviewTime: parsedInterview.time,
-            interviewLocation: parsedInterview.location,
-            interviewStatus: "PENDING",
-          },
-        }),
-      },
+      data: { adminLastCandidateWaId: lastCandidateWaId },
+    });
+    await saveAdminPendingAction(adminConversationId, {
+      type: "send_template",
+      targetWaId: lastCandidateWaId,
+      templateName,
+      variables: [],
+      templateLanguageCode: templates.templateLanguageCode || null,
+      relatedConversationId: convo?.id || null,
+      awaiting: "confirm",
+      createdAt: Date.now(),
+      mode: "INTERVIEW",
     });
     const locationText = parsedInterview.location || "Te enviaremos la dirección exacta por este medio.";
     await sendAdminReply(
@@ -1050,59 +1310,12 @@ function extractWaIdFromText(text?: string | null): string | null {
   return normalizeWhatsAppId(match[0]);
 }
 
-function clearStaleAdminIntent(normalizedAdmin: string) {
-  const pending = pendingAdminSends.get(normalizedAdmin);
-  if (pending && Date.now() - pending.createdAt > ADMIN_PENDING_TTL_MS) {
-    pendingAdminSends.delete(normalizedAdmin);
-  }
-}
-
-async function maybeConfirmAdminSend(
-  app: FastifyInstance,
-  conversationId: string,
-  normalizedAdmin: string,
-): Promise<boolean> {
-  const pending = pendingAdminSends.get(normalizedAdmin);
-  if (!pending) return false;
-
-  try {
-    const result = await createConversationAndMaybeSend({
-      phoneE164: pending.targetWaId,
-      mode: pending.mode,
-      status: "NEW",
-      sendTemplateNow: true,
-      variables: pending.variables,
-      templateNameOverride: pending.templateName,
-    });
-
-    pendingAdminSends.delete(normalizedAdmin);
-    const success = result.sendResult?.success;
-    const sendText = success
-      ? `Plantilla ${pending.templateName} enviada a +${pending.targetWaId}.`
-      : `No se pudo enviar a +${pending.targetWaId}: ${
-          result.sendResult?.error || "Error"
-        }`;
-    await sendAdminReply(app, conversationId, normalizedAdmin, sendText);
-  } catch (err) {
-    pendingAdminSends.delete(normalizedAdmin);
-    const message =
-      err instanceof Error ? err.message : "No se pudo enviar la plantilla";
-    await sendAdminReply(
-      app,
-      conversationId,
-      normalizedAdmin,
-      `Error al enviar: ${message}`,
-    );
-  }
-
-  return true;
-}
-
 async function detectAdminTemplateIntent(
   text: string,
   config: SystemConfig,
   app: FastifyInstance,
-): Promise<PendingAdminSend | null> {
+  adminConversationId: string,
+): Promise<{ previewText: string; action: AdminPendingAction } | null> {
   if (!text) return null;
   const normalized = text.trim();
   const phoneMatch = normalized.match(/\+?\d{9,15}/);
@@ -1143,13 +1356,18 @@ async function detectAdminTemplateIntent(
   )}\nResponde "CONFIRMAR ENVÍO" para enviar.${warning}`;
 
   return {
-    targetWaId,
-    mode,
-    templateName,
-    variables,
     previewText,
-    createdAt: Date.now(),
-    allowed,
+    action: {
+      type: "send_template",
+      targetWaId,
+      templateName,
+      variables: [],
+      templateLanguageCode: templates.templateLanguageCode || null,
+      relatedConversationId: null,
+      awaiting: "confirm",
+      createdAt: Date.now(),
+      mode,
+    },
   };
 }
 

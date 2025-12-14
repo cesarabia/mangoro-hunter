@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { env } from '../config/env';
-import { getSystemConfig, DEFAULT_AI_MODEL } from './configService';
+import { getSystemConfig, DEFAULT_AI_MODEL, normalizeModelId } from './configService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
 
 interface SuggestedOptions {
@@ -22,7 +22,7 @@ export async function getSuggestedReply(
   }
 
   const client = new OpenAI({ apiKey });
-  const model = options?.model || config.aiModel?.trim() || DEFAULT_AI_MODEL;
+  const model = normalizeModelId(options?.model || config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
 
   const completion = await client.chat.completions.create({
     model,

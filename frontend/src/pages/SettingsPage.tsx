@@ -110,6 +110,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [testSendStatus, setTestSendStatus] = useState<string | null>(null);
   const [testSendError, setTestSendError] = useState<string | null>(null);
   const [sendingTest, setSendingTest] = useState(false);
+  const getModelOptions = (current: string) => {
+    const base = ['gpt-4.1-mini', 'gpt-5-mini', 'gpt-5-mini-2025-08-07', 'gpt-5-chat-latest'];
+    return base.includes(current) ? base : [...base, current];
+  };
 
   useEffect(() => {
     const loadAll = async () => {
@@ -550,8 +554,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     onChange={e => setAiModel(e.target.value)}
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   >
-                    <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-                    <option value="gpt-5-mini">gpt-5-mini</option>
+                    {getModelOptions(aiModel).map(model => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <small style={{ color: '#666' }}>
@@ -588,8 +595,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     onChange={e => setAdminAiModel(e.target.value)}
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   >
-                    <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-                    <option value="gpt-5-mini">gpt-5-mini</option>
+                    {getModelOptions(adminAiModel).map(model => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 {adminAiStatus && <p style={{ color: 'green' }}>{adminAiStatus}</p>}
@@ -623,8 +633,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     onChange={e => setInterviewAiModel(e.target.value)}
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   >
-                    <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-                    <option value="gpt-5-mini">gpt-5-mini</option>
+                    {getModelOptions(interviewAiModel).map(model => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 {interviewAiStatus && <p style={{ color: 'green' }}>{interviewAiStatus}</p>}

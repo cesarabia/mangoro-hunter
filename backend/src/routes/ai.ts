@@ -6,9 +6,11 @@ import {
   DEFAULT_INTERVIEW_AI_PROMPT,
   DEFAULT_INTERVIEW_AI_MODEL,
   INTERVIEW_AI_POLICY_ADDENDUM,
-  DEFAULT_AI_MODEL
+  DEFAULT_AI_MODEL,
+  normalizeModelId
 } from '../services/configService';
 import { DEFAULT_AI_PROMPT, DEFAULT_MANUAL_SUGGEST_PROMPT } from '../constants/ai';
+import OpenAI from 'openai';
 
 export async function registerAiRoutes(app: FastifyInstance) {
   app.post('/:id/ai-suggest', { preValidation: [app.authenticate] }, async (request, reply) => {
@@ -44,11 +46,11 @@ export async function registerAiRoutes(app: FastifyInstance) {
 
     const config = await getSystemConfig();
     let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
-    let model: string | undefined = config.aiModel?.trim() || DEFAULT_AI_MODEL;
+    let model: string | undefined = normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
     if (mode === 'INTERVIEW') {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
       prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}`;
-      model = config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL;
+      model = normalizeModelId(config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL) || DEFAULT_INTERVIEW_AI_MODEL;
     }
 
     if (mode === 'OFF') {
@@ -60,14 +62,45 @@ export async function registerAiRoutes(app: FastifyInstance) {
           .send({ error: 'Escribe un borrador para que la IA lo mejore en modo Manual.' });
       }
       const enrichedContext = `${context}\n\nBorrador del agente:\n${trimmedDraft}\n\nMejora el borrador manteniendo el mismo significado. Responde solo con el texto final.`;
-      const suggestion = await getSuggestedReply(enrichedContext, { prompt, model, config });
-      return { suggestion };
+      try {
+        const suggestion = await getSuggestedReply(enrichedContext, { prompt, model, config });
+        return { suggestion };
+      } catch (err: any) {
+        const { status, message } = formatAiError(err, model);
+        request.log.error({ err }, 'ai_suggest manual failed');
+        return reply.code(status).send({ error: message });
+      }
     }
 
     const enrichedContext = `${context}\n\nBorrador actual del agente: ${draft?.trim() || '(vacío)'}\nGenera una respuesta corta lista para enviar.`;
 
-    const suggestion = await getSuggestedReply(enrichedContext, { prompt, model, config });
+    try {
+      const suggestion = await getSuggestedReply(enrichedContext, { prompt, model, config });
 
-    return { suggestion };
+      return { suggestion };
+    } catch (err: any) {
+      const { status, message } = formatAiError(err, model);
+      request.log.error({ err }, 'ai_suggest failed');
+      return reply.code(status).send({ error: message });
+    }
   });
+}
+
+function formatAiError(err: any, model?: string | null): { status: number; message: string } {
+  const defaultMessage = `Modelo inválido o sin acceso${model ? `: ${model}` : ''}`;
+  if (err instanceof OpenAI.APIError) {
+    const code = (err as any).code || err.status;
+    const detail = (err as any).error?.message || err.message;
+    const isModelError =
+      code === 'invalid_model' ||
+      code === 'model_not_found' ||
+      detail?.toLowerCase?.().includes('model') ||
+      detail?.toLowerCase?.().includes('invalid');
+    return { status: isModelError ? 400 : 502, message: detail || defaultMessage };
+  }
+  const message =
+    (err?.response?.data && JSON.stringify(err.response.data)) ||
+    err?.message ||
+    defaultMessage;
+  return { status: 502, message };
 }

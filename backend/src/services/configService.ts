@@ -43,6 +43,23 @@ export async function getSystemConfig(): Promise<SystemConfig> {
   return config;
 }
 
+export function normalizeModelId(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase().replace(/\s+/g, '-');
+  const aliases: Record<string, string> = {
+    'gpt-5-mini': 'gpt-5-mini',
+    'gpt5-mini': 'gpt-5-mini',
+    'gpt-5-mini-2025-08-07': 'gpt-5-mini-2025-08-07',
+    'gpt-5-chat-latest': 'gpt-5-chat-latest',
+    'gpt-4.1-mini': 'gpt-4.1-mini',
+    'gpt-41-mini': 'gpt-4.1-mini',
+    'gpt-4.1-mini-2024-12-17': 'gpt-4.1-mini-2024-12-17'
+  };
+  return aliases[lower] || lower;
+}
+
 export async function updateWhatsAppConfig(input: {
   whatsappBaseUrl?: string | null;
   whatsappPhoneId?: string | null;
@@ -108,7 +125,7 @@ export async function updateAiModel(aiModel?: string | null): Promise<SystemConf
   return prisma.systemConfig.update({
     where: { id: config.id },
     data: {
-      aiModel: normalizeValue(aiModel)
+      aiModel: normalizeModelId(aiModel)
     }
   });
 }
@@ -124,7 +141,7 @@ export async function updateAdminAiConfig(input: {
     data.adminAiPrompt = normalizeValue(input.prompt);
   }
   if (typeof input.model !== 'undefined') {
-    data.adminAiModel = normalizeValue(input.model);
+    data.adminAiModel = normalizeModelId(input.model);
   }
   if (typeof input.addendum !== 'undefined') {
     data.adminAiAddendum = normalizeValue(input.addendum);
@@ -177,7 +194,7 @@ export async function updateInterviewAiConfig(input: {
     data.interviewAiPrompt = normalizeValue(input.prompt);
   }
   if (typeof input.model !== 'undefined') {
-    data.interviewAiModel = normalizeValue(input.model);
+    data.interviewAiModel = normalizeModelId(input.model);
   }
   return prisma.systemConfig.update({
     where: { id: config.id },
@@ -282,6 +299,11 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.aiModel) {
     updates.aiModel = DEFAULT_AI_MODEL;
+  } else {
+    const normalized = normalizeModelId(existing.aiModel);
+    if (normalized && normalized !== existing.aiModel) {
+      updates.aiModel = normalized;
+    }
   }
   if (typeof (existing as any).adminAiAddendum === 'undefined') {
     updates.adminAiAddendum = DEFAULT_ADMIN_AI_ADDENDUM;
@@ -296,6 +318,17 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.interviewAiModel) {
     updates.interviewAiModel = DEFAULT_INTERVIEW_AI_MODEL;
+  } else {
+    const normalizedInterview = normalizeModelId(existing.interviewAiModel);
+    if (normalizedInterview && normalizedInterview !== existing.interviewAiModel) {
+      updates.interviewAiModel = normalizedInterview;
+    }
+  }
+  if (existing.adminAiModel) {
+    const normalizedAdmin = normalizeModelId(existing.adminAiModel);
+    if (normalizedAdmin && normalizedAdmin !== existing.adminAiModel) {
+      updates.adminAiModel = normalizedAdmin;
+    }
   }
   if (Object.keys(updates).length > 0) {
     existing = await prisma.systemConfig.update({

@@ -11,7 +11,7 @@ import {
   setConversationStatusByWaId,
   summarizeConversationByWaId
 } from './whatsappAdminCommandService';
-import { getSystemConfig, DEFAULT_ADMIN_AI_PROMPT, DEFAULT_ADMIN_AI_MODEL } from './configService';
+import { getSystemConfig, DEFAULT_ADMIN_AI_PROMPT, DEFAULT_ADMIN_AI_MODEL, normalizeModelId } from './configService';
 import { getEffectiveOpenAiKey } from './aiService';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
 
@@ -125,7 +125,7 @@ export async function generateAdminAiResponse(
   }
 
   const client = new OpenAI({ apiKey });
-  const model = config.adminAiModel?.trim() || DEFAULT_ADMIN_AI_MODEL;
+  const model = normalizeModelId(config.adminAiModel?.trim() || DEFAULT_ADMIN_AI_MODEL) || DEFAULT_ADMIN_AI_MODEL;
   const prompt = config.adminAiPrompt?.trim() || DEFAULT_ADMIN_AI_PROMPT;
   const adminConversation = await prisma.conversation.findFirst({
     where: { isAdmin: true },
