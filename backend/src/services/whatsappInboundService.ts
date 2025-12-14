@@ -465,6 +465,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
   const optedIn = await maybeHandleOptIn(app, conversation, contact, effectiveText);
   if (optedIn) {
     contact.noContact = false;
+    return { conversationId: conversation.id };
   }
 
   const optedOut = await maybeHandleOptOut(app, conversation, contact, effectiveText);
@@ -2618,6 +2619,27 @@ async function maybeHandleOptIn(
         direction: "OUTBOUND",
         text: "Opt-in detectado: contacto reactivado automáticamente.",
         rawPayload: serializeJson({ system: true, noContactAction: "AUTO_OPTIN" }),
+        timestamp: new Date(),
+        read: true,
+      },
+    });
+
+    const ackText = "✅ Listo, ya podemos escribirte nuevamente por este medio.";
+    let sendResult: SendResult = { success: false, error: "Missing waId" };
+    try {
+      if (contact.waId) {
+        sendResult = await sendWhatsAppText(contact.waId, ackText);
+      }
+    } catch (err: any) {
+      sendResult = { success: false, error: err?.message || "Unknown error" };
+      app.log.warn({ err }, "Opt-in ack WA failed");
+    }
+    await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        direction: "OUTBOUND",
+        text: ackText,
+        rawPayload: serializeJson({ autoReply: true, optInAck: true, sendResult }),
         timestamp: new Date(),
         read: true,
       },
