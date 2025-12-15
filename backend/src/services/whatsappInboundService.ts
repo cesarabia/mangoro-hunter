@@ -1532,13 +1532,13 @@ function extractEmail(text: string): string | null {
 function extractLocation(text: string): string | null {
   if (!text) return null;
   const labelMatch = text.match(
-    /\b(?:comuna|ciudad|localidad|sector|zona)\s*[:\-]\s*([A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60})/i,
+    /\b(?:comuna|ciudad|localidad|sector|zona)\s*[:\-]\s*([A-Za-zÁÉÍÓÚáéíóúÑñ ]{2,60})/i,
   );
   if (labelMatch?.[1]) {
     return normalizeName(labelMatch[1]) || labelMatch[1].trim();
   }
   const verbMatch = text.match(
-    /\b(?:vivo|resido|soy)\s+(?:en|de)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60})/i,
+    /\b(?:vivo|resido|soy)\s+(?:en|de)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ ]{2,60})/i,
   );
   if (verbMatch?.[1]) {
     return normalizeName(verbMatch[1]) || verbMatch[1].trim();
