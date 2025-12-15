@@ -613,6 +613,26 @@ export async function maybeSendAutoReply(
 
       const lastInbound = inboundMessages.slice(-1)[0];
       const lastInboundText = (lastInbound?.transcriptText || lastInbound?.text || "").trim();
+      const lastInboundTranscript = (lastInbound?.transcriptText || "").trim();
+      const lastInboundHasAttachment =
+        Boolean(lastInbound) &&
+        (lastInbound?.mediaType === "image" || lastInbound?.mediaType === "document") &&
+        Boolean(lastInboundTranscript);
+
+      // Attachments should be handled contextually first (OCR/PDF extraction), so candidates don't get a generic menu when
+      // they sent a file. This also improves conversion for "tengo CV" + adjunto.
+      if (!assessment.ready && !alreadyClosed && lastInboundHasAttachment && lastInboundTranscript) {
+        const handled = await maybeHandleContextualAttachmentReply({
+          app,
+          conversation,
+          conversationId,
+          waId,
+          mode: "RECRUIT",
+          extractedText: lastInboundTranscript,
+        });
+        if (handled) return;
+      }
+
       const lastOutbound = (conversation.messages || []).filter((m) => m.direction === "OUTBOUND").slice(-1)[0];
       const lastOutboundText = stripAccents((lastOutbound?.text || "").toLowerCase());
       const lastOutboundWasInfoMenu =
