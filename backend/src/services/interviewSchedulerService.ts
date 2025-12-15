@@ -241,14 +241,25 @@ function computeNextOccurrence(params: {
 async function listActiveReservationsByStartAt(params: { startAtUtc: Date[]; location: string }) {
   const startAt = params.startAtUtc;
   if (startAt.length === 0) return [];
-  return prisma.interviewReservation.findMany({
-    where: {
-      startAt: { in: startAt },
-      location: params.location,
-      activeKey: 'ACTIVE',
-    },
-    select: { id: true, startAt: true, location: true },
-  });
+  const [reservations, blocks] = await prisma.$transaction([
+    prisma.interviewReservation.findMany({
+      where: {
+        startAt: { in: startAt },
+        location: params.location,
+        activeKey: 'ACTIVE',
+      },
+      select: { id: true, startAt: true, location: true },
+    }),
+    prisma.interviewSlotBlock.findMany({
+      where: {
+        startAt: { in: startAt },
+        location: params.location,
+      },
+      select: { id: true, startAt: true, location: true },
+    }),
+  ]);
+
+  return [...reservations, ...blocks];
 }
 
 async function suggestAlternatives(params: {
@@ -314,6 +325,59 @@ function formatAlternatives(alternatives: InterviewSlot[]): string {
   if (alternatives.length === 0) return '';
   const lines = alternatives.map(slot => `- ${slot.day} ${slot.time} (${slot.location})`);
   return lines.join('\n');
+}
+
+export function resolveInterviewSlotFromDayTime(params: {
+  day: string;
+  time: string;
+  location?: string | null;
+  config: SystemConfig;
+  now?: Date;
+}):
+  | { ok: true; slot: InterviewSlot }
+  | { ok: false; reason: 'BAD_INPUT' | 'OUTSIDE_AVAILABILITY'; message: string } {
+  const timezone = normalizeTimezone(params.config.interviewTimezone);
+  const slotMinutes = normalizeSlotMinutes(params.config.interviewSlotMinutes);
+  const requestedLocation = normalizeLocation(params.location) || getLocations(params.config)[0];
+
+  const weekday = dayToWeekday(params.day);
+  if (!weekday) {
+    return {
+      ok: false,
+      reason: 'BAD_INPUT',
+      message: 'No pude interpretar el día. Usa un día de la semana (ej: martes).',
+    };
+  }
+  const timeMinutes = parseTimeToMinutes(params.time);
+  if (timeMinutes === null) {
+    return {
+      ok: false,
+      reason: 'BAD_INPUT',
+      message: 'No pude interpretar la hora. Usa formato HH:mm (ej: 13:00).',
+    };
+  }
+
+  const nowLocal = DateTime.fromJSDate(params.now || new Date(), { zone: timezone });
+  const startLocal = computeNextOccurrence({ now: nowLocal, weekday, timeMinutes });
+  const availability = getWeeklyAvailability(params.config);
+  const exceptionDates = getExceptionDates(params.config);
+
+  if (!isSlotWithinAvailability({ startLocal, slotMinutes, availability, exceptionDates })) {
+    return {
+      ok: false,
+      reason: 'OUTSIDE_AVAILABILITY',
+      message: 'Ese horario está fuera de la disponibilidad configurada.',
+    };
+  }
+
+  const desiredSlot = buildSlotFromLocal({
+    startLocal,
+    slotMinutes,
+    location: requestedLocation,
+    timezone,
+  });
+
+  return { ok: true, slot: desiredSlot };
 }
 
 export async function attemptScheduleInterview(params: {
@@ -414,6 +478,31 @@ export async function attemptScheduleInterview(params: {
     location: requestedLocation,
     timezone,
   });
+
+  const blocked = await prisma.interviewSlotBlock.findFirst({
+    where: {
+      startAt: desiredSlot.startAt,
+      location: desiredSlot.location,
+    },
+    select: { id: true },
+  });
+  if (blocked) {
+    const alternatives = await suggestAlternatives({
+      config: params.config,
+      location: requestedLocation,
+      timezone,
+      slotMinutes,
+      limit: 5,
+      searchDays: 14,
+      now: nowLocal,
+    });
+    return {
+      ok: false,
+      reason: 'CONFLICT',
+      message: 'Ese horario ya está ocupado.',
+      alternatives,
+    };
+  }
 
   try {
     const result = await prisma.$transaction(async tx => {
@@ -549,4 +638,3 @@ export function formatAlternativesHuman(alternatives: InterviewSlot[]): string {
   const body = formatAlternatives(alternatives);
   return body ? `Opciones:\n${body}` : '';
 }
-

@@ -759,6 +759,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     }
 
     const results: any = { success: true, cleaned: {} as any };
+    let primaryTestContactId: string | null = null;
+    let primaryAdminContactId: string | null = null;
 
     const cleanupNumber = async (label: 'test' | 'admin', waIdRaw: string) => {
       const candidates = buildWaIdCandidates(waIdRaw);
@@ -776,6 +778,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         contacts.find(c => normalizeWhatsAppId(c.waId || '') === waIdRaw) ||
         contacts.find(c => normalizeWhatsAppId(c.phone || '') === waIdRaw) ||
         contacts[0];
+      if (label === 'test') primaryTestContactId = primary.id;
+      if (label === 'admin') primaryAdminContactId = primary.id;
       const secondaryIds = contacts.filter(c => c.id !== primary.id).map(c => c.id);
 
       let mergedContacts = 0;
@@ -916,6 +920,70 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     } catch (err) {
       request.log.warn({ err }, 'Cleanup simulated conversations failed');
       results.cleaned.simulated = { error: 'failed' };
+    }
+
+    // Remove agenda blocks created for tests (no candidate involved).
+    try {
+      const blocksRes = await prisma.interviewSlotBlock.deleteMany({
+        where: { tag: { startsWith: 'TEST' } }
+      });
+      results.cleaned.blocks = { blocksDeleted: blocksRes.count };
+    } catch (err) {
+      request.log.warn({ err }, 'Cleanup slot blocks failed');
+      results.cleaned.blocks = { error: 'failed' };
+    }
+
+    // Remove orphan contacts left behind by tests (no conversations/apps/reservations/events),
+    // and remove their admin notifications from the admin conversation.
+    try {
+      const protectedIds: string[] = [];
+      if (primaryTestContactId) protectedIds.push(primaryTestContactId);
+      if (primaryAdminContactId) protectedIds.push(primaryAdminContactId);
+      const orphanContacts = await prisma.contact.findMany({
+        where: {
+          ...(protectedIds.length > 0 ? { id: { notIn: protectedIds } } : {}),
+          conversations: { none: {} },
+          applications: { none: {} },
+          interviewReservations: { none: {} },
+          sellerEvents: { none: {} },
+          OR: [{ waId: { not: null } }, { phone: { not: null } }]
+        },
+        select: { id: true, waId: true, phone: true }
+      });
+
+      const orphanIds = orphanContacts.map(c => c.id);
+      let adminMessagesDeleted = 0;
+
+      if (orphanIds.length > 0) {
+        const adminConvos = await prisma.conversation.findMany({
+          where: { isAdmin: true },
+          select: { id: true }
+        });
+        const adminIds = adminConvos.map(c => c.id);
+        if (adminIds.length > 0) {
+          const adminRes = await prisma.message.deleteMany({
+            where: {
+              conversationId: { in: adminIds },
+              OR: orphanIds.map(id => ({
+                rawPayload: { contains: `"contactId":"${id}"` }
+              }))
+            }
+          });
+          adminMessagesDeleted = adminRes.count;
+        }
+      }
+
+      const contactsDeleted = orphanIds.length > 0
+        ? (await prisma.contact.deleteMany({ where: { id: { in: orphanIds } } })).count
+        : 0;
+
+      results.cleaned.orphanContacts = {
+        contactsDeleted,
+        adminMessagesDeleted
+      };
+    } catch (err) {
+      request.log.warn({ err }, 'Cleanup orphan contacts failed');
+      results.cleaned.orphanContacts = { error: 'failed' };
     }
 
     return results;
