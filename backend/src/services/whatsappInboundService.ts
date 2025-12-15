@@ -613,9 +613,20 @@ export async function maybeSendAutoReply(
           conversation.contact?.displayName ||
           null;
         const greeting = name ? `Gracias, ${name}.` : "Gracias.";
-        const closingText =
-          `${greeting} Ya tenemos los datos mínimos. ` +
-          "El equipo revisará tu postulación y te contactará por este medio.";
+        const lastInbound = inboundMessages.slice(-1)[0];
+        const lastInboundIsAttachment =
+          lastInbound &&
+          (lastInbound.mediaType === "image" || lastInbound.mediaType === "document") &&
+          Boolean((lastInbound.transcriptText || "").trim());
+        const detectedSummary =
+          assessment.summary && assessment.summary !== "Datos mínimos recibidos."
+            ? assessment.summary
+            : null;
+        const closingText = lastInboundIsAttachment
+          ? `${greeting} Pude leer tu adjunto${detectedSummary ? ` y detecté: ${detectedSummary}` : ""}. Ya tenemos los datos mínimos. ` +
+            "El equipo revisará tu postulación y te contactará por este medio."
+          : `${greeting} Ya tenemos los datos mínimos. ` +
+            "El equipo revisará tu postulación y te contactará por este medio.";
 
         let sendResultRaw: SendResult = {
           success: false,
