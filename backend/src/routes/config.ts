@@ -886,6 +886,38 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(500).send({ error: 'No se pudo limpiar los datos de prueba' });
     }
 
+    try {
+      const simulated = await prisma.conversation.findMany({
+        where: {
+          isAdmin: false,
+          messages: {
+            some: { rawPayload: { contains: '"simulated":true' } }
+          }
+        },
+        select: { id: true }
+      });
+      const ids = simulated.map(c => c.id);
+      if (ids.length > 0) {
+        const [messagesRes, reservationsRes, eventsRes, conversationsRes] = await prisma.$transaction([
+          prisma.message.deleteMany({ where: { conversationId: { in: ids } } }),
+          prisma.interviewReservation.deleteMany({ where: { conversationId: { in: ids } } }),
+          prisma.sellerEvent.deleteMany({ where: { conversationId: { in: ids } } }),
+          prisma.conversation.deleteMany({ where: { id: { in: ids } } })
+        ]);
+        results.cleaned.simulated = {
+          conversationsDeleted: conversationsRes.count,
+          messagesDeleted: messagesRes.count
+        };
+        void reservationsRes;
+        void eventsRes;
+      } else {
+        results.cleaned.simulated = { conversationsDeleted: 0, messagesDeleted: 0 };
+      }
+    } catch (err) {
+      request.log.warn({ err }, 'Cleanup simulated conversations failed');
+      results.cleaned.simulated = { error: 'failed' };
+    }
+
     return results;
   });
 }
