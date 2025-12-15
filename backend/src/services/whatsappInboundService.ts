@@ -557,9 +557,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
     return { conversationId: conversation.id };
   }
 
-  const nameSourceText =
-    isAttachment && extractedText ? `${extractedText}\n\n${effectiveText}`.trim() : effectiveText;
-  await maybeUpdateContactName(contact, params.profileName, nameSourceText, config);
+  await maybeUpdateContactName(contact, params.profileName, effectiveText, config);
 
   if (!conversation.isAdmin) {
     await detectInterviewSignals(app, conversation.id, effectiveText);
