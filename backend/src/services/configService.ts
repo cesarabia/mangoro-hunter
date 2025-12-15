@@ -49,6 +49,23 @@ Reglas:
 `.trim();
 export const DEFAULT_INTERVIEW_AI_MODEL = 'gpt-4.1-mini';
 
+export const DEFAULT_SALES_AI_PROMPT = `
+Eres Hunter Ventas, un asistente en español para vendedores.
+Tu objetivo es ayudar con pitch, objeciones, y apoyo en terreno.
+
+Reglas:
+- Responde en lenguaje natural, corto y accionable.
+- Si falta información, haz 1 pregunta clara (sin loops).
+- No inventes políticas ni precios: si no están en la base, dilo y pide el dato.
+`.trim();
+
+export const DEFAULT_SALES_KNOWLEDGE_BASE = `
+Guía rápida:
+- Pitch: presenta beneficio principal + siguiente paso.
+- Objeción precio: valida, compara valor, pregunta prioridad (precio vs resultado).
+- Registro: usa "registro visita ..." o "registro venta ...".
+`.trim();
+
 export async function getSystemConfig(): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
   return config;
@@ -216,6 +233,27 @@ export async function updateInterviewAiConfig(input: {
   });
 }
 
+export async function updateSalesAiConfig(input: {
+  prompt?: string | null;
+  knowledgeBase?: string | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: Record<string, string | null | undefined> = {};
+  if (typeof input.prompt !== 'undefined') {
+    data.salesAiPrompt = normalizeValue(input.prompt);
+  }
+  if (typeof input.knowledgeBase !== 'undefined') {
+    data.salesKnowledgeBase = normalizeValue(input.knowledgeBase);
+  }
+  if (Object.keys(data).length === 0) {
+    return config;
+  }
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data
+  });
+}
+
 export async function updateTemplateConfig(input: {
   templateInterviewInvite?: string | null;
   templateGeneralFollowup?: string | null;
@@ -319,6 +357,8 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         interviewExceptions: DEFAULT_INTERVIEW_EXCEPTIONS,
         interviewLocations: DEFAULT_INTERVIEW_LOCATIONS,
         testPhoneNumber: DEFAULT_TEST_PHONE_NUMBER,
+        salesAiPrompt: DEFAULT_SALES_AI_PROMPT,
+        salesKnowledgeBase: DEFAULT_SALES_KNOWLEDGE_BASE,
         adminAiAddendum: DEFAULT_ADMIN_AI_ADDENDUM
       }
     });
@@ -380,6 +420,12 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (typeof existing.testPhoneNumber === 'undefined') {
     updates.testPhoneNumber = DEFAULT_TEST_PHONE_NUMBER;
+  }
+  if (typeof (existing as any).salesAiPrompt === 'undefined') {
+    updates.salesAiPrompt = DEFAULT_SALES_AI_PROMPT;
+  }
+  if (typeof (existing as any).salesKnowledgeBase === 'undefined') {
+    updates.salesKnowledgeBase = DEFAULT_SALES_KNOWLEDGE_BASE;
   }
   if (!existing.interviewAiPrompt) {
     updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;

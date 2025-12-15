@@ -111,6 +111,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const [noContactReasonDraft, setNoContactReasonDraft] = useState('');
   const [noContactSaving, setNoContactSaving] = useState(false);
   const [noContactError, setNoContactError] = useState<string | null>(null);
+  const [namePanelOpen, setNamePanelOpen] = useState(false);
+  const [manualNameDraft, setManualNameDraft] = useState('');
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameStatus, setNameStatus] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!conversation) {
@@ -126,6 +131,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setNoContactReasonDraft('');
       setNoContactSaving(false);
       setNoContactError(null);
+      setNamePanelOpen(false);
+      setManualNameDraft('');
+      setNameSaving(false);
+      setNameStatus(null);
+      setNameError(null);
       return;
     }
     setAutoScrollEnabled(true);
@@ -142,6 +152,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     setNoContactReasonDraft('');
     setNoContactSaving(false);
     setNoContactError(null);
+    setNamePanelOpen(false);
+    setManualNameDraft(conversation.contact?.candidateNameManual || '');
+    setNameSaving(false);
+    setNameStatus(null);
+    setNameError(null);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -232,6 +247,48 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     }
   };
 
+  const handleSaveManualName = async () => {
+    if (!conversation || isAdmin || nameSaving) return;
+    setNameSaving(true);
+    setNameStatus(null);
+    setNameError(null);
+    try {
+      const next = manualNameDraft.trim();
+      await apiClient.patch(`/api/conversations/${conversation.id}/contact-name`, {
+        manualName: next.length > 0 ? next : null
+      });
+      setNamePanelOpen(false);
+      setNameStatus('Nombre guardado');
+      onMessageSent();
+    } catch (err: any) {
+      setNameError(err.message || 'No se pudo guardar el nombre');
+    } finally {
+      setNameSaving(false);
+    }
+  };
+
+  const handleClearManualName = async () => {
+    if (!conversation || isAdmin || nameSaving) return;
+    const ok = window.confirm('¿Eliminar el nombre manual y volver al nombre detectado?');
+    if (!ok) return;
+    setNameSaving(true);
+    setNameStatus(null);
+    setNameError(null);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/contact-name`, {
+        manualName: null
+      });
+      setManualNameDraft('');
+      setNamePanelOpen(false);
+      setNameStatus('Nombre manual eliminado');
+      onMessageSent();
+    } catch (err: any) {
+      setNameError(err.message || 'No se pudo eliminar el nombre manual');
+    } finally {
+      setNameSaving(false);
+    }
+  };
+
   const handleModeChange = async (mode: 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF') => {
     if (!conversation || conversation.aiMode === mode || modeSaving) return;
     setModeSaving(true);
@@ -298,13 +355,14 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const hasConversation = Boolean(conversation);
   const isAdmin = Boolean(conversation?.isAdmin);
   const waId = conversation?.contact?.waId || conversation?.contact?.phone || '';
+  const manualName = !isAdmin ? (conversation?.contact?.candidateNameManual || '').trim() : '';
   const candidateRaw = conversation?.contact?.candidateName || null;
-  const candidateName =
+  const candidateNameDetected =
     !isAdmin && candidateRaw && !isSuspiciousCandidateName(candidateRaw) ? candidateRaw : null;
   const profileDisplay = conversation?.contact?.displayName || conversation?.contact?.name || '';
   const primaryName = isAdmin
     ? 'Administrador'
-    : candidateName || profileDisplay || 'Sin nombre';
+    : manualName || candidateNameDetected || profileDisplay || (waId ? `+${waId}` : '') || 'Sin nombre';
   const noContact = Boolean(conversation?.contact?.noContact);
   const noContactAt = conversation?.contact?.noContactAt || null;
   const noContactReason = conversation?.contact?.noContactReason || null;
@@ -330,7 +388,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF'; label: string }> = [
     { key: 'RECRUIT', label: 'Reclutamiento' },
     { key: 'INTERVIEW', label: 'Entrevista' },
-    { key: 'SELLER', label: 'Vendedor' },
+    { key: 'SELLER', label: 'Ventas' },
     { key: 'OFF', label: 'Manual' }
   ];
 
@@ -431,8 +489,85 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>{primaryName}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {isAdmin ? (
+                <span>{primaryName}</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNamePanelOpen(value => !value);
+                    setNameStatus(null);
+                    setNameError(null);
+                    setManualNameDraft(conversation?.contact?.candidateNameManual || '');
+                  }}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    padding: 0,
+                    cursor: 'pointer',
+                    fontSize: 18,
+                    fontWeight: 700
+                  }}
+                  title="Editar nombre visible"
+                >
+                  {primaryName}
+                  {manualName ? (
+                    <span style={{ marginLeft: 6, fontSize: 12, color: '#666' }} title="Nombre manual (override)">
+                      ✏️
+                    </span>
+                  ) : null}
+                </button>
+              )}
+            </div>
             {secondaryLabel && <div style={{ fontSize: 12, color: '#666' }}>{secondaryLabel}</div>}
+            {!isAdmin && namePanelOpen && (
+              <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa', maxWidth: 520 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Nombre visible (manual)</div>
+                <input
+                  value={manualNameDraft}
+                  onChange={e => setManualNameDraft(e.target.value)}
+                  placeholder="Ej: Ignacio González"
+                  style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 13 }}
+                />
+                <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
+                  Detectado:{' '}
+                  <strong>
+                    {candidateNameDetected || profileDisplay || (waId ? `+${waId}` : 'Sin nombre')}
+                  </strong>
+                </div>
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={handleSaveManualName}
+                    disabled={nameSaving}
+                    style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+                  >
+                    {nameSaving ? 'Guardando…' : 'Guardar'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNamePanelOpen(false)}
+                    disabled={nameSaving}
+                    style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                  >
+                    Cancelar
+                  </button>
+                  {manualName ? (
+                    <button
+                      type="button"
+                      onClick={handleClearManualName}
+                      disabled={nameSaving}
+                      style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                    >
+                      Limpiar override
+                    </button>
+                  ) : null}
+                </div>
+                {nameStatus && <div style={{ marginTop: 6, fontSize: 12, color: 'green' }}>{nameStatus}</div>}
+                {nameError && <div style={{ marginTop: 6, fontSize: 12, color: '#b93800' }}>{nameError}</div>}
+              </div>
+            )}
             {noContact ? (
               <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <div style={{ fontSize: 11, color: '#a8071a', background: '#fff1f0', border: '1px solid #ff7875', borderRadius: 8, padding: '6px 8px', display: 'inline-block', maxWidth: 520 }}>

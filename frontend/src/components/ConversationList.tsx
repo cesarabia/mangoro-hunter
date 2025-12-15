@@ -108,12 +108,15 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const unreadCount = c.unreadCount || 0;
           const hasUnread = unreadCount > 0;
           const isAdmin = Boolean(c.isAdmin);
+          const manualName = !isAdmin ? (c.contact?.candidateNameManual || '').trim() : '';
           const rawCandidate = c.contact?.candidateName || null;
           const validCandidate = !isAdmin && rawCandidate && !isSuspiciousCandidateName(rawCandidate);
           const waId = c.contact?.waId || c.contact?.phone || '';
           const profileDisplay = c.contact?.displayName || c.contact?.name || '';
           const primaryName = isAdmin
             ? 'Administrador'
+            : manualName
+            ? manualName
             : validCandidate
             ? rawCandidate
             : profileDisplay || waId || 'Sin nombre';
@@ -135,7 +138,14 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontWeight: hasUnread ? 700 : 600 }}>{primaryName}</span>
+                <span style={{ fontWeight: hasUnread ? 700 : 600 }}>
+                  {primaryName}
+                  {!isAdmin && manualName ? (
+                    <span style={{ marginLeft: 6, fontSize: 11, color: '#666' }} title="Nombre manual (override)">
+                      ✏️
+                    </span>
+                  ) : null}
+                </span>
                 {hasUnread && (
                   <span
                     style={{

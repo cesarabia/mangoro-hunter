@@ -15,6 +15,8 @@ import {
   updateAdminAiConfig,
   normalizeModelId,
   DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+  DEFAULT_SALES_AI_PROMPT,
+  DEFAULT_SALES_KNOWLEDGE_BASE,
 } from "./configService";
 import { DEFAULT_AI_PROMPT } from "../constants/ai";
 import { serializeJson } from "../utils/json";
@@ -88,6 +90,7 @@ async function mergeOrCreateContact(waId: string, preferredId?: string) {
   }
   let primary =
     contacts.find((c) => c.id === preferredId) ||
+    contacts.find((c) => (c as any).candidateNameManual) ||
     contacts.find((c) => c.candidateName) ||
     contacts[0];
   const secondaries = contacts.filter((c) => c.id !== primary.id);
@@ -96,7 +99,35 @@ async function mergeOrCreateContact(waId: string, preferredId?: string) {
   const canonicalPhone = primary.phone || (canonicalWaId ? `+${canonicalWaId}` : null);
 
   await prisma.$transaction(async (tx) => {
+    const primaryUpdates: Record<string, any> = {};
     for (const sec of secondaries) {
+      const secAny = sec as any;
+      const primaryAny = primary as any;
+      if (!primaryAny.candidateNameManual && secAny.candidateNameManual) {
+        primaryUpdates.candidateNameManual = secAny.candidateNameManual;
+        primaryAny.candidateNameManual = secAny.candidateNameManual;
+      }
+      if (!primaryAny.candidateName && secAny.candidateName) {
+        primaryUpdates.candidateName = secAny.candidateName;
+        primaryAny.candidateName = secAny.candidateName;
+      }
+      if (!primaryAny.displayName && secAny.displayName) {
+        primaryUpdates.displayName = secAny.displayName;
+        primaryAny.displayName = secAny.displayName;
+      }
+      if (!primaryAny.name && secAny.name) {
+        primaryUpdates.name = secAny.name;
+        primaryAny.name = secAny.name;
+      }
+      if (!primaryAny.noContact && secAny.noContact) {
+        primaryUpdates.noContact = true;
+        primaryUpdates.noContactAt = secAny.noContactAt ?? primaryAny.noContactAt ?? new Date();
+        primaryUpdates.noContactReason = secAny.noContactReason ?? primaryAny.noContactReason ?? null;
+        primaryAny.noContact = true;
+        primaryAny.noContactAt = primaryUpdates.noContactAt;
+        primaryAny.noContactReason = primaryUpdates.noContactReason;
+      }
+
       await tx.conversation.updateMany({
         where: { contactId: sec.id },
         data: { contactId: primary.id },
@@ -110,6 +141,12 @@ async function mergeOrCreateContact(waId: string, preferredId?: string) {
         data: { waId: null, phone: null },
       });
       await tx.contact.delete({ where: { id: sec.id } });
+    }
+    if (Object.keys(primaryUpdates).length > 0) {
+      await tx.contact.update({
+        where: { id: primary.id },
+        data: primaryUpdates,
+      });
     }
     await tx.contact.update({
       where: { id: primary.id },
@@ -766,13 +803,13 @@ export async function maybeSendAutoReply(
 
       let replyText: string | null = null;
 
-      if (pitchRequest) {
-        replyText =
-          "Pitch corto (Postulaciones):\n" +
-          "Hola, ¿cómo estás? Trabajo con Postulaciones y estoy ayudando a personas/negocios a resolver [necesidad] de forma simple.\n" +
-          "En 20 segundos: te muestro el beneficio principal, el precio/plan y coordinamos el siguiente paso.\n" +
-          "¿Te interesaría que te cuente en 1 minuto y ver si calza contigo?";
-      } else if (dailySummary || weeklySummary) {
+      const salesPromptBase = (config.salesAiPrompt || DEFAULT_SALES_AI_PROMPT).trim() || DEFAULT_SALES_AI_PROMPT;
+      const salesKnowledgeBase =
+        (config.salesKnowledgeBase || DEFAULT_SALES_KNOWLEDGE_BASE).trim() || DEFAULT_SALES_KNOWLEDGE_BASE;
+      const salesPrompt = `${salesPromptBase}\n\nBase de conocimiento (editable):\n${salesKnowledgeBase}`.trim();
+      const canUseSalesAi = Boolean(getEffectiveOpenAiKey(config));
+
+      if (dailySummary || weeklySummary) {
         const range = weeklySummary ? "WEEK" : "DAY";
         const summary = await buildSellerSummary({
           contactId: conversation.contactId,
@@ -812,30 +849,62 @@ export async function maybeSendAutoReply(
             `Venta registrada${amount}.\n` +
             "Si quieres, agrega: producto/plan, cantidad y si quedó pago/pendiente.";
         }
-      } else if (/\b(objecion|objeción|caro|precio)\b/.test(lastInboundLower)) {
-        replyText =
+      } else {
+        const fallbackPitch =
+          "Pitch corto (Postulaciones):\n" +
+          "Hola, ¿cómo estás? Trabajo con Postulaciones y estoy ayudando a personas/negocios a resolver [necesidad] de forma simple.\n" +
+          "En 20 segundos: te muestro el beneficio principal, el precio/plan y coordinamos el siguiente paso.\n" +
+          "¿Te interesaría que te cuente en 1 minuto y ver si calza contigo?";
+        const fallbackObjection =
           "Objeción precio (respuesta corta):\n" +
           "Te entiendo. Para que lo compares bien: lo clave es [beneficio principal] y [ahorro/resultado].\n" +
           "¿Qué te importa más: bajar el costo mensual o maximizar el resultado?";
-      } else if (/\b(no me interesa|no interesado|no quiero)\b/.test(lastInboundLower)) {
-        replyText =
-          "Perfecto, gracias por decírmelo.\n" +
-          "Antes de cerrar: ¿es porque no lo necesitas ahora o porque no es el tipo de solución que buscas?";
-      } else if (/\b(primer dia|primer día|onboarding)\b/.test(lastInboundLower)) {
-        replyText =
-          "Onboarding rápido (primer día):\n" +
-          "1) Define tu objetivo del día (visitas/ventas).\n" +
-          "2) Ten listo tu pitch + 2 objeciones.\n" +
-          "3) Registra cada visita/venta aquí para el resumen.\n" +
-          "¿Quieres que armemos tu plan de hoy en 3 pasos?";
-      } else {
-        replyText =
+        const fallbackHelp =
           "Puedo ayudarte con:\n" +
           "- Pitch/guiones\n" +
           "- Respuestas a objeciones\n" +
           "- Registrar visita/venta (escribe: \"registro visita ...\" o \"registro venta ...\")\n" +
           "- Resumen diario/semanal (pídeme \"resumen diario\" o \"resumen semanal\")\n" +
           "¿Qué necesitas ahora?";
+
+        if (!canUseSalesAi) {
+          if (pitchRequest) replyText = fallbackPitch;
+          else if (/\b(objecion|objeción|caro|precio)\b/.test(lastInboundLower)) replyText = fallbackObjection;
+          else replyText = fallbackHelp;
+        } else {
+          const history = await prisma.message.findMany({
+            where: { conversationId },
+            orderBy: { timestamp: "desc" },
+            take: 28,
+          });
+          const lines = history
+            .slice()
+            .reverse()
+            .map((m) => {
+              const line = buildAiMessageText(m);
+              return m.direction === "INBOUND" ? `Vendedor: ${line}` : `Hunter: ${line}`;
+            })
+            .join("\n");
+          const taskHint = pitchRequest
+            ? "Tarea: generar un pitch corto."
+            : /\b(objecion|objeción|caro|precio)\b/.test(lastInboundLower)
+              ? "Tarea: responder objeción de precio."
+              : "Tarea: responder y ayudar al vendedor.";
+          const context = `${taskHint}\n\n${lines || `Vendedor: ${lastInboundText}`}`.trim();
+          try {
+            const suggestionRaw = await getSuggestedReply(context, {
+              prompt: salesPrompt,
+              model:
+                normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL,
+              config,
+            });
+            const cleaned = (suggestionRaw || "").trim();
+            replyText = cleaned.length > 0 ? cleaned : fallbackHelp;
+          } catch (err: any) {
+            app.log.warn({ err }, "Sales AI reply failed; using fallback");
+            replyText = pitchRequest ? fallbackPitch : fallbackHelp;
+          }
+        }
       }
 
       if (!replyText) return;
@@ -1278,7 +1347,12 @@ function assessRecruitmentReadiness(
     email: string | null;
   };
 } {
+  const manualName =
+    contact?.candidateNameManual && String(contact.candidateNameManual).trim()
+      ? String(contact.candidateNameManual).trim()
+      : null;
   const name =
+    manualName ||
     (contact?.candidateName && !isSuspiciousCandidateName(contact.candidateName)
       ? String(contact.candidateName)
       : null) ||
@@ -3887,16 +3961,23 @@ async function detectAdminTemplateIntent(
 }
 
 async function ensureAdminConversation(waId: string, normalizedAdmin: string) {
-  let contact = await prisma.contact.findUnique({
-    where: { waId: normalizedAdmin },
+  let contact = await prisma.contact.findFirst({
+    where: {
+      OR: [{ waId: normalizedAdmin }, { phone: normalizedAdmin }, { phone: `+${normalizedAdmin}` }],
+    },
   });
   if (!contact) {
     contact = await prisma.contact.create({
       data: {
         waId: normalizedAdmin,
-        phone: normalizedAdmin,
+        phone: `+${normalizedAdmin}`,
         name: "Administrador",
       },
+    });
+  } else if (!contact.waId) {
+    contact = await prisma.contact.update({
+      where: { id: contact.id },
+      data: { waId: normalizedAdmin },
     });
   }
 

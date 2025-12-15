@@ -60,6 +60,102 @@ interface TemplatesConfigResponse {
   testPhoneNumber: string | null;
 }
 
+interface SalesAiConfigResponse {
+  prompt: string;
+  knowledgeBase: string;
+  hasCustomPrompt: boolean;
+  hasCustomKnowledgeBase: boolean;
+}
+
+type WeekdayKey = 'lunes' | 'martes' | 'miercoles' | 'jueves' | 'viernes' | 'sabado' | 'domingo';
+type TimeInterval = { start: string; end: string };
+type WeeklyAvailability = Record<WeekdayKey, TimeInterval[]>;
+
+const WEEKDAYS: Array<{ key: WeekdayKey; label: string }> = [
+  { key: 'lunes', label: 'Lunes' },
+  { key: 'martes', label: 'Martes' },
+  { key: 'miercoles', label: 'Miércoles' },
+  { key: 'jueves', label: 'Jueves' },
+  { key: 'viernes', label: 'Viernes' },
+  { key: 'sabado', label: 'Sábado' },
+  { key: 'domingo', label: 'Domingo' }
+];
+
+const emptyWeeklyAvailability = (): WeeklyAvailability => ({
+  lunes: [],
+  martes: [],
+  miercoles: [],
+  jueves: [],
+  viernes: [],
+  sabado: [],
+  domingo: []
+});
+
+const stripAccents = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+const normalizeDayKey = (raw: string): WeekdayKey | null => {
+  const key = stripAccents(String(raw || '').trim().toLowerCase());
+  if (!key) return null;
+  if (key === 'lunes') return 'lunes';
+  if (key === 'martes') return 'martes';
+  if (key === 'miercoles' || key === 'miércoles') return 'miercoles';
+  if (key === 'jueves') return 'jueves';
+  if (key === 'viernes') return 'viernes';
+  if (key === 'sabado' || key === 'sábado') return 'sabado';
+  if (key === 'domingo') return 'domingo';
+  return null;
+};
+
+const parseJson = (value: string): any => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const parseLocations = (raw: string): string[] => {
+  const parsed = parseJson(raw);
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map(item => (typeof item === 'string' ? item.trim().replace(/\s+/g, ' ') : ''))
+    .filter(Boolean);
+};
+
+const parseExceptions = (raw: string): string[] => {
+  const parsed = parseJson(raw);
+  if (!Array.isArray(parsed)) return [];
+  const dates = parsed
+    .map(entry => {
+      if (typeof entry === 'string') return entry.trim();
+      if (entry && typeof entry === 'object' && typeof (entry as any).date === 'string') return String((entry as any).date).trim();
+      return '';
+    })
+    .filter(Boolean)
+    .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date));
+  return Array.from(new Set(dates));
+};
+
+const parseWeeklyAvailability = (raw: string): WeeklyAvailability => {
+  const base = emptyWeeklyAvailability();
+  const parsed = parseJson(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return base;
+  for (const [dayRaw, intervals] of Object.entries(parsed as Record<string, any>)) {
+    const dayKey = normalizeDayKey(dayRaw);
+    if (!dayKey) continue;
+    if (!Array.isArray(intervals)) continue;
+    const next: TimeInterval[] = [];
+    for (const interval of intervals) {
+      const start = typeof interval?.start === 'string' ? interval.start.trim() : '';
+      const end = typeof interval?.end === 'string' ? interval.end.trim() : '';
+      if (!start || !end) continue;
+      next.push({ start, end });
+    }
+    base[dayKey] = next;
+  }
+  return base;
+};
+
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [loading, setLoading] = useState(true);
 
@@ -123,12 +219,26 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [resetting, setResetting] = useState(false);
   const [interviewTimezone, setInterviewTimezone] = useState('America/Santiago');
   const [interviewSlotMinutes, setInterviewSlotMinutes] = useState(30);
-  const [interviewWeeklyAvailability, setInterviewWeeklyAvailability] = useState('');
-  const [interviewExceptions, setInterviewExceptions] = useState('[]');
-  const [interviewLocations, setInterviewLocations] = useState('');
+  const [interviewLocationsList, setInterviewLocationsList] = useState<string[]>([]);
+  const [weeklyAvailability, setWeeklyAvailability] = useState<WeeklyAvailability>(emptyWeeklyAvailability());
+  const [exceptionDates, setExceptionDates] = useState<string[]>([]);
+  const [showAdvancedSchedule, setShowAdvancedSchedule] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [scheduleStatus, setScheduleStatus] = useState<string | null>(null);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
+
+  const [salesAiPrompt, setSalesAiPrompt] = useState('');
+  const [salesKnowledgeBase, setSalesKnowledgeBase] = useState('');
+  const [savingSalesAi, setSavingSalesAi] = useState(false);
+  const [salesAiStatus, setSalesAiStatus] = useState<string | null>(null);
+  const [salesAiError, setSalesAiError] = useState<string | null>(null);
+
+  const [cleanupPanelOpen, setCleanupPanelOpen] = useState(false);
+  const [cleanupConfirmText, setCleanupConfirmText] = useState('');
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const [cleanupResult, setCleanupResult] = useState<any>(null);
   const getModelOptions = (current: string) => {
     const base = ['gpt-4.1-mini', 'gpt-5-chat-latest'];
     return base.includes(current) ? base : [...base, current];
@@ -138,13 +248,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     const loadAll = async () => {
       setLoading(true);
       try {
-        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, schedule, templates] = await Promise.all([
+        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, salesAi, schedule, templates] = await Promise.all([
           apiClient.get('/api/config/whatsapp') as Promise<WhatsappConfigResponse>,
           apiClient.get('/api/config/ai') as Promise<AiConfigResponse>,
           apiClient.get('/api/config/admin-account') as Promise<AdminAccountResponse>,
           apiClient.get('/api/config/ai-prompt') as Promise<AiPromptResponse>,
           apiClient.get('/api/config/admin-ai') as Promise<AdminAiConfigResponse>,
           apiClient.get('/api/config/interview-ai') as Promise<InterviewAiConfigResponse>,
+          apiClient.get('/api/config/sales-ai') as Promise<SalesAiConfigResponse>,
           apiClient.get('/api/config/interview-schedule') as Promise<InterviewScheduleConfigResponse>,
           apiClient.get('/api/config/templates') as Promise<TemplatesConfigResponse>
         ]);
@@ -168,11 +279,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setAdminAiModel(adminAi.model || 'gpt-4.1-mini');
         setInterviewAiPrompt(interviewAi.prompt || '');
         setInterviewAiModel(interviewAi.model || 'gpt-4.1-mini');
+        setSalesAiPrompt(salesAi.prompt || '');
+        setSalesKnowledgeBase(salesAi.knowledgeBase || '');
         setInterviewTimezone(schedule.interviewTimezone || 'America/Santiago');
         setInterviewSlotMinutes(schedule.interviewSlotMinutes || 30);
-        setInterviewWeeklyAvailability(schedule.interviewWeeklyAvailability || '');
-        setInterviewExceptions(schedule.interviewExceptions || '[]');
-        setInterviewLocations(schedule.interviewLocations || '');
+        setInterviewLocationsList(parseLocations(schedule.interviewLocations || ''));
+        setWeeklyAvailability(parseWeeklyAvailability(schedule.interviewWeeklyAvailability || ''));
+        setExceptionDates(parseExceptions(schedule.interviewExceptions || '[]'));
         setTemplateInterviewInvite(templates.templateInterviewInvite || '');
         setTemplateGeneralFollowup(templates.templateGeneralFollowup || '');
         setTemplateLanguageCode(templates.templateLanguageCode || 'es_CL');
@@ -314,6 +427,33 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     }
   };
 
+  const handleCleanupTestData = async () => {
+    const normalizedTest = (testPhoneNumber || '').replace(/\D/g, '');
+    const normalizedInput = cleanupConfirmText.trim().replace(/\D/g, '');
+    const ok =
+      cleanupConfirmText.trim().toUpperCase() === 'LIMPIAR' ||
+      (normalizedTest && normalizedInput === normalizedTest);
+    if (!ok) {
+      setCleanupError('Confirma escribiendo LIMPIAR o el número de pruebas.');
+      return;
+    }
+    setCleaning(true);
+    setCleanupStatus(null);
+    setCleanupError(null);
+    setCleanupResult(null);
+    try {
+      const res = (await apiClient.post('/api/config/cleanup-test-data', {})) as any;
+      setCleanupResult(res);
+      setCleanupStatus('Datos de prueba limpiados. Recarga el inbox para ver cambios.');
+      setCleanupPanelOpen(false);
+      setCleanupConfirmText('');
+    } catch (err: any) {
+      setCleanupError(err.message || 'No se pudo limpiar datos de prueba');
+    } finally {
+      setCleaning(false);
+    }
+  };
+
   const handleSaveAdminAi = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingAdminAi(true);
@@ -352,22 +492,99 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
 
   const handleSaveInterviewSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
+    const isValidTime = (value: string) => /^(\d{1,2}):(\d{2})$/.test(value.trim());
+    const toMinutes = (value: string) => {
+      const [hhRaw, mmRaw] = value.split(':');
+      const hh = parseInt(hhRaw, 10);
+      const mm = parseInt(mmRaw, 10);
+      if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+      return hh * 60 + mm;
+    };
+    const validateSchedule = (): string | null => {
+      if (!interviewTimezone.trim()) return 'Timezone inválida.';
+      if (!Number.isFinite(interviewSlotMinutes) || interviewSlotMinutes < 5 || interviewSlotMinutes > 240) {
+        return 'Duración de slot inválida (5–240 min).';
+      }
+      const locations = interviewLocationsList.map(value => value.trim()).filter(Boolean);
+      if (locations.length === 0) return 'Define al menos 1 ubicación.';
+      for (const { key, label } of WEEKDAYS) {
+        const intervals = weeklyAvailability[key] || [];
+        const normalized = intervals
+          .map(interval => ({ start: interval.start.trim(), end: interval.end.trim() }))
+          .filter(interval => interval.start && interval.end);
+        for (const interval of normalized) {
+          if (!isValidTime(interval.start) || !isValidTime(interval.end)) {
+            return `Hora inválida en ${label} (usa HH:MM).`;
+          }
+          const startM = toMinutes(interval.start);
+          const endM = toMinutes(interval.end);
+          if (startM === null || endM === null) return `Hora inválida en ${label}.`;
+          if (startM >= endM) return `Intervalo inválido en ${label} (start debe ser menor que end).`;
+        }
+        const sorted = normalized
+          .map(interval => ({ ...interval, startM: toMinutes(interval.start)!, endM: toMinutes(interval.end)! }))
+          .sort((a, b) => a.startM - b.startM);
+        for (let i = 1; i < sorted.length; i++) {
+          if (sorted[i].startM < sorted[i - 1].endM) {
+            return `Intervalos solapados en ${label}.`;
+          }
+        }
+      }
+      const exceptions = exceptionDates.map(value => value.trim()).filter(Boolean);
+      for (const date of exceptions) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return `Fecha inválida en excepciones: ${date}`;
+      }
+      return null;
+    };
+    const validationError = validateSchedule();
+    if (validationError) {
+      setScheduleError(validationError);
+      setScheduleStatus(null);
+      return;
+    }
     setSavingSchedule(true);
     setScheduleStatus(null);
     setScheduleError(null);
     try {
+      const locations = interviewLocationsList.map(value => value.trim()).filter(Boolean);
+      const exceptions = Array.from(new Set(exceptionDates.map(value => value.trim()).filter(Boolean)));
+      const weekly: Record<string, Array<{ start: string; end: string }>> = {};
+      for (const { key } of WEEKDAYS) {
+        weekly[key] = (weeklyAvailability[key] || [])
+          .map(interval => ({ start: interval.start.trim(), end: interval.end.trim() }))
+          .filter(interval => interval.start && interval.end);
+      }
       await apiClient.put('/api/config/interview-schedule', {
         interviewTimezone: interviewTimezone.trim() || null,
         interviewSlotMinutes: Number.isFinite(interviewSlotMinutes) ? interviewSlotMinutes : null,
-        interviewWeeklyAvailability: interviewWeeklyAvailability.trim() || null,
-        interviewExceptions: interviewExceptions.trim() || null,
-        interviewLocations: interviewLocations.trim() || null
+        interviewWeeklyAvailability: JSON.stringify(weekly),
+        interviewExceptions: JSON.stringify(exceptions),
+        interviewLocations: JSON.stringify(locations)
       });
       setScheduleStatus('Disponibilidad guardada');
     } catch (err: any) {
       setScheduleError(err.message || 'No se pudo guardar la disponibilidad');
     } finally {
       setSavingSchedule(false);
+    }
+  };
+
+  const handleSaveSalesAi = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingSalesAi(true);
+    setSalesAiStatus(null);
+    setSalesAiError(null);
+    try {
+      await apiClient.put('/api/config/sales-ai', {
+        prompt: salesAiPrompt.trim() || null,
+        knowledgeBase: salesKnowledgeBase.trim() || null
+      });
+      setSalesAiStatus('IA Ventas actualizada');
+    } catch (err: any) {
+      setSalesAiError(err.message || 'No se pudo guardar IA Ventas');
+    } finally {
+      setSavingSalesAi(false);
     }
   };
 
@@ -720,9 +937,45 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
             </section>
 
             <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <h2>IA Ventas</h2>
+              <p style={{ color: '#666', marginBottom: 16 }}>
+                Configura el comportamiento del modo <strong>Ventas</strong> (prompt base + base de conocimiento).
+              </p>
+              <form onSubmit={handleSaveSalesAi} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label>
+                  <div>Prompt base Ventas</div>
+                  <textarea
+                    value={salesAiPrompt}
+                    onChange={e => setSalesAiPrompt(e.target.value)}
+                    placeholder="Instrucciones para la IA Ventas (tono, objetivos, límites)."
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 120 }}
+                  />
+                </label>
+                <label>
+                  <div>Base de conocimiento Ventas</div>
+                  <textarea
+                    value={salesKnowledgeBase}
+                    onChange={e => setSalesKnowledgeBase(e.target.value)}
+                    placeholder="Productos, packs, precios (si aplica), políticas, objeciones, guiones..."
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 120 }}
+                  />
+                </label>
+                {salesAiStatus && <p style={{ color: 'green' }}>{salesAiStatus}</p>}
+                {salesAiError && <p style={{ color: 'red' }}>{salesAiError}</p>}
+                <button
+                  type="submit"
+                  disabled={savingSalesAi}
+                  style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
+                >
+                  {savingSalesAi ? 'Guardando...' : 'Guardar IA Ventas'}
+                </button>
+              </form>
+            </section>
+
+            <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
               <h2>Agenda / Disponibilidad</h2>
               <p style={{ color: '#666', marginBottom: 16 }}>
-                Configura disponibilidad para evitar double-booking. Disponibilidad/ubicaciones/excepciones se guardan como JSON.
+                Configura disponibilidad para evitar double-booking (sin editar JSON a mano).
               </p>
               <form onSubmit={handleSaveInterviewSchedule} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <label>
@@ -746,33 +999,184 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   />
                 </label>
-                <label>
-                  <div>Ubicaciones (JSON)</div>
-                  <textarea
-                    value={interviewLocations}
-                    onChange={e => setInterviewLocations(e.target.value)}
-                    placeholder='["Providencia","Online"]'
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 64 }}
-                  />
-                </label>
-                <label>
-                  <div>Disponibilidad semanal (JSON)</div>
-                  <textarea
-                    value={interviewWeeklyAvailability}
-                    onChange={e => setInterviewWeeklyAvailability(e.target.value)}
-                    placeholder='{"lunes":[{"start":"09:00","end":"18:00"}],"martes":[{"start":"09:00","end":"18:00"}]}'
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 120 }}
-                  />
-                </label>
-                <label>
-                  <div>Excepciones (JSON)</div>
-                  <textarea
-                    value={interviewExceptions}
-                    onChange={e => setInterviewExceptions(e.target.value)}
-                    placeholder='["2025-12-25"]'
-                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 64 }}
-                  />
-                </label>
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Ubicaciones</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {interviewLocationsList.length === 0 && (
+                      <div style={{ fontSize: 12, color: '#777' }}>Agrega al menos 1 ubicación.</div>
+                    )}
+                    {interviewLocationsList.map((value, idx) => (
+                      <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          value={value}
+                          onChange={e => {
+                            const next = [...interviewLocationsList];
+                            next[idx] = e.target.value;
+                            setInterviewLocationsList(next);
+                          }}
+                          placeholder={idx === 0 ? 'Ej: Providencia' : 'Ej: Online'}
+                          style={{ flex: 1, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setInterviewLocationsList(list => list.filter((_, i) => i !== idx))}
+                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setInterviewLocationsList(list => [...list, ''])}
+                      style={{ alignSelf: 'flex-start', padding: '6px 10px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
+                    >
+                      + Agregar ubicación
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Disponibilidad semanal</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {WEEKDAYS.map(day => (
+                      <div
+                        key={day.key}
+                        style={{ border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa' }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <div style={{ fontWeight: 600 }}>{day.label}</div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setWeeklyAvailability(prev => ({
+                                ...prev,
+                                [day.key]: [...(prev[day.key] || []), { start: '09:00', end: '18:00' }]
+                              }))
+                            }
+                            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #111', background: '#fff', fontSize: 12 }}
+                          >
+                            + Bloque
+                          </button>
+                        </div>
+                        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {(weeklyAvailability[day.key] || []).length === 0 ? (
+                            <div style={{ fontSize: 12, color: '#777' }}>Sin bloques.</div>
+                          ) : (
+                            (weeklyAvailability[day.key] || []).map((interval, idx) => (
+                              <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <input
+                                  type="time"
+                                  value={interval.start}
+                                  onChange={e =>
+                                    setWeeklyAvailability(prev => ({
+                                      ...prev,
+                                      [day.key]: (prev[day.key] || []).map((item, i) =>
+                                        i === idx ? { ...item, start: e.target.value } : item
+                                      )
+                                    }))
+                                  }
+                                  style={{ padding: 6, borderRadius: 6, border: '1px solid #ccc' }}
+                                />
+                                <span style={{ fontSize: 12, color: '#666' }}>a</span>
+                                <input
+                                  type="time"
+                                  value={interval.end}
+                                  onChange={e =>
+                                    setWeeklyAvailability(prev => ({
+                                      ...prev,
+                                      [day.key]: (prev[day.key] || []).map((item, i) =>
+                                        i === idx ? { ...item, end: e.target.value } : item
+                                      )
+                                    }))
+                                  }
+                                  style={{ padding: 6, borderRadius: 6, border: '1px solid #ccc' }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setWeeklyAvailability(prev => ({
+                                      ...prev,
+                                      [day.key]: (prev[day.key] || []).filter((_, i) => i !== idx)
+                                    }))
+                                  }
+                                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                                >
+                                  Quitar
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Excepciones (días sin entrevistas)</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {exceptionDates.length === 0 && <div style={{ fontSize: 12, color: '#777' }}>Sin excepciones.</div>}
+                    {exceptionDates.map((date, idx) => (
+                      <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          type="date"
+                          value={date}
+                          onChange={e => {
+                            const next = [...exceptionDates];
+                            next[idx] = e.target.value;
+                            setExceptionDates(next);
+                          }}
+                          style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setExceptionDates(list => list.filter((_, i) => i !== idx))}
+                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setExceptionDates(list => [...list, ''])}
+                      style={{ alignSelf: 'flex-start', padding: '6px 10px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
+                    >
+                      + Agregar excepción
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedSchedule(v => !v)}
+                  style={{ alignSelf: 'flex-start', padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
+                >
+                  {showAdvancedSchedule ? 'Ocultar JSON' : 'Ver JSON (avanzado)'}
+                </button>
+                {showAdvancedSchedule && (
+                  <div style={{ border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Ubicaciones (JSON)</div>
+                    <textarea
+                      readOnly
+                      value={JSON.stringify(interviewLocationsList.map(v => v.trim()).filter(Boolean), null, 2)}
+                      style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ddd', minHeight: 60 }}
+                    />
+                    <div style={{ fontSize: 12, color: '#666', marginTop: 10, marginBottom: 6 }}>Disponibilidad semanal (JSON)</div>
+                    <textarea
+                      readOnly
+                      value={JSON.stringify(weeklyAvailability, null, 2)}
+                      style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ddd', minHeight: 120 }}
+                    />
+                    <div style={{ fontSize: 12, color: '#666', marginTop: 10, marginBottom: 6 }}>Excepciones (JSON)</div>
+                    <textarea
+                      readOnly
+                      value={JSON.stringify(exceptionDates.map(v => v.trim()).filter(Boolean), null, 2)}
+                      style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ddd', minHeight: 60 }}
+                    />
+                  </div>
+                )}
                 {scheduleStatus && <p style={{ color: 'green' }}>{scheduleStatus}</p>}
                 {scheduleError && <p style={{ color: 'red' }}>{scheduleError}</p>}
                 <button
@@ -876,8 +1280,67 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                 >
                   {resetting ? 'Reseteando...' : 'Reset conversación de prueba'}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCleanupPanelOpen(value => !value);
+                    setCleanupConfirmText('');
+                    setCleanupError(null);
+                    setCleanupStatus(null);
+                    setCleanupResult(null);
+                  }}
+                  disabled={cleaning}
+                  style={{ alignSelf: 'flex-start', padding: '8px 12px', borderRadius: 6, border: '1px solid #ff4d4f', background: '#fff' }}
+                >
+                  {cleaning ? 'Limpiando...' : 'Limpiar datos de prueba'}
+                </button>
+                {cleanupPanelOpen && (
+                  <div style={{ border: '1px solid #ffe58f', borderRadius: 8, padding: 10, background: '#fffbe6', maxWidth: 520 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Acción destructiva (solo pruebas)</div>
+                    <div style={{ fontSize: 12, color: '#664d03', marginBottom: 8 }}>
+                      Esto elimina conversaciones/mensajes de <strong>testPhoneNumber</strong> y corrige duplicados del <strong>adminWaId</strong>. No toca números reales.
+                    </div>
+                    <div style={{ fontSize: 12, color: '#333', marginBottom: 6 }}>
+                      Para confirmar, escribe <strong>LIMPIAR</strong> o el número de pruebas.
+                    </div>
+                    <input
+                      value={cleanupConfirmText}
+                      onChange={e => setCleanupConfirmText(e.target.value)}
+                      placeholder="LIMPIAR o 569XXXXXXXX"
+                      style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #d9d9d9' }}
+                    />
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={handleCleanupTestData}
+                        disabled={cleaning}
+                        style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ff4d4f', background: '#ff4d4f', color: '#fff' }}
+                      >
+                        {cleaning ? 'Limpiando...' : 'Confirmar limpieza'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCleanupPanelOpen(false);
+                          setCleanupConfirmText('');
+                        }}
+                        disabled={cleaning}
+                        style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                    {cleanupError && <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{cleanupError}</div>}
+                  </div>
+                )}
                 {resetStatus && <p style={{ color: 'green' }}>{resetStatus}</p>}
                 {resetError && <p style={{ color: 'red' }}>{resetError}</p>}
+                {cleanupStatus && <p style={{ color: 'green' }}>{cleanupStatus}</p>}
+                {cleanupResult && (
+                  <pre style={{ fontSize: 11, whiteSpace: 'pre-wrap', background: '#fafafa', border: '1px solid #eee', borderRadius: 8, padding: 10 }}>
+                    {JSON.stringify(cleanupResult, null, 2)}
+                  </pre>
+                )}
                 {templateStatus && <p style={{ color: 'green' }}>{templateStatus}</p>}
                 {templateError && <p style={{ color: 'red' }}>{templateError}</p>}
                 <button

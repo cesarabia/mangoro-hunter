@@ -12,6 +12,8 @@ import {
   DEFAULT_ADMIN_AI_MODEL,
   DEFAULT_INTERVIEW_AI_PROMPT,
   DEFAULT_INTERVIEW_AI_MODEL,
+  DEFAULT_SALES_AI_PROMPT,
+  DEFAULT_SALES_KNOWLEDGE_BASE,
   DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
   DEFAULT_TEMPLATE_INTERVIEW_INVITE,
   DEFAULT_TEMPLATE_LANGUAGE_CODE,
@@ -27,11 +29,12 @@ import {
   DEFAULT_INTERVIEW_LOCATIONS,
   DEFAULT_TEST_PHONE_NUMBER,
   updateInterviewScheduleConfig,
+  updateSalesAiConfig,
   updateAiModel
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
-import { normalizeWhatsAppId } from '../utils/whatsapp';
+import { buildWaIdCandidates, normalizeWhatsAppId } from '../utils/whatsapp';
 import { prisma } from '../db/client';
 import { sendWhatsAppTemplate } from '../services/whatsappMessageService';
 import { serializeJson } from '../utils/json';
@@ -65,6 +68,76 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     interviewWeeklyAvailability: DEFAULT_INTERVIEW_WEEKLY_AVAILABILITY,
     interviewExceptions: DEFAULT_INTERVIEW_EXCEPTIONS,
     interviewLocations: DEFAULT_INTERVIEW_LOCATIONS
+  };
+
+  const salesAiDefaults = {
+    prompt: DEFAULT_SALES_AI_PROMPT,
+    knowledgeBase: DEFAULT_SALES_KNOWLEDGE_BASE
+  };
+
+  const isValidTime = (value: string): boolean => {
+    const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return false;
+    const hh = parseInt(match[1], 10);
+    const mm = parseInt(match[2], 10);
+    return Number.isFinite(hh) && Number.isFinite(mm) && hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
+  };
+
+  const parseJsonSafe = (value: string): any => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  };
+
+  const validateLocationsJson = (value: string): string | null => {
+    const parsed = parseJsonSafe(value);
+    if (!Array.isArray(parsed)) return 'Ubicaciones debe ser un JSON array (ej: ["Providencia","Online"]).';
+    const locations = parsed.filter((item: any) => typeof item === 'string' && item.trim().length > 0);
+    if (locations.length === 0) return 'Define al menos 1 ubicación.';
+    return null;
+  };
+
+  const validateWeeklyAvailabilityJson = (value: string): string | null => {
+    const parsed = parseJsonSafe(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return 'Disponibilidad semanal debe ser un JSON object (ej: {"lunes":[{"start":"09:00","end":"18:00"}]}).';
+    }
+    for (const [day, intervals] of Object.entries(parsed as Record<string, any>)) {
+      if (!Array.isArray(intervals)) {
+        return `Disponibilidad de "${day}" debe ser un array de intervalos.`;
+      }
+      for (const interval of intervals) {
+        if (!interval || typeof interval !== 'object') return `Intervalo inválido en "${day}".`;
+        const start = interval.start;
+        const end = interval.end;
+        if (typeof start !== 'string' || typeof end !== 'string') {
+          return `Intervalo inválido en "${day}" (usa {"start":"HH:MM","end":"HH:MM"}).`;
+        }
+        if (!isValidTime(start) || !isValidTime(end)) {
+          return `Hora inválida en "${day}" (usa HH:MM).`;
+        }
+        const [sh, sm] = start.split(':').map(n => parseInt(n, 10));
+        const [eh, em] = end.split(':').map(n => parseInt(n, 10));
+        const startM = sh * 60 + sm;
+        const endM = eh * 60 + em;
+        if (startM >= endM) return `Intervalo inválido en "${day}" (start debe ser menor que end).`;
+      }
+    }
+    return null;
+  };
+
+  const validateExceptionsJson = (value: string): string | null => {
+    const parsed = parseJsonSafe(value);
+    if (!Array.isArray(parsed)) return 'Excepciones debe ser un JSON array (ej: ["2025-12-25"]).';
+    for (const entry of parsed) {
+      const date =
+        typeof entry === 'string' ? entry.trim() : entry && typeof entry === 'object' ? String((entry as any).date || '').trim() : '';
+      if (!date) return 'Excepción inválida (usa "YYYY-MM-DD" o {"date":"YYYY-MM-DD"}).';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return `Fecha inválida en excepciones: "${date}".`;
+    }
+    return null;
   };
 
   function isMissingColumnError(err: any): boolean {
@@ -311,6 +384,42 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     };
   });
 
+  app.get('/sales-ai', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return { ...salesAiDefaults, hasCustomPrompt: false, hasCustomKnowledgeBase: false };
+    }
+    return {
+      prompt: config.salesAiPrompt || DEFAULT_SALES_AI_PROMPT,
+      knowledgeBase: config.salesKnowledgeBase || DEFAULT_SALES_KNOWLEDGE_BASE,
+      hasCustomPrompt: Boolean(config.salesAiPrompt),
+      hasCustomKnowledgeBase: Boolean(config.salesKnowledgeBase)
+    };
+  });
+
+  app.put('/sales-ai', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const body = request.body as { prompt?: string | null; knowledgeBase?: string | null };
+    const updated = await executeUpdate(reply, () =>
+      updateSalesAiConfig({
+        prompt: typeof body?.prompt === 'undefined' ? undefined : body.prompt,
+        knowledgeBase: typeof body?.knowledgeBase === 'undefined' ? undefined : body.knowledgeBase
+      })
+    );
+    if (!updated) return;
+    return {
+      prompt: updated.salesAiPrompt || DEFAULT_SALES_AI_PROMPT,
+      knowledgeBase: updated.salesKnowledgeBase || DEFAULT_SALES_KNOWLEDGE_BASE,
+      hasCustomPrompt: Boolean(updated.salesAiPrompt),
+      hasCustomKnowledgeBase: Boolean(updated.salesKnowledgeBase)
+    };
+  });
+
   app.get('/interview-schedule', { preValidation: [app.authenticate] }, async (request, reply) => {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
@@ -342,6 +451,31 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       interviewExceptions?: string | null;
       interviewLocations?: string | null;
     };
+
+    if (typeof body?.interviewSlotMinutes === 'number') {
+      const minutes = Math.floor(body.interviewSlotMinutes);
+      if (!Number.isFinite(minutes) || minutes < 5 || minutes > 240) {
+        return reply.code(400).send({ error: 'Duración de slot inválida (5–240 min).' });
+      }
+    }
+    if (typeof body?.interviewTimezone === 'string') {
+      const tz = body.interviewTimezone.trim();
+      if (!tz) {
+        return reply.code(400).send({ error: 'Timezone inválida.' });
+      }
+    }
+    if (typeof body?.interviewLocations === 'string') {
+      const err = validateLocationsJson(body.interviewLocations);
+      if (err) return reply.code(400).send({ error: err });
+    }
+    if (typeof body?.interviewWeeklyAvailability === 'string') {
+      const err = validateWeeklyAvailabilityJson(body.interviewWeeklyAvailability);
+      if (err) return reply.code(400).send({ error: err });
+    }
+    if (typeof body?.interviewExceptions === 'string') {
+      const err = validateExceptionsJson(body.interviewExceptions);
+      if (err) return reply.code(400).send({ error: err });
+    }
 
     const updated = await executeUpdate(reply, () =>
       updateInterviewScheduleConfig({
@@ -597,6 +731,162 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       request.log.error({ err }, 'Reset de conversación de pruebas falló');
       return reply.code(500).send({ error: 'No se pudo resetear la conversación de prueba' });
     }
+  });
+
+  app.post('/cleanup-test-data', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await getSystemConfig();
+    const testWaId = normalizeWhatsAppId(config.testPhoneNumber || '');
+    const adminWaId = normalizeWhatsAppId(config.adminWaId || '');
+
+    if (!testWaId && !adminWaId) {
+      return reply.code(400).send({ error: 'Configura primero Número de pruebas y/o adminWaId.' });
+    }
+
+    try {
+      const dbPath = path.resolve(__dirname, '../../../dev.db');
+      const backupName = `dev-backup-${new Date()
+        .toISOString()
+        .replace(/[-:T]/g, '')
+        .slice(0, 14)}-cleanup.db`;
+      const backupPath = path.join(path.dirname(dbPath), backupName);
+      await fs.copyFile(dbPath, backupPath);
+    } catch (err) {
+      request.log.error({ err }, 'No se pudo hacer backup antes de cleanup de pruebas');
+      return reply.code(500).send({ error: 'No se pudo hacer backup de la base de datos' });
+    }
+
+    const results: any = { success: true, cleaned: {} as any };
+
+    const cleanupNumber = async (label: 'test' | 'admin', waIdRaw: string) => {
+      const candidates = buildWaIdCandidates(waIdRaw);
+      const contacts = await prisma.contact.findMany({
+        where: {
+          OR: [{ waId: { in: candidates } }, { phone: { in: candidates } }]
+        },
+        orderBy: { createdAt: 'asc' }
+      });
+      if (contacts.length === 0) {
+        results.cleaned[label] = { contactsFound: 0, mergedContacts: 0, conversationsDeleted: 0, messagesDeleted: 0 };
+        return;
+      }
+      const primary =
+        contacts.find(c => normalizeWhatsAppId(c.waId || '') === waIdRaw) ||
+        contacts.find(c => normalizeWhatsAppId(c.phone || '') === waIdRaw) ||
+        contacts[0];
+      const secondaryIds = contacts.filter(c => c.id !== primary.id).map(c => c.id);
+
+      let mergedContacts = 0;
+      if (secondaryIds.length > 0) {
+        await prisma.$transaction(async tx => {
+          for (const secId of secondaryIds) {
+            await tx.conversation.updateMany({ where: { contactId: secId }, data: { contactId: primary.id } });
+            await tx.application.updateMany({ where: { contactId: secId }, data: { contactId: primary.id } });
+            await tx.interviewReservation.updateMany({ where: { contactId: secId }, data: { contactId: primary.id } });
+            await tx.sellerEvent.updateMany({ where: { contactId: secId }, data: { contactId: primary.id } });
+            await tx.contact.update({ where: { id: secId }, data: { waId: null, phone: null } });
+            await tx.contact.delete({ where: { id: secId } });
+            mergedContacts += 1;
+          }
+          await tx.contact.update({
+            where: { id: primary.id },
+            data: { waId: waIdRaw, phone: `+${waIdRaw}` }
+          });
+        });
+      } else {
+        await prisma.contact.update({
+          where: { id: primary.id },
+          data: { waId: waIdRaw, phone: `+${waIdRaw}` }
+        }).catch(() => {});
+      }
+
+      const conversationsToDelete = await prisma.conversation.findMany({
+        where: { contactId: primary.id, isAdmin: false },
+        select: { id: true }
+      });
+      const convoIds = conversationsToDelete.map(c => c.id);
+
+      let messagesDeleted = 0;
+      let conversationsDeleted = 0;
+      if (convoIds.length > 0) {
+        const [messagesRes, reservationsRes, eventsRes, conversationsRes] = await prisma.$transaction([
+          prisma.message.deleteMany({ where: { conversationId: { in: convoIds } } }),
+          prisma.interviewReservation.deleteMany({ where: { conversationId: { in: convoIds } } }),
+          prisma.sellerEvent.deleteMany({ where: { conversationId: { in: convoIds } } }),
+          prisma.conversation.deleteMany({ where: { id: { in: convoIds } } })
+        ]);
+        messagesDeleted = messagesRes.count;
+        conversationsDeleted = conversationsRes.count;
+        void reservationsRes;
+        void eventsRes;
+      }
+
+      if (label === 'test') {
+        await prisma.contact.update({
+          where: { id: primary.id },
+          data: {
+            candidateName: null,
+            candidateNameManual: null,
+            name: null,
+            displayName: null,
+            noContact: false,
+            noContactAt: null,
+            noContactReason: null,
+            updatedAt: new Date()
+          }
+        }).catch(() => {});
+      }
+      if (label === 'admin') {
+        await prisma.contact.update({
+          where: { id: primary.id },
+          data: {
+            name: 'Administrador',
+            candidateName: null,
+            candidateNameManual: null,
+            noContact: false,
+            noContactAt: null,
+            noContactReason: null,
+            updatedAt: new Date()
+          }
+        }).catch(() => {});
+        // Ensure at most 1 admin conversation exists
+        const adminConversations = await prisma.conversation.findMany({
+          where: { contactId: primary.id, isAdmin: true },
+          orderBy: { updatedAt: 'desc' }
+        });
+        if (adminConversations.length > 1) {
+          const keep = adminConversations[0];
+          const remove = adminConversations.slice(1).map(c => c.id);
+          await prisma.$transaction([
+            prisma.message.deleteMany({ where: { conversationId: { in: remove } } }),
+            prisma.conversation.deleteMany({ where: { id: { in: remove } } })
+          ]);
+          await prisma.conversation.update({
+            where: { id: keep.id },
+            data: { aiMode: 'OFF', status: 'OPEN', updatedAt: new Date() }
+          }).catch(() => {});
+        }
+      }
+
+      results.cleaned[label] = {
+        contactsFound: contacts.length,
+        mergedContacts,
+        conversationsDeleted,
+        messagesDeleted
+      };
+    };
+
+    try {
+      if (testWaId) await cleanupNumber('test', testWaId);
+      if (adminWaId) await cleanupNumber('admin', adminWaId);
+    } catch (err) {
+      request.log.error({ err }, 'Cleanup test data failed');
+      return reply.code(500).send({ error: 'No se pudo limpiar los datos de prueba' });
+    }
+
+    return results;
   });
 }
 

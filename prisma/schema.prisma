@@ -27,6 +27,7 @@ model Contact {
   name          String?
   displayName   String?
   candidateName String?
+  candidateNameManual String?
   noContact     Boolean         @default(false)
   noContactAt   DateTime?
   noContactReason String?
@@ -146,6 +147,8 @@ model SystemConfig {
   interviewExceptions String?
   interviewLocations String?
   testPhoneNumber String?
+  salesAiPrompt    String?
+  salesKnowledgeBase String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }

@@ -4,6 +4,7 @@ import { getSystemConfig } from './configService';
 import { sendWhatsAppText } from './whatsappMessageService';
 import { serializeJson } from '../utils/json';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
+import { getContactDisplayName } from '../utils/contactDisplay';
 
 export type AdminEventType =
   | 'RECRUIT_READY'
@@ -24,10 +25,17 @@ function formatInterviewSlot(day?: string | null, time?: string | null, location
 }
 
 async function ensureAdminConversation(normalizedAdmin: string) {
-  let contact = await prisma.contact.findUnique({ where: { waId: normalizedAdmin } });
+  let contact = await prisma.contact.findFirst({
+    where: { OR: [{ waId: normalizedAdmin }, { phone: normalizedAdmin }, { phone: `+${normalizedAdmin}` }] }
+  });
   if (!contact) {
     contact = await prisma.contact.create({
-      data: { waId: normalizedAdmin, phone: normalizedAdmin, name: 'Administrador' }
+      data: { waId: normalizedAdmin, phone: `+${normalizedAdmin}`, name: 'Administrador' }
+    });
+  } else if (!contact.waId) {
+    contact = await prisma.contact.update({
+      where: { id: contact.id },
+      data: { waId: normalizedAdmin }
     });
   }
   let conversation = await prisma.conversation.findFirst({
@@ -96,22 +104,23 @@ export async function sendAdminNotification(options: {
   if (existing) return;
 
   let text = '';
+  const displayName = getContactDisplayName(contact);
   if (eventType === 'RECRUIT_READY') {
-    text = `🟢 Reclutamiento listo: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\nResumen: ${summary || 'Datos mínimos recibidos.'}\nPróximo paso: revisar y contactar.`;
+    text = `🟢 Reclutamiento listo: ${displayName}\nTel: +${contact?.waId}\nResumen: ${summary || 'Datos mínimos recibidos.'}\nPróximo paso: revisar y contactar.`;
   } else if (eventType === 'INTERVIEW_SCHEDULED') {
-    text = `🗓️ Entrevista agendada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: PENDIENTE.`;
+    text = `🗓️ Entrevista agendada: ${displayName}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: PENDIENTE.`;
   } else if (eventType === 'INTERVIEW_RESCHEDULED') {
-    text = `🔁 Entrevista reagendada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: PENDIENTE.`;
+    text = `🔁 Entrevista reagendada: ${displayName}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: PENDIENTE.`;
   } else if (eventType === 'SELLER_DAILY_SUMMARY') {
-    text = `📊 Resumen diario vendedor: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${summary || 'Sin datos.'}`;
+    text = `📊 Resumen diario ventas: ${displayName}\nTel: +${contact?.waId}\n${summary || 'Sin datos.'}`;
   } else if (eventType === 'SELLER_WEEKLY_SUMMARY') {
-    text = `📈 Resumen semanal vendedor: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${summary || 'Sin datos.'}`;
+    text = `📈 Resumen semanal ventas: ${displayName}\nTel: +${contact?.waId}\n${summary || 'Sin datos.'}`;
   } else if (eventType === 'INTERVIEW_CANCELLED') {
-    text = `❌ Entrevista cancelada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: CANCELADA.`;
+    text = `❌ Entrevista cancelada: ${displayName}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: CANCELADA.`;
   } else if (eventType === 'INTERVIEW_ON_HOLD') {
-    text = `⏸️ Entrevista en pausa: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: EN PAUSA.`;
+    text = `⏸️ Entrevista en pausa: ${displayName}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: EN PAUSA.`;
   } else {
-    text = `✅ Entrevista confirmada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}.`;
+    text = `✅ Entrevista confirmada: ${displayName}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}.`;
   }
 
   const textWithRef = `${text}\n[REF:${eventKey}]`;

@@ -12,6 +12,7 @@ import {
   releaseActiveReservation
 } from '../services/interviewSchedulerService';
 import { sendAdminNotification } from '../services/adminNotificationService';
+import { getContactDisplayName } from '../utils/contactDisplay';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -55,6 +56,26 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
     return contact;
   }
+
+  const isAdmin = (request: any): boolean => request.user?.role === 'ADMIN';
+
+  const normalizeManualName = (value: unknown): string | null | undefined => {
+    if (typeof value === 'undefined') return undefined;
+    if (value === null) return null;
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim().replace(/\s+/g, ' ');
+    if (!trimmed) return null;
+    return trimmed;
+  };
+
+  const isValidManualName = (value: string): boolean => {
+    if (!value) return false;
+    if (value.length < 2 || value.length > 60) return false;
+    if (!/^[A-Za-zÁÉÍÓÚáéíóúÑñ][A-Za-zÁÉÍÓÚáéíóúÑñ\s'.-]*$/.test(value)) return false;
+    const words = value.split(/\s+/).filter(Boolean);
+    if (words.length < 1 || words.length > 4) return false;
+    return !isSuspiciousCandidateName(value);
+  };
 
   async function logSystemMessage(conversationId: string, text: string, rawPayload?: any) {
     await prisma.message.create({
@@ -204,6 +225,50 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       within24h,
       templates
     };
+  });
+
+  app.patch('/:id/contact-name', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const { id } = request.params as { id: string };
+    const body = request.body as { manualName?: string | null };
+
+    const nextManual = normalizeManualName(body?.manualName);
+    if (typeof nextManual === 'string' && !isValidManualName(nextManual)) {
+      return reply.code(400).send({ error: 'Nombre manual inválido. Usa solo nombre y apellido (sin etiquetas).' });
+    }
+
+    const conversation = await prisma.conversation.findUnique({
+      where: { id },
+      include: { contact: true }
+    });
+    if (!conversation) {
+      return reply.code(404).send({ error: 'Conversation not found' });
+    }
+    if (conversation.isAdmin) {
+      return reply.code(400).send({ error: 'No se puede editar nombre en conversación admin' });
+    }
+
+    const updated = await prisma.contact.update({
+      where: { id: conversation.contactId },
+      data: { candidateNameManual: nextManual === undefined ? conversation.contact.candidateNameManual : nextManual }
+    });
+
+    const display = getContactDisplayName(updated);
+    if (typeof nextManual === 'string') {
+      await logSystemMessage(id, `✏️ Nombre manual guardado: ${display}`, {
+        contactUpdate: 'candidateNameManual',
+        value: nextManual
+      });
+    } else if (nextManual === null) {
+      await logSystemMessage(id, `🧹 Nombre manual eliminado. Volviendo a nombre detectado: ${display}`, {
+        contactUpdate: 'candidateNameManual',
+        value: null
+      });
+    }
+
+    return { success: true, contact: updated };
   });
 
   app.patch('/:id/no-contact', { preValidation: [app.authenticate] }, async (request, reply) => {

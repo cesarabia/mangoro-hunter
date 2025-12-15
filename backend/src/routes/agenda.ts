@@ -5,6 +5,7 @@ import {
   DEFAULT_INTERVIEW_TIMEZONE,
   getSystemConfig
 } from '../services/configService';
+import { getContactDisplayName } from '../utils/contactDisplay';
 
 export async function registerAgendaRoutes(app: FastifyInstance) {
   app.get('/reservations', { preValidation: [app.authenticate] }, async (request, reply) => {
@@ -54,12 +55,7 @@ export async function registerAgendaRoutes(app: FastifyInstance) {
         conversationId: reservation.conversationId,
         contactId: reservation.contactId,
         contactWaId: reservation.contact?.waId || null,
-        contactName:
-          reservation.contact?.candidateName ||
-          reservation.contact?.displayName ||
-          reservation.contact?.name ||
-          reservation.contact?.waId ||
-          null,
+        contactName: reservation.contact ? getContactDisplayName(reservation.contact) : null,
         startAt: reservation.startAt.toISOString(),
         endAt: reservation.endAt.toISOString(),
         timezone: reservation.timezone,
@@ -77,4 +73,3 @@ export async function registerAgendaRoutes(app: FastifyInstance) {
 function isAdmin(request: any): boolean {
   return request.user?.role === 'ADMIN';
 }
-
