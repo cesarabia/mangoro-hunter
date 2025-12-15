@@ -638,10 +638,10 @@ export async function maybeSendAutoReply(
       const lastOutbound = (conversation.messages || []).filter((m) => m.direction === "OUTBOUND").slice(-1)[0];
       const lastOutboundText = stripAccents((lastOutbound?.text || "").toLowerCase());
       const lastOutboundWasInfoMenu =
-        lastOutboundText.includes("quieres 1") &&
-        lastOutboundText.includes("postular") &&
-        lastOutboundText.includes("2") &&
-        lastOutboundText.includes("info");
+        ((lastOutboundText.includes("responde") || lastOutboundText.includes("quieres")) &&
+          lastOutboundText.includes("postular") &&
+          lastOutboundText.includes("2") &&
+          lastOutboundText.includes("info"));
       const jobSheet = String((config as any)?.recruitJobSheet || DEFAULT_RECRUIT_JOB_SHEET);
       const faq = String((config as any)?.recruitFaq || "");
 
