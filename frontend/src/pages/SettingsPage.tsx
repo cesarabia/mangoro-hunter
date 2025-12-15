@@ -15,6 +15,11 @@ interface WhatsappConfigResponse {
   adminWaId?: string | null;
 }
 
+interface AuthorizedNumbersConfigResponse {
+  adminNumbers: string[];
+  testNumbers: string[];
+}
+
 interface AiConfigResponse {
   hasOpenAiKey: boolean;
   aiModel?: string;
@@ -50,6 +55,12 @@ interface InterviewScheduleConfigResponse {
   interviewExceptions: string;
   interviewLocations: string;
 }
+
+type InterviewLocationForm = {
+  label: string;
+  exactAddress: string;
+  instructions: string;
+};
 
 interface TemplatesConfigResponse {
   templateInterviewInvite: string;
@@ -121,12 +132,27 @@ const parseJson = (value: string): any => {
   }
 };
 
-const parseLocations = (raw: string): string[] => {
+const parseLocationForms = (raw: string): InterviewLocationForm[] => {
   const parsed = parseJson(raw);
   if (!Array.isArray(parsed)) return [];
-  return parsed
-    .map(item => (typeof item === 'string' ? item.trim().replace(/\s+/g, ' ') : ''))
-    .filter(Boolean);
+  const out: InterviewLocationForm[] = [];
+  for (const item of parsed) {
+    if (typeof item === 'string') {
+      const label = item.trim().replace(/\s+/g, ' ');
+      if (!label) continue;
+      out.push({ label, exactAddress: '', instructions: '' });
+      continue;
+    }
+    if (item && typeof item === 'object') {
+      const labelRaw = typeof (item as any).label === 'string' ? String((item as any).label) : '';
+      const exactAddressRaw = typeof (item as any).exactAddress === 'string' ? String((item as any).exactAddress) : '';
+      const instructionsRaw = typeof (item as any).instructions === 'string' ? String((item as any).instructions) : '';
+      const label = labelRaw.trim().replace(/\s+/g, ' ');
+      if (!label) continue;
+      out.push({ label, exactAddress: exactAddressRaw.trim(), instructions: instructionsRaw.trim() });
+    }
+  }
+  return out;
 };
 
 const parseExceptions = (raw: string): string[] => {
@@ -186,6 +212,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [adminWaId, setAdminWaId] = useState('');
   const [isEditingAdminWa, setIsEditingAdminWa] = useState(false);
   const [adminWaDraft, setAdminWaDraft] = useState('');
+  const [adminNumbers, setAdminNumbers] = useState<string[]>([]);
+  const [testNumbers, setTestNumbers] = useState<string[]>([]);
+  const [savingNumbers, setSavingNumbers] = useState(false);
+  const [numbersStatus, setNumbersStatus] = useState<string | null>(null);
+  const [numbersError, setNumbersError] = useState<string | null>(null);
 
   const [openAiKey, setOpenAiKey] = useState('');
   const [hasOpenAiKey, setHasOpenAiKey] = useState(false);
@@ -228,7 +259,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [resetting, setResetting] = useState(false);
   const [interviewTimezone, setInterviewTimezone] = useState('America/Santiago');
   const [interviewSlotMinutes, setInterviewSlotMinutes] = useState(30);
-  const [interviewLocationsList, setInterviewLocationsList] = useState<string[]>([]);
+  const [interviewLocationsList, setInterviewLocationsList] = useState<InterviewLocationForm[]>([]);
   const [weeklyAvailability, setWeeklyAvailability] = useState<WeeklyAvailability>(emptyWeeklyAvailability());
   const [exceptionDates, setExceptionDates] = useState<string[]>([]);
   const [showAdvancedSchedule, setShowAdvancedSchedule] = useState(false);
@@ -267,7 +298,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     const loadAll = async () => {
       setLoading(true);
       try {
-        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, salesAi, adminNotifs, schedule, templates] = await Promise.all([
+        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, salesAi, adminNotifs, schedule, templates, numbers] = await Promise.all([
           apiClient.get('/api/config/whatsapp') as Promise<WhatsappConfigResponse>,
           apiClient.get('/api/config/ai') as Promise<AiConfigResponse>,
           apiClient.get('/api/config/admin-account') as Promise<AdminAccountResponse>,
@@ -277,7 +308,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
           apiClient.get('/api/config/sales-ai') as Promise<SalesAiConfigResponse>,
           apiClient.get('/api/config/admin-notifications') as Promise<AdminNotificationsConfigResponse>,
           apiClient.get('/api/config/interview-schedule') as Promise<InterviewScheduleConfigResponse>,
-          apiClient.get('/api/config/templates') as Promise<TemplatesConfigResponse>
+          apiClient.get('/api/config/templates') as Promise<TemplatesConfigResponse>,
+          apiClient.get('/api/config/authorized-numbers') as Promise<AuthorizedNumbersConfigResponse>
         ]);
 
         setWhatsappBaseUrl(wa.whatsappBaseUrl || 'https://graph.facebook.com/v20.0');
@@ -311,7 +343,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setNotifSellerDailySummary(adminNotifs.templates?.SELLER_DAILY_SUMMARY || '');
         setInterviewTimezone(schedule.interviewTimezone || 'America/Santiago');
         setInterviewSlotMinutes(schedule.interviewSlotMinutes || 30);
-        setInterviewLocationsList(parseLocations(schedule.interviewLocations || ''));
+        setInterviewLocationsList(parseLocationForms(schedule.interviewLocations || ''));
         setWeeklyAvailability(parseWeeklyAvailability(schedule.interviewWeeklyAvailability || ''));
         setExceptionDates(parseExceptions(schedule.interviewExceptions || '[]'));
         setTemplateInterviewInvite(templates.templateInterviewInvite || '');
@@ -322,6 +354,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setDefaultInterviewTime(templates.defaultInterviewTime || '10:00');
         setDefaultInterviewLocation(templates.defaultInterviewLocation || 'Online');
         setTestPhoneNumber(templates.testPhoneNumber || '');
+        setAdminNumbers(Array.isArray(numbers.adminNumbers) ? numbers.adminNumbers : wa.adminWaId ? [wa.adminWaId] : []);
+        setTestNumbers(Array.isArray(numbers.testNumbers) ? numbers.testNumbers : templates.testPhoneNumber ? [templates.testPhoneNumber] : []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -388,6 +422,34 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       setWaError(err.message || 'No se pudo guardar WhatsApp');
     } finally {
       setSavingWa(false);
+    }
+  };
+
+  const handleSaveAuthorizedNumbers = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingNumbers(true);
+    setNumbersStatus(null);
+    setNumbersError(null);
+    try {
+      const admins = adminNumbers.map(v => v.replace(/\D/g, '')).filter(Boolean);
+      const tests = testNumbers.map(v => v.replace(/\D/g, '')).filter(Boolean);
+      if (admins.length === 0) {
+        setNumbersError('Define al menos 1 número admin.');
+        return;
+      }
+      const res = (await apiClient.put('/api/config/authorized-numbers', {
+        adminNumbers: admins,
+        testNumbers: tests
+      })) as AuthorizedNumbersConfigResponse;
+      setAdminNumbers(res.adminNumbers || []);
+      setTestNumbers(res.testNumbers || []);
+      setAdminWaId((res.adminNumbers && res.adminNumbers[0]) || adminWaId);
+      setTestPhoneNumber((res.testNumbers && res.testNumbers[0]) || testPhoneNumber);
+      setNumbersStatus('Números autorizados guardados');
+    } catch (err: any) {
+      setNumbersError(err.message || 'No se pudieron guardar los números');
+    } finally {
+      setSavingNumbers(false);
     }
   };
 
@@ -568,8 +630,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       if (!Number.isFinite(interviewSlotMinutes) || interviewSlotMinutes < 5 || interviewSlotMinutes > 240) {
         return 'Duración de slot inválida (5–240 min).';
       }
-      const locations = interviewLocationsList.map(value => value.trim()).filter(Boolean);
-      if (locations.length === 0) return 'Define al menos 1 ubicación.';
+      const labels = interviewLocationsList.map(loc => loc.label.trim()).filter(Boolean);
+      if (labels.length === 0) return 'Define al menos 1 ubicación.';
+      const seen = new Set<string>();
+      for (const label of labels) {
+        const key = stripAccents(label).toLowerCase();
+        if (seen.has(key)) return `Ubicación duplicada: "${label}".`;
+        seen.add(key);
+      }
       for (const { key, label } of WEEKDAYS) {
         const intervals = weeklyAvailability[key] || [];
         const normalized = intervals
@@ -609,7 +677,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     setScheduleStatus(null);
     setScheduleError(null);
     try {
-      const locations = interviewLocationsList.map(value => value.trim()).filter(Boolean);
+      const locations = interviewLocationsList
+        .map(loc => ({
+          label: loc.label.trim().replace(/\s+/g, ' '),
+          exactAddress: loc.exactAddress.trim() || null,
+          instructions: loc.instructions.trim() || null
+        }))
+        .filter(loc => Boolean(loc.label));
       const exceptions = Array.from(new Set(exceptionDates.map(value => value.trim()).filter(Boolean)));
       const weekly: Record<string, Array<{ start: string; end: string }>> = {};
       for (const { key } of WEEKDAYS) {
@@ -856,6 +930,98 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
             </section>
 
             <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <h2>Números autorizados (Admin / Pruebas)</h2>
+              <p style={{ color: '#666', marginBottom: 16 }}>
+                Estos números controlan: (1) quién puede usar comandos/admin por WhatsApp, y (2) el allowlist de <code>/api/simulate/whatsapp</code>.
+                En PROD, usa solo números autorizados (evita teléfonos sintéticos).
+              </p>
+              <form onSubmit={handleSaveAuthorizedNumbers} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Admin numbers</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {adminNumbers.length === 0 && <div style={{ fontSize: 12, color: '#777' }}>Agrega al menos 1 número admin.</div>}
+                    {adminNumbers.map((value, idx) => (
+                      <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          value={value}
+                          onChange={e => {
+                            const next = [...adminNumbers];
+                            next[idx] = e.target.value.replace(/\D/g, '');
+                            setAdminNumbers(next);
+                          }}
+                          placeholder={idx === 0 ? 'Admin principal (ej: 56982345846)' : 'Otro admin (ej: 56...)'}
+                          style={{ flex: 1, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setAdminNumbers(list => list.filter((_, i) => i !== idx))}
+                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
+                          disabled={adminNumbers.length <= 1}
+                          title={adminNumbers.length <= 1 ? 'Debe existir al menos 1 admin' : 'Quitar'}
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setAdminNumbers(list => [...list, ''])}
+                      style={{ alignSelf: 'flex-start', padding: '6px 10px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
+                    >
+                      + Agregar admin
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Test numbers (simulación)</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {testNumbers.length === 0 && <div style={{ fontSize: 12, color: '#777' }}>Opcional: agrega 1+ números de prueba.</div>}
+                    {testNumbers.map((value, idx) => (
+                      <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          value={value}
+                          onChange={e => {
+                            const next = [...testNumbers];
+                            next[idx] = e.target.value.replace(/\D/g, '');
+                            setTestNumbers(next);
+                          }}
+                          placeholder={idx === 0 ? 'Test (ej: 56994830202)' : 'Otro test'}
+                          style={{ flex: 1, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setTestNumbers(list => list.filter((_, i) => i !== idx))}
+                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setTestNumbers(list => [...list, ''])}
+                      style={{ alignSelf: 'flex-start', padding: '6px 10px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
+                    >
+                      + Agregar test
+                    </button>
+                  </div>
+                </div>
+
+                {numbersStatus && <p style={{ color: 'green' }}>{numbersStatus}</p>}
+                {numbersError && <p style={{ color: 'red' }}>{numbersError}</p>}
+                <button
+                  type="submit"
+                  disabled={savingNumbers}
+                  style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
+                >
+                  {savingNumbers ? 'Guardando...' : 'Guardar números autorizados'}
+                </button>
+                <small style={{ color: '#666' }}>Usa solo dígitos, sin + ni espacios.</small>
+              </form>
+            </section>
+
+            <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
               <h2>OpenAI</h2>
               <form onSubmit={handleSaveAi} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <label>
@@ -994,7 +1160,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   </select>
                 </label>
                 <small style={{ color: '#666' }}>
-                  Placeholders: {'{{name}}'}, {'{{phone}}'}, {'{{summary}}'}, {'{{when}}'}, {'{{interviewDay}}'}, {'{{interviewTime}}'}, {'{{interviewLocation}}'}, {'{{recommendation}}'}.
+                  Placeholders: {'{{name}}'}, {'{{phone}}'}, {'{{summary}}'}, {'{{when}}'}, {'{{interviewDay}}'}, {'{{interviewTime}}'}, {'{{interviewLocation}}'}, {'{{recommendation}}'},{' '}
+                  {'{{location}}'}, {'{{rut}}'}, {'{{rutVigente}}'}, {'{{experienceYears}}'}, {'{{experienceTerrain}}'}, {'{{experienceRubros}}'}, {'{{availability}}'}, {'{{email}}'}, {'{{cv}}'}.
                 </small>
                 <label>
                   <div>Template RECRUIT_READY</div>
@@ -1155,30 +1322,57 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     {interviewLocationsList.length === 0 && (
                       <div style={{ fontSize: 12, color: '#777' }}>Agrega al menos 1 ubicación.</div>
                     )}
-                    {interviewLocationsList.map((value, idx) => (
-                      <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <input
-                          value={value}
-                          onChange={e => {
-                            const next = [...interviewLocationsList];
-                            next[idx] = e.target.value;
-                            setInterviewLocationsList(next);
-                          }}
-                          placeholder={idx === 0 ? 'Ej: Providencia' : 'Ej: Online'}
-                          style={{ flex: 1, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setInterviewLocationsList(list => list.filter((_, i) => i !== idx))}
-                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
-                        >
-                          Quitar
-                        </button>
+                    {interviewLocationsList.map((loc, idx) => (
+                      <div key={idx} style={{ border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <input
+                            value={loc.label}
+                            onChange={e => {
+                              const next = [...interviewLocationsList];
+                              next[idx] = { ...next[idx], label: e.target.value };
+                              setInterviewLocationsList(next);
+                            }}
+                            placeholder={idx === 0 ? 'Label (antes de confirmar): Providencia (cerca de Metro Tobalaba)' : 'Label: Online'}
+                            style={{ flex: 1, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setInterviewLocationsList(list => list.filter((_, i) => i !== idx))}
+                            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
+                          >
+                            Quitar
+                          </button>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                          <input
+                            value={loc.exactAddress}
+                            onChange={e => {
+                              const next = [...interviewLocationsList];
+                              next[idx] = { ...next[idx], exactAddress: e.target.value };
+                              setInterviewLocationsList(next);
+                            }}
+                            placeholder="Dirección exacta (se envía tras confirmar): Av. ... #1234, Providencia"
+                            style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                          />
+                          <textarea
+                            value={loc.instructions}
+                            onChange={e => {
+                              const next = [...interviewLocationsList];
+                              next[idx] = { ...next[idx], instructions: e.target.value };
+                              setInterviewLocationsList(next);
+                            }}
+                            placeholder="Indicaciones (opcional): piso/oficina, cómo llegar, referencia..."
+                            style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 56 }}
+                          />
+                          <div style={{ fontSize: 11, color: '#666' }}>
+                            Antes de confirmar, el bot solo usa el <strong>label</strong>. Tras confirmar, envía la dirección exacta si está configurada.
+                          </div>
+                        </div>
                       </div>
                     ))}
                     <button
                       type="button"
-                      onClick={() => setInterviewLocationsList(list => [...list, ''])}
+                      onClick={() => setInterviewLocationsList(list => [...list, { label: '', exactAddress: '', instructions: '' }])}
                       style={{ alignSelf: 'flex-start', padding: '6px 10px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
                     >
                       + Agregar ubicación
@@ -1310,7 +1504,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                     <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Ubicaciones (JSON)</div>
                     <textarea
                       readOnly
-                      value={JSON.stringify(interviewLocationsList.map(v => v.trim()).filter(Boolean), null, 2)}
+                      value={JSON.stringify(
+                        interviewLocationsList
+                          .map(loc => ({
+                            label: loc.label.trim().replace(/\s+/g, ' '),
+                            exactAddress: loc.exactAddress.trim() || undefined,
+                            instructions: loc.instructions.trim() || undefined
+                          }))
+                          .filter(loc => Boolean(loc.label)),
+                        null,
+                        2
+                      )}
                       style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ddd', minHeight: 60 }}
                     />
                     <div style={{ fontSize: 12, color: '#666', marginTop: 10, marginBottom: 6 }}>Disponibilidad semanal (JSON)</div>

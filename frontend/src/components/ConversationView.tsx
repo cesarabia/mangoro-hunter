@@ -759,7 +759,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
                 items.push(
                   <div key={m.id} style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
                     <div style={{ maxWidth: 520, textAlign: 'center' }}>
-                      <div style={{ fontSize: 12, color: '#666', background: '#fff', border: '1px dashed #ddd', borderRadius: 10, padding: '8px 10px' }}>
+                      <div style={{ fontSize: 12, color: '#666', background: '#fff', border: '1px dashed #ddd', borderRadius: 10, padding: '8px 10px', whiteSpace: 'pre-wrap' }}>
                         {m.text || '(evento del sistema)'}
                       </div>
                       {time && (
@@ -795,7 +795,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
                       gap: 6
                     }}
                   >
-                    <div>{m.text || describeMedia(m) || '(sin texto)'}</div>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{m.text || describeMedia(m) || '(sin texto)'}</div>
                     {m.mediaType && (
                       <div style={{ fontSize: 12, color: '#555', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                         <span>{describeMedia(m)}</span>

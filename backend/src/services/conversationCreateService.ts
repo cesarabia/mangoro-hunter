@@ -3,7 +3,12 @@ import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { sendWhatsAppTemplate, SendResult } from './whatsappMessageService';
 import { serializeJson } from '../utils/json';
 import { loadTemplateConfig, resolveTemplateVariables } from './templateService';
-import { DEFAULT_TEMPLATE_GENERAL_FOLLOWUP, DEFAULT_TEMPLATE_INTERVIEW_INVITE, getSystemConfig } from './configService';
+import {
+  DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
+  DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+  getAdminWaIdAllowlist,
+  getSystemConfig
+} from './configService';
 
 type Mode = 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF';
 type Status = 'NEW' | 'OPEN' | 'CLOSED';
@@ -48,8 +53,8 @@ export async function createConversationAndMaybeSend(
     throw new Error('Número inválido');
   }
   const config = await getSystemConfig();
-  const adminWaId = normalizeWhatsAppId(config.adminWaId || '');
-  if (adminWaId && adminWaId === waId) {
+  const adminWaIds = getAdminWaIdAllowlist(config);
+  if (adminWaIds.includes(waId)) {
     throw new Error('No puedes crear una conversación de candidato para el número admin.');
   }
   const mode = normalizeMode(params.mode);

@@ -35,8 +35,11 @@ import {
   updateAiModel,
   updateRecruitmentContent,
   updateAdminNotificationConfig,
+  updateAuthorizedNumbersConfig,
   DEFAULT_RECRUIT_JOB_SHEET,
-  DEFAULT_RECRUIT_FAQ
+  DEFAULT_RECRUIT_FAQ,
+  getAdminWaIdAllowlist,
+  getTestWaIdAllowlist
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
@@ -99,9 +102,26 @@ export async function registerConfigRoutes(app: FastifyInstance) {
 
   const validateLocationsJson = (value: string): string | null => {
     const parsed = parseJsonSafe(value);
-    if (!Array.isArray(parsed)) return 'Ubicaciones debe ser un JSON array (ej: ["Providencia","Online"]).';
-    const locations = parsed.filter((item: any) => typeof item === 'string' && item.trim().length > 0);
-    if (locations.length === 0) return 'Define al menos 1 ubicación.';
+    if (!Array.isArray(parsed)) {
+      return 'Ubicaciones debe ser un JSON array (ej: ["Providencia"] o [{"label":"Providencia","exactAddress":"..."}]).';
+    }
+    const normalized: string[] = [];
+    for (const item of parsed) {
+      if (typeof item === 'string') {
+        const label = item.trim();
+        if (!label) continue;
+        normalized.push(label);
+        continue;
+      }
+      if (item && typeof item === 'object') {
+        const labelRaw = typeof (item as any).label === 'string' ? String((item as any).label).trim() : '';
+        if (!labelRaw) return 'Cada ubicación debe tener "label" (string).';
+        normalized.push(labelRaw);
+        continue;
+      }
+      return 'Ubicación inválida: usa strings o objects {label, exactAddress?, instructions?}.';
+    }
+    if (normalized.length === 0) return 'Define al menos 1 ubicación.';
     return null;
   };
 
@@ -233,6 +253,59 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       adminWaId: updated.adminWaId,
       hasToken: Boolean(updated.whatsappToken),
       hasVerifyToken: Boolean(updated.whatsappVerifyToken)
+    };
+  });
+
+  app.get('/authorized-numbers', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return { adminNumbers: [], testNumbers: [] };
+    }
+    return {
+      adminNumbers: getAdminWaIdAllowlist(config),
+      testNumbers: getTestWaIdAllowlist(config)
+    };
+  });
+
+  app.put('/authorized-numbers', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const body = request.body as { adminNumbers?: string[] | null; testNumbers?: string[] | null };
+
+    const normalizeList = (raw?: string[] | null) => {
+      if (!Array.isArray(raw)) return null;
+      const out: string[] = [];
+      for (const value of raw) {
+        const waId = normalizeWhatsAppId(value);
+        if (!waId) continue;
+        if (!out.includes(waId)) out.push(waId);
+      }
+      return out;
+    };
+
+    const adminNumbers = typeof body?.adminNumbers === 'undefined' ? undefined : normalizeList(body.adminNumbers);
+    const testNumbers = typeof body?.testNumbers === 'undefined' ? undefined : normalizeList(body.testNumbers);
+
+    if (adminNumbers !== undefined && adminNumbers !== null && adminNumbers.length === 0) {
+      return reply.code(400).send({ error: 'Define al menos 1 admin number válido.' });
+    }
+
+    const updated = await executeUpdate(reply, () =>
+      updateAuthorizedNumbersConfig({
+        adminNumbers: adminNumbers === undefined ? undefined : adminNumbers,
+        testNumbers: testNumbers === undefined ? undefined : testNumbers
+      })
+    );
+    if (!updated) return;
+
+    return {
+      adminNumbers: getAdminWaIdAllowlist(updated),
+      testNumbers: getTestWaIdAllowlist(updated)
     };
   });
 
@@ -681,14 +754,14 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const config = await getSystemConfig();
-    const targetAdmin = normalizeWhatsAppId(config.adminWaId);
-    const targetTest = normalizeWhatsAppId(config.testPhoneNumber);
-    const whitelist = [targetAdmin, targetTest].filter(Boolean) as string[];
-    const targetWaId = targetTest || targetAdmin;
+    const testWaIds = getTestWaIdAllowlist(config);
+    const adminWaIds = getAdminWaIdAllowlist(config);
+    const whitelist = [...testWaIds, ...adminWaIds].filter(Boolean) as string[];
+    const targetWaId = testWaIds[0] || null;
     if (!targetWaId || whitelist.length === 0) {
       return reply
         .code(400)
-        .send({ error: 'Configura un número de admin o testPhoneNumber para enviar la prueba.' });
+        .send({ error: 'Configura al menos 1 test number para enviar la prueba.' });
     }
 
     const templateName = config.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP;

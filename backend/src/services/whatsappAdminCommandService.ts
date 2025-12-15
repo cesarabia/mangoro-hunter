@@ -2,6 +2,7 @@ import { Contact, Conversation, Message, Prisma, SystemConfig } from '@prisma/cl
 import { prisma } from '../db/client';
 import { buildWaIdCandidates, normalizeWhatsAppId } from '../utils/whatsapp';
 import { summarizeConversationForAdmin } from './aiService';
+import { getAdminWaIdAllowlist } from './configService';
 
 interface AdminCommandParams {
   waId: string;
@@ -42,10 +43,10 @@ export function getAdminHelpText(): string {
 }
 
 export async function processAdminCommand(params: AdminCommandParams): Promise<string | null> {
-  const normalizedAdmin = normalizeWhatsAppId(params.config.adminWaId);
   const sender = normalizeWhatsAppId(params.waId);
 
-  if (!normalizedAdmin || !sender || normalizedAdmin !== sender) {
+  const allowlist = getAdminWaIdAllowlist(params.config);
+  if (!sender || allowlist.length === 0 || !allowlist.includes(sender)) {
     return null;
   }
 

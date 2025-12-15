@@ -131,6 +131,7 @@ model SystemConfig {
   recruitFaq      String?
   adminEmail      String?
   adminWaId       String?
+  adminWaIds      String?
   adminAiPrompt   String?
   adminAiModel    String?
   adminAiAddendum String?
@@ -149,6 +150,7 @@ model SystemConfig {
   interviewExceptions String?
   interviewLocations String?
   testPhoneNumber String?
+  testPhoneNumbers String?
   salesAiPrompt    String?
   salesKnowledgeBase String?
   adminNotificationDetailLevel String?

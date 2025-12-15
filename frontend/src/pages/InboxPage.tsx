@@ -240,7 +240,7 @@ export const InboxPage: React.FC<Props> = ({
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minHeight: 0 }}>
       <header style={{ padding: '8px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <strong>Hunter CRM v2.5.1</strong>
+          <strong>Hunter CRM v2.5.2</strong>
           {backendError && <span style={{ fontSize: 12, color: '#b93800' }}>{backendError}</span>}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

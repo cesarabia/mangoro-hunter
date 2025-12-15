@@ -18,6 +18,12 @@ export type InterviewSlot = {
   endAt: Date;
 };
 
+export type InterviewLocationConfig = {
+  label: string;
+  exactAddress: string | null;
+  instructions: string | null;
+};
+
 export type ScheduleAttemptResult =
   | {
       ok: true;
@@ -120,16 +126,65 @@ function minutesToTime(minutes: number): string {
   return `${hh}:${mm}`;
 }
 
-function getLocations(config: SystemConfig): string[] {
+function parseLocationItem(item: unknown): InterviewLocationConfig | null {
+  if (typeof item === 'string') {
+    const label = normalizeLocation(item);
+    if (!label) return null;
+    return { label, exactAddress: null, instructions: null };
+  }
+  if (item && typeof item === 'object') {
+    const labelRaw = typeof (item as any).label === 'string' ? (item as any).label : null;
+    const label = normalizeLocation(labelRaw);
+    if (!label) return null;
+    const exactAddressRaw =
+      typeof (item as any).exactAddress === 'string' ? String((item as any).exactAddress).trim() : '';
+    const instructionsRaw =
+      typeof (item as any).instructions === 'string' ? String((item as any).instructions).trim() : '';
+    return {
+      label,
+      exactAddress: exactAddressRaw ? exactAddressRaw : null,
+      instructions: instructionsRaw ? instructionsRaw : null,
+    };
+  }
+  return null;
+}
+
+export function getInterviewLocationConfigs(config: SystemConfig): InterviewLocationConfig[] {
   const parsed = safeJsonParse<unknown>(config.interviewLocations);
   if (Array.isArray(parsed)) {
-    const items = parsed
-      .map(item => (typeof item === 'string' ? normalizeLocation(item) : null))
-      .filter(Boolean) as string[];
+    const items = parsed.map(parseLocationItem).filter(Boolean) as InterviewLocationConfig[];
     if (items.length > 0) return items;
   }
   const fallback = normalizeLocation(config.defaultInterviewLocation) || 'Online';
-  return [fallback];
+  return [{ label: fallback, exactAddress: null, instructions: null }];
+}
+
+export function resolveInterviewLocationConfig(
+  config: SystemConfig,
+  label?: string | null,
+): InterviewLocationConfig | null {
+  const normalized = normalizeLocation(label);
+  if (!normalized) return null;
+  const locations = getInterviewLocationConfigs(config);
+  const match = locations.find((loc) => loc.label.toLowerCase() === normalized.toLowerCase());
+  return match || null;
+}
+
+export function formatInterviewExactAddress(
+  config: SystemConfig,
+  label?: string | null,
+): string | null {
+  const loc = resolveInterviewLocationConfig(config, label);
+  if (!loc) return null;
+  if (!loc.exactAddress && !loc.instructions) return null;
+  const lines: string[] = [];
+  if (loc.exactAddress) lines.push(`Dirección exacta: ${loc.exactAddress}`);
+  if (loc.instructions) lines.push(loc.instructions);
+  return lines.join('\n');
+}
+
+function getLocations(config: SystemConfig): string[] {
+  return getInterviewLocationConfigs(config).map((loc) => loc.label);
 }
 
 function getWeeklyAvailability(config: SystemConfig): Record<Weekday, AvailabilityInterval[]> {

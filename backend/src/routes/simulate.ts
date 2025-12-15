@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { handleInboundWhatsAppMessage } from '../services/whatsappInboundService';
-import { getSystemConfig } from '../services/configService';
+import { getAdminWaIdAllowlist, getSystemConfig, getTestWaIdAllowlist } from '../services/configService';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
@@ -28,9 +28,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
 
     const config = await getSystemConfig();
     const normalizedFrom = normalizeWhatsAppId(from);
-    const testWaId = normalizeWhatsAppId(config.testPhoneNumber || '');
-    const adminWaId = normalizeWhatsAppId(config.adminWaId || '');
-    const allowed = new Set([testWaId, adminWaId].filter(Boolean) as string[]);
+    const allowed = new Set([...getTestWaIdAllowlist(config), ...getAdminWaIdAllowlist(config)]);
     if (!normalizedFrom) {
       return reply.code(400).send({ error: '"from" inválido (usa E.164).' });
     }
@@ -38,7 +36,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
     if (allowed.size > 0 && !allowed.has(normalizedFrom)) {
       return reply.code(400).send({
         error:
-          'Simulación bloqueada: /api/simulate/whatsapp solo permite testPhoneNumber/adminWaId configurados.'
+          'Simulación bloqueada: /api/simulate/whatsapp solo permite números admin/de prueba configurados.'
       });
     }
 

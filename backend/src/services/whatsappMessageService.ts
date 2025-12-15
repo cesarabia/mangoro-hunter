@@ -5,6 +5,7 @@ import {
   DEFAULT_WHATSAPP_BASE_URL,
   getSystemConfig
 } from './configService';
+import { normalizeEscapedWhitespace } from '../utils/text';
 
 export interface SendResult {
   success: boolean;
@@ -14,6 +15,7 @@ export interface SendResult {
 
 export async function sendWhatsAppText(toWaId: string, text: string): Promise<SendResult> {
   const config = await getSystemConfig();
+  const normalizedText = normalizeEscapedWhitespace(text);
 
   if (!config?.whatsappToken || !config.whatsappPhoneId) {
     return { success: false, error: 'WhatsApp Cloud API no está configurado (phone_number_id / token faltan)' };
@@ -26,7 +28,7 @@ export async function sendWhatsAppText(toWaId: string, text: string): Promise<Se
     messaging_product: 'whatsapp',
     to: toWaId,
     type: 'text',
-    text: { body: text }
+    text: { body: normalizedText }
   };
 
   const authHeader = `Bearer ${config.whatsappToken}`;
@@ -78,7 +80,7 @@ export async function sendWhatsAppTemplate(
             type: 'body',
             parameters: variables.map(value => ({
               type: 'text',
-              text: value
+              text: normalizeEscapedWhitespace(value)
             }))
           }
         ]

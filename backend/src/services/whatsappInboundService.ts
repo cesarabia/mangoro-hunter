@@ -7,6 +7,8 @@ import OpenAI from "openai";
 import { prisma } from "../db/client";
 import {
   getSystemConfig,
+  getAdminWaIdAllowlist,
+  getTestWaIdAllowlist,
   DEFAULT_INTERVIEW_AI_PROMPT,
   DEFAULT_INTERVIEW_AI_MODEL,
   INTERVIEW_AI_POLICY_ADDENDUM,
@@ -32,6 +34,7 @@ import { buildWaIdCandidates, normalizeWhatsAppId } from "../utils/whatsapp";
 import {
   attemptScheduleInterview,
   confirmActiveReservation,
+  formatInterviewExactAddress,
   formatSlotHuman,
   releaseActiveReservation,
 } from "./interviewSchedulerService";
@@ -175,14 +178,13 @@ export async function handleInboundWhatsAppMessage(
 ): Promise<{ conversationId: string }> {
   const config = params.config ?? (await getSystemConfig());
   const waId = normalizeWhatsAppId(params.from) || params.from;
-  const normalizedAdmin = normalizeWhatsAppId(config.adminWaId);
   const normalizedSender = normalizeWhatsAppId(waId);
-  const isAdminSender =
-    normalizedAdmin && normalizedSender && normalizedAdmin === normalizedSender;
+  const adminAllowlist = getAdminWaIdAllowlist(config);
+  const isAdminSender = Boolean(normalizedSender && adminAllowlist.includes(normalizedSender));
   const trimmedText = (params.text || "").trim();
 
-  if (isAdminSender && normalizedAdmin) {
-    const adminThread = await ensureAdminConversation(waId, normalizedAdmin);
+  if (isAdminSender && normalizedSender) {
+    const adminThread = await ensureAdminConversation(waId, normalizedSender);
     const baseText = buildInboundText(params.text, params.media);
     const adminMessage = await prisma.message.create({
       data: {
@@ -199,7 +201,7 @@ export async function handleInboundWhatsAppMessage(
 
     await processMediaAttachment(app, {
       conversationId: adminThread.conversation.id,
-      waId: normalizedAdmin,
+      waId: normalizedSender,
       media: params.media,
       messageId: adminMessage.id,
       config,
@@ -295,7 +297,7 @@ export async function handleInboundWhatsAppMessage(
       adminThread.conversation.id,
       adminThread.conversation.adminLastCandidateWaId || null,
       trimmedEffective,
-      normalizedAdmin,
+      normalizedSender,
       config,
     );
     if (handledPending) {
@@ -664,11 +666,12 @@ export async function maybeSendAutoReply(
             replyText = buildRecruitApplyRequestReply();
             meta = { recruitFlow: "APPLY_REQUEST_FROM_MENU" };
           } else if (isRecruitChoiceTwo(lastInboundText)) {
-            replyText = buildRecruitInfoFollowupReply(faq);
+            replyText = buildRecruitInfoFollowupReply(jobSheet, faq);
             meta = { recruitFlow: "INFO_FOLLOWUP" };
           }
         } else if (isFirstMessage && wantsInfo) {
-          replyText = buildRecruitInfoMenuReply(jobSheet);
+          const title = String((config as any)?.defaultJobTitle || "").trim() || null;
+          replyText = buildRecruitInfoMenuReply(title, jobSheet);
           meta = { recruitFlow: "INFO_MENU" };
         } else if (wantsApply) {
           // If the candidate hasn't provided any data yet, ask the full one-shot form; otherwise ask only for missing fields.
@@ -812,11 +815,12 @@ export async function maybeSendAutoReply(
         /\b(hora|horario|entrevista)\b/.test(lastInboundLower);
 
       if (isYes && !hasScheduleDetails && !wantsReschedule) {
-        const dayText = conversation.interviewDay || "día por definir";
-        const timeText = conversation.interviewTime || "hora por definir";
-        const locationText =
-          conversation.interviewLocation || "Te enviaremos la dirección exacta por este medio.";
-        const replyText = `Quedamos para ${dayText} a las ${timeText} en ${locationText}.`;
+        const replyText = buildInterviewConfirmedReply({
+          day: conversation.interviewDay || null,
+          time: conversation.interviewTime || null,
+          location: conversation.interviewLocation || config.defaultInterviewLocation || null,
+          config,
+        });
 
         let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
         if (waId) {
@@ -1130,11 +1134,12 @@ export async function maybeSendAutoReply(
           },
         });
         if (convo?.interviewStatus === "CONFIRMED") {
-          const locationText =
-            convo?.interviewLocation || "Te enviaremos la dirección exacta por este medio.";
-          const dayText = convo?.interviewDay || "día por definir";
-          const timeText = convo?.interviewTime || "hora por definir";
-          suggestionText = `Quedamos para ${dayText} a las ${timeText} en ${locationText}.`;
+          suggestionText = buildInterviewConfirmedReply({
+            day: convo?.interviewDay || null,
+            time: convo?.interviewTime || null,
+            location: convo?.interviewLocation || config.defaultInterviewLocation || null,
+            config,
+          });
         }
       }
     }
@@ -1248,6 +1253,31 @@ function formatInterviewSummary(conversation: any): string | null {
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
+function sanitizeInterviewLocationLabel(value?: string | null): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const lower = stripAccents(raw).toLowerCase();
+  if (lower.includes("direccion exacta") || lower.includes("dirección exacta")) return null;
+  if (lower.includes("te enviaremos") && lower.includes("direccion")) return null;
+  return raw;
+}
+
+function buildInterviewConfirmedReply(params: {
+  day: string | null;
+  time: string | null;
+  location: string | null;
+  config: SystemConfig;
+}): string {
+  const dayText = params.day || "día por definir";
+  const timeText = params.time || "hora por definir";
+  const label = sanitizeInterviewLocationLabel(params.location) || "el lugar indicado";
+  const exact = formatInterviewExactAddress(params.config, label);
+
+  const base = `✅ Confirmado. Quedamos para ${dayText} a las ${timeText} en ${label}.`;
+  if (exact) return `${base}\n${exact}`;
+  return `${base}\nTe enviaremos la dirección exacta por este medio.`;
+}
+
 async function maybeHandleContextualAttachmentReply(params: {
   app: FastifyInstance;
   conversation: any;
@@ -1271,6 +1301,8 @@ async function maybeHandleContextualAttachmentReply(params: {
       Boolean(assessment.fields.email);
 
     const looksLikeCv = looksLikeCvText(cleaned);
+    const looksLikeNutrition = looksLikeNutritionLabelText(cleaned);
+    const looksLikeAddress = looksLikeAddressText(cleaned);
     const detected: string[] = [];
     if (assessment.fields.name) detected.push(`Nombre: ${assessment.fields.name}`);
     if (assessment.fields.location) detected.push(`Comuna/Ciudad: ${assessment.fields.location}`);
@@ -1300,9 +1332,12 @@ async function maybeHandleContextualAttachmentReply(params: {
           "¿Me lo puedes escribir en un solo mensaje, por favor?";
       }
     } else {
+      let hint = "un archivo";
+      if (looksLikeNutrition) hint = "una etiqueta nutricional / información de producto";
+      else if (looksLikeAddress) hint = "una dirección/ubicación";
       replyText =
-        "Gracias, recibí tu adjunto, pero no veo información clara para registrar tu postulación.\n" +
-        "¿Puedes enviarme tu CV o escribir en un solo mensaje: nombre y apellido, comuna/ciudad, RUT, experiencia en ventas y disponibilidad para empezar?";
+        `Gracias, recibí tu adjunto. Por lo que veo, parece ${hint}.\n` +
+        "Para postular, necesito tu CV (ideal) o que me escribas en un solo mensaje: nombre y apellido, comuna/ciudad, RUT, experiencia en ventas y disponibilidad para empezar.";
     }
 
     let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
@@ -2210,15 +2245,59 @@ function extractRecruitJobBullets(jobSheet: string): string[] {
   return unique;
 }
 
-function buildRecruitInfoMenuReply(jobSheet: string): string {
-  const bullets = extractRecruitJobBullets(jobSheet);
-  const bulletLines = bullets.length > 0 ? bullets.map((b) => `• ${b}`) : ["• Cargo en ventas", "• Requisitos: experiencia + disponibilidad", "• Proceso: revisamos y contactamos"];
-  const trimmedBullets = bulletLines.slice(0, 3);
+function extractRecruitJobTitle(jobSheet: string): string | null {
+  const lines = (jobSheet || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines.slice(0, 12)) {
+    const match = line.match(/^cargo\s*:\s*(.+)$/i);
+    if (!match?.[1]) continue;
+    const title = truncateText(match[1].replace(/\s+/g, " ").trim(), 60);
+    if (title) return title;
+  }
+  return null;
+}
+
+function extractRecruitSafeFacts(jobSheet: string): string[] {
+  const lines = (jobSheet || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const find = (re: RegExp) => {
+    const hit = lines.find((line) => re.test(stripAccents(line).toLowerCase()));
+    if (!hit) return null;
+    const cleaned = hit.replace(/^[-*•]\s*/, "").trim();
+    return truncateText(cleaned.replace(/\s+/g, " "), 90);
+  };
+
+  const rubro =
+    find(/\brubro\b/) ||
+    find(/\b(alarmas?|seguridad|monitoreo|monitoring)\b/) ||
+    "Rubro: alarmas de seguridad con monitoreo";
+  const zona = find(/\bzona\b/) || find(/\b(rm|santiago|metropolitana)\b/) || "Zona: RM (Santiago)";
+  const proceso =
+    find(/\bproceso\b/) ||
+    find(/\b(revisamos|revisar|contactamos|contactar|whatsapp)\b/) ||
+    "Proceso: el equipo revisa y contacta por WhatsApp";
+
+  return [rubro, zona, proceso];
+}
+
+function buildRecruitInfoMenuReply(jobTitle: string | null, jobSheet: string): string {
+  const title =
+    (jobTitle || "").trim() ||
+    extractRecruitJobTitle(jobSheet) ||
+    "el cargo publicado";
+  const facts = extractRecruitSafeFacts(jobSheet).map((line) => `• ${line}`);
   return [
-    "Hola, gracias por escribir a Postulaciones.",
-    "Te cuento del cargo:",
-    ...trimmedBullets,
-    "¿Quieres 1) postular o 2) más info?",
+    "Hola, soy el asistente virtual de Postulaciones.",
+    `¿Es por el cargo de ${title}?`,
+    ...facts.slice(0, 3),
+    "Responde: 1) Postular  2) Más info",
   ]
     .slice(0, 6)
     .join("\n");
@@ -2235,25 +2314,25 @@ function buildRecruitApplyRequestReply(): string {
   ].join("\n");
 }
 
-function buildRecruitInfoFollowupReply(faq: string): string {
-  const lines = (faq || "")
+function buildRecruitInfoFollowupReply(jobSheet: string, faq: string): string {
+  const bullets = extractRecruitJobBullets(jobSheet);
+  const bulletLines = bullets.length > 0 ? bullets.map((b) => `• ${b}`) : [];
+  const faqLines = (faq || "")
     .replace(/\r/g, "")
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .slice(0, 3)
+    .slice(0, 2)
     .map((line) => truncateText(line, 140));
-  if (lines.length === 0) {
-    return [
-      "Claro. ¿Qué te gustaría saber en particular? (requisitos, modalidad, renta, etc.)",
-      "Si quieres postular ahora, responde 1 y te pido los datos en 1 mensaje.",
-    ].join("\n");
+
+  const body = [...bulletLines.slice(0, 3), ...faqLines].slice(0, 3);
+  if (body.length === 0) {
+    body.push("• Ventas en terreno (RM/Santiago)");
+    body.push("• Rubro: alarmas de seguridad con monitoreo");
+    body.push("• Proceso: revisamos y te contactamos por WhatsApp");
   }
-  return [
-    "Claro, info rápida:",
-    ...lines,
-    "Si quieres postular ahora, responde 1.",
-  ]
+
+  return ["Info del cargo:", ...body, "¿Quieres postular? Responde 1 y te pido los datos."]
     .slice(0, 6)
     .join("\n");
 }
@@ -2374,12 +2453,12 @@ async function resolveLastRecruitReadyContact(adminConversationId: string): Prom
 async function findCandidateMatchesByName(params: { query: string; limit?: number; config: SystemConfig }) {
   const limit = typeof params.limit === "number" ? Math.max(1, Math.min(params.limit, 3)) : 3;
   const thresholdDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-  const adminWa = normalizeWhatsAppId(params.config.adminWaId || "");
+  const adminAllowlist = getAdminWaIdAllowlist(params.config);
   const conversations = await prisma.conversation.findMany({
     where: {
       isAdmin: false,
       updatedAt: { gte: thresholdDate },
-      ...(adminWa ? { contact: { waId: { not: adminWa } } } : {}),
+      ...(adminAllowlist.length > 0 ? { contact: { waId: { notIn: adminAllowlist } } } : {}),
     },
     orderBy: { updatedAt: "desc" },
     take: 250,
@@ -2473,16 +2552,11 @@ async function buildAdminRecruitmentSummaryReply(params: {
   }
 
   if (!resolvedWaId) {
-    const recent = await prisma.conversation.findFirst({
-      where: { isAdmin: false },
-      orderBy: { updatedAt: "desc" },
-      include: { contact: true, messages: { orderBy: { timestamp: "desc" }, take: 1 } },
-    });
-    const waId = normalizeWhatsAppId(recent?.contact?.waId || recent?.contact?.phone || "");
-    if (!waId) {
-      return { resolvedWaId: null, replyText: "No pude inferir el candidato. Envíame el número (+569...)."};
-    }
-    resolvedWaId = waId;
+    return {
+      resolvedWaId: null,
+      replyText:
+        "No pude inferir el candidato.\nEnvíame el número (+569...) o escribe “último reclutamiento” para usar el más reciente.",
+    };
   }
 
   const convo = await fetchConversationByIdentifier(resolvedWaId, { includeMessages: true, messageLimit: 80 });
@@ -4450,10 +4524,7 @@ async function detectAdminTemplateIntent(
   const templates = await loadTemplateConfig(app.log);
   const templateName = selectTemplateForMode(mode, templates);
   const variables = resolveTemplateVariables(templateName, [], templates);
-  const whitelist = [
-    normalizeWhatsAppId(config.adminWaId),
-    normalizeWhatsAppId(templates.testPhoneNumber),
-  ].filter(Boolean) as string[];
+  const whitelist = [...getAdminWaIdAllowlist(config), ...getTestWaIdAllowlist(config)].filter(Boolean) as string[];
   const allowed = whitelist.includes(targetWaId);
 
   const variablesPreview =

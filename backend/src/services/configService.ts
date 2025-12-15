@@ -1,5 +1,6 @@
 import { prisma } from '../db/client';
 import { SystemConfig } from '@prisma/client';
+import { normalizeWhatsAppId } from '../utils/whatsapp';
 
 const SINGLETON_ID = 1;
 export const DEFAULT_WHATSAPP_BASE_URL = 'https://graph.facebook.com/v20.0';
@@ -8,11 +9,11 @@ export const DEFAULT_TEMPLATE_INTERVIEW_INVITE = 'entrevista_confirmacion_1';
 export const DEFAULT_TEMPLATE_GENERAL_FOLLOWUP = 'postulacion_completar_1';
 export const DEFAULT_TEMPLATE_LANGUAGE_CODE = 'es_CL';
 export const DEFAULT_AI_MODEL = 'gpt-4.1-mini';
-export const DEFAULT_JOB_TITLE = 'Vendedor/a';
+export const DEFAULT_JOB_TITLE = 'Ejecutivo(a) de Ventas en Terreno';
 export const DEFAULT_RECRUIT_JOB_SHEET = `
-Cargo: Vendedor/a
-- Tipo: ventas (terreno o punto fijo)
-- Requisitos: experiencia en ventas + disponibilidad
+Cargo: Ejecutivo(a) de Ventas en Terreno
+- Rubro: alarmas de seguridad con monitoreo
+- Zona: RM (Santiago)
 - Proceso: revisamos tu postulación y te contactamos por WhatsApp
 `.trim();
 export const DEFAULT_RECRUIT_FAQ = null;
@@ -90,6 +91,83 @@ export const DEFAULT_ADMIN_NOTIFICATION_TEMPLATES = JSON.stringify({
   SELLER_DAILY_SUMMARY: '📊 Resumen diario ventas: {{name}}\\nTel: {{phone}}\\n{{summary}}',
   SELLER_WEEKLY_SUMMARY: '📈 Resumen semanal ventas: {{name}}\\nTel: {{phone}}\\n{{summary}}'
 });
+
+function safeJsonParse<T>(value: string | null | undefined): T | null {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
+function parseWaIdList(value: string | null | undefined): string[] {
+  const raw = (value || '').trim();
+  if (!raw) return [];
+  const parsed = safeJsonParse<unknown>(raw);
+  const items: string[] = Array.isArray(parsed)
+    ? parsed.map((v) => String(v))
+    : raw.split(/[,\s]+/g);
+  const out: string[] = [];
+  for (const item of items) {
+    const waId = normalizeWhatsAppId(item);
+    if (!waId) continue;
+    if (!out.includes(waId)) out.push(waId);
+  }
+  return out;
+}
+
+export function getAdminWaIdAllowlist(config: SystemConfig): string[] {
+  const list = parseWaIdList((config as any).adminWaIds);
+  const legacy = normalizeWhatsAppId(config.adminWaId || '');
+  if (legacy && !list.includes(legacy)) {
+    return [legacy, ...list];
+  }
+  return list;
+}
+
+export function getTestWaIdAllowlist(config: SystemConfig): string[] {
+  const list = parseWaIdList((config as any).testPhoneNumbers);
+  const legacy = normalizeWhatsAppId(config.testPhoneNumber || '');
+  if (legacy && !list.includes(legacy)) {
+    return [legacy, ...list];
+  }
+  return list;
+}
+
+export async function updateAuthorizedNumbersConfig(input: {
+  adminNumbers?: string[] | null;
+  testNumbers?: string[] | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: Record<string, any> = {};
+
+  if (typeof input.adminNumbers !== 'undefined') {
+    const normalized = Array.isArray(input.adminNumbers)
+      ? input.adminNumbers.map((v) => normalizeWhatsAppId(v)).filter(Boolean) as string[]
+      : [];
+    const unique: string[] = [];
+    for (const id of normalized) if (!unique.includes(id)) unique.push(id);
+    data.adminWaIds = unique.length > 0 ? JSON.stringify(unique) : null;
+    data.adminWaId = unique.length > 0 ? unique[0] : null;
+  }
+
+  if (typeof input.testNumbers !== 'undefined') {
+    const normalized = Array.isArray(input.testNumbers)
+      ? input.testNumbers.map((v) => normalizeWhatsAppId(v)).filter(Boolean) as string[]
+      : [];
+    const unique: string[] = [];
+    for (const id of normalized) if (!unique.includes(id)) unique.push(id);
+    data.testPhoneNumbers = unique.length > 0 ? JSON.stringify(unique) : null;
+    data.testPhoneNumber = unique.length > 0 ? unique[0] : null;
+  }
+
+  if (Object.keys(data).length === 0) return config;
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data
+  });
+}
 
 export async function getSystemConfig(): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
@@ -491,6 +569,12 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (typeof existing.testPhoneNumber === 'undefined') {
     updates.testPhoneNumber = DEFAULT_TEST_PHONE_NUMBER;
+  }
+  if (typeof (existing as any).adminWaIds === 'undefined') {
+    updates.adminWaIds = null;
+  }
+  if (typeof (existing as any).testPhoneNumbers === 'undefined') {
+    updates.testPhoneNumbers = null;
   }
   if (typeof (existing as any).salesAiPrompt === 'undefined') {
     updates.salesAiPrompt = DEFAULT_SALES_AI_PROMPT;

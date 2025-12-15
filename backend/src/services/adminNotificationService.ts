@@ -3,12 +3,14 @@ import { prisma } from '../db/client';
 import {
   DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL,
   DEFAULT_ADMIN_NOTIFICATION_TEMPLATES,
+  getAdminWaIdAllowlist,
   getSystemConfig
 } from './configService';
 import { sendWhatsAppText } from './whatsappMessageService';
 import { serializeJson } from '../utils/json';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { getContactDisplayName } from '../utils/contactDisplay';
+import { normalizeEscapedWhitespace } from '../utils/text';
 
 export type AdminEventType =
   | 'RECRUIT_READY'
@@ -68,10 +70,63 @@ function parseRecruitSummary(summary: string | null | undefined): {
   };
 }
 
+function isValidChileRut(rutRaw: string | null | undefined): boolean {
+  const raw = String(rutRaw || '').trim();
+  if (!raw) return false;
+  const cleaned = raw.replace(/\./g, '').replace(/-/g, '').toUpperCase();
+  const body = cleaned.slice(0, -1).replace(/\D/g, '');
+  const dv = cleaned.slice(-1);
+  if (!/^\d{7,8}$/.test(body)) return false;
+  if (!/^[0-9K]$/.test(dv)) return false;
+  let sum = 0;
+  let multiplier = 2;
+  for (let i = body.length - 1; i >= 0; i--) {
+    sum += parseInt(body[i], 10) * multiplier;
+    multiplier = multiplier === 7 ? 2 : multiplier + 1;
+  }
+  const mod = 11 - (sum % 11);
+  const expected = mod === 11 ? '0' : mod === 10 ? 'K' : String(mod);
+  return expected === dv;
+}
+
+function parseExperienceDetails(experienceRaw: string | null | undefined): {
+  years: string | null;
+  terrain: boolean;
+  rubros: string[];
+} {
+  const exp = String(experienceRaw || '').trim();
+  if (!exp) return { years: null, terrain: false, rubros: [] };
+
+  const normalized = exp.toLowerCase();
+  const yearsMatch = normalized.match(/\b(\d{1,2})\s*a[nñ]os\b/);
+  const years = yearsMatch?.[1] ? yearsMatch[1] : null;
+
+  const parentheses = exp.match(/\(([^)]+)\)/);
+  const tokens = parentheses?.[1]
+    ? parentheses[1]
+        .split(',')
+        .map(t => t.trim())
+        .filter(Boolean)
+    : [];
+  const terrain =
+    tokens.some(t => /terreno|p2p|puerta/.test(t.toLowerCase())) ||
+    /terreno|p2p|puerta/.test(normalized);
+  const rubros = tokens
+    .map(t => t.replace(/\s+/g, ' ').trim())
+    .filter(t => t && !/terreno|p2p|puerta/.test(t.toLowerCase()));
+
+  return { years, terrain, rubros };
+}
+
 function buildRecruitSummaryByDetail(params: {
   detailLevel: string;
   baseSummary: string | null | undefined;
   recommendation: string;
+  rutVigente: string | null;
+  experienceYears: string | null;
+  terrain: string | null;
+  rubros: string | null;
+  hasCv: string | null;
 }): string {
   const detail = (params.detailLevel || DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL).toUpperCase();
   const fields = parseRecruitSummary(params.baseSummary);
@@ -79,7 +134,7 @@ function buildRecruitSummaryByDetail(params: {
   if (detail === 'SHORT') {
     const parts = [
       fields.location ? `Comuna/Ciudad: ${fields.location}` : null,
-      fields.experience ? `Experiencia: ${fields.experience}` : null,
+      params.experienceYears ? `Experiencia (años): ${params.experienceYears}` : fields.experience ? `Experiencia: ${fields.experience}` : null,
       fields.availability ? `Disponibilidad: ${fields.availability}` : null
     ].filter(Boolean) as string[];
     return truncate(parts.length > 0 ? parts.join(' | ') : (params.baseSummary || 'Datos mínimos recibidos.'), 420);
@@ -93,10 +148,13 @@ function buildRecruitSummaryByDetail(params: {
   // MEDIUM (default)
   const parts = [
     fields.location ? `Comuna/Ciudad: ${fields.location}` : null,
-    fields.rut ? `RUT: ${fields.rut}` : null,
-    fields.experience ? `Experiencia: ${fields.experience}` : null,
+    fields.rut ? `RUT: ${fields.rut}${params.rutVigente ? ` (vigente: ${params.rutVigente})` : ''}` : null,
+    params.experienceYears ? `Años exp: ${params.experienceYears}` : null,
+    params.terrain ? `Terreno: ${params.terrain}` : null,
+    params.rubros ? `Rubros: ${params.rubros}` : null,
     fields.availability ? `Disponibilidad: ${fields.availability}` : null,
     fields.email ? `Email: ${fields.email}` : null,
+    params.hasCv ? `CV: ${params.hasCv}` : null,
     `Recomendación: ${params.recommendation}`
   ].filter(Boolean) as string[];
   return truncate(parts.join(' | '), 850);
@@ -168,18 +226,10 @@ export async function sendAdminNotification(options: {
 }): Promise<void> {
   const { app, eventType, contact, reservationId, interviewDay, interviewTime, interviewLocation, summary } = options;
   const config = await getSystemConfig();
-  const adminWa = normalizeWhatsAppId(config.adminWaId || '');
-  if (!adminWa) return;
+  const adminWaIds = getAdminWaIdAllowlist(config);
+  if (adminWaIds.length === 0) return;
 
-  const { conversation } = await ensureAdminConversation(adminWa);
   const eventKey = `${eventType}:${contact?.id || contact?.waId || contact?.phone || ''}:${reservationId || ''}:${interviewDay || ''}:${interviewTime || ''}:${interviewLocation || ''}`;
-  const existing = await prisma.message.findFirst({
-    where: {
-      conversationId: conversation.id,
-      text: { contains: `[REF:${eventKey}]` }
-    }
-  });
-  if (existing) return;
 
   const displayName = getContactDisplayName(contact);
   const waId = normalizeWhatsAppId(contact?.waId || contact?.phone || '') || '';
@@ -211,9 +261,46 @@ export async function sendAdminNotification(options: {
     return missing.length === 0 ? 'contactar para coordinar entrevista.' : `pedir faltantes (${missing.join(', ')}) y luego contactar.`;
   })();
 
+  const recruitFields = eventType === 'RECRUIT_READY' ? parseRecruitSummary(summary) : null;
+  const rutVigente =
+    eventType === 'RECRUIT_READY' && recruitFields?.rut
+      ? isValidChileRut(recruitFields.rut)
+        ? 'sí'
+        : 'no'
+      : null;
+  const expDetails =
+    eventType === 'RECRUIT_READY' ? parseExperienceDetails(recruitFields?.experience) : { years: null, terrain: false, rubros: [] as string[] };
+  const experienceYears = eventType === 'RECRUIT_READY' ? expDetails.years : null;
+  const terrain = eventType === 'RECRUIT_READY' ? (expDetails.terrain ? 'sí' : 'no') : null;
+  const rubros = eventType === 'RECRUIT_READY' && expDetails.rubros.length > 0 ? expDetails.rubros.join(', ') : null;
+  const hasCv =
+    eventType === 'RECRUIT_READY' && contact?.id
+      ? Boolean(
+          await prisma.message.findFirst({
+            where: {
+              direction: 'INBOUND',
+              mediaType: { in: ['image', 'document'] },
+              transcriptText: { not: null },
+              conversation: { contactId: contact.id }
+            },
+            select: { id: true }
+          })
+        )
+      : null;
+  const cv = eventType === 'RECRUIT_READY' && hasCv !== null ? (hasCv ? 'sí' : 'no') : null;
+
   const computedSummary =
     eventType === 'RECRUIT_READY'
-      ? buildRecruitSummaryByDetail({ detailLevel, baseSummary: summary, recommendation })
+      ? buildRecruitSummaryByDetail({
+          detailLevel,
+          baseSummary: summary,
+          recommendation,
+          rutVigente,
+          experienceYears,
+          terrain,
+          rubros,
+          hasCv: cv
+        })
       : truncate(summary || '', 3000);
 
   const vars: Record<string, string> = {
@@ -227,11 +314,21 @@ export async function sendAdminNotification(options: {
     interviewLocation: (interviewLocation || '').trim(),
     interviewStatus,
     summary: computedSummary,
-    recommendation
+    recommendation,
+    location: recruitFields?.location || '',
+    rut: recruitFields?.rut || '',
+    rutVigente: rutVigente || '',
+    experience: recruitFields?.experience || '',
+    experienceYears: experienceYears || '',
+    experienceTerrain: terrain || '',
+    experienceRubros: rubros || '',
+    availability: recruitFields?.availability || '',
+    email: recruitFields?.email || '',
+    cv: cv || ''
   };
 
   const template = templates[eventType] || templatesDefault[eventType] || '';
-  let text = renderTemplate(template, vars).trim();
+  let text = normalizeEscapedWhitespace(renderTemplate(template, vars)).trim();
   if (!text) {
     // Fallback to the legacy messages if template is empty/broken.
     if (eventType === 'RECRUIT_READY') {
@@ -253,26 +350,39 @@ export async function sendAdminNotification(options: {
     }
   }
 
-  const textWithRef = `${text}\n[REF:${eventKey}]`;
-  let sendStatus: 'WA_SENT' | 'WA_FAILED' = 'WA_SENT';
-  let sendError: string | null = null;
-  try {
-    const resp = await sendWhatsAppText(adminWa, textWithRef);
-    if (!resp.success) {
-      sendStatus = 'WA_FAILED';
-      sendError = resp.error || 'Unknown error';
-    }
-  } catch (err: any) {
-    sendStatus = 'WA_FAILED';
-    sendError = err?.message || 'Unknown error';
-    app.log.warn({ err }, 'Admin notification WA failed');
-  }
+  const textWithRef = normalizeEscapedWhitespace(`${text}\n[REF:${eventKey}]`);
 
-  await logAdminMessage(conversation.id, 'OUTBOUND', textWithRef, {
-    adminNotification: true,
-    eventType,
-    status: sendStatus,
-    error: sendError,
-    contactId: contact?.id || null
-  });
+  for (const adminWa of adminWaIds) {
+    const { conversation } = await ensureAdminConversation(adminWa);
+    const existing = await prisma.message.findFirst({
+      where: {
+        conversationId: conversation.id,
+        text: { contains: `[REF:${eventKey}]` }
+      }
+    });
+    if (existing) continue;
+
+    let sendStatus: 'WA_SENT' | 'WA_FAILED' = 'WA_SENT';
+    let sendError: string | null = null;
+    try {
+      const resp = await sendWhatsAppText(adminWa, textWithRef);
+      if (!resp.success) {
+        sendStatus = 'WA_FAILED';
+        sendError = resp.error || 'Unknown error';
+      }
+    } catch (err: any) {
+      sendStatus = 'WA_FAILED';
+      sendError = err?.message || 'Unknown error';
+      app.log.warn({ err }, 'Admin notification WA failed');
+    }
+
+    await logAdminMessage(conversation.id, 'OUTBOUND', textWithRef, {
+      adminNotification: true,
+      eventType,
+      status: sendStatus,
+      error: sendError,
+      contactId: contact?.id || null,
+      adminWaId: adminWa
+    });
+  }
 }
