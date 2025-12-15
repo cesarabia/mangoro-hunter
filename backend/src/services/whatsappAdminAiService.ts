@@ -14,6 +14,12 @@ import {
 import { getSystemConfig, DEFAULT_ADMIN_AI_PROMPT, DEFAULT_ADMIN_AI_MODEL, normalizeModelId } from './configService';
 import { getEffectiveOpenAiKey } from './aiService';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
+import {
+  attemptScheduleInterview,
+  confirmActiveReservation,
+  formatSlotHuman,
+  releaseActiveReservation
+} from './interviewSchedulerService';
 
 const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
@@ -47,7 +53,7 @@ const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           day: { type: 'string', nullable: true },
           time: { type: 'string', nullable: true },
           location: { type: 'string', nullable: true },
-          status: { type: 'string', enum: ['PENDING', 'CONFIRMED', 'CANCELLED'], nullable: true }
+          status: { type: 'string', enum: ['PENDING', 'CONFIRMED', 'CANCELLED', 'ON_HOLD'], nullable: true }
         },
         required: [],
         additionalProperties: false
@@ -252,19 +258,56 @@ async function executeAdminTool(
     case 'admin_set_interview': {
       const waId = ensureWaId(args?.waId || lastCandidateWaId);
       if (!waId) return { error: 'Debes indicar el número del candidato.' };
-      const data: any = {};
-      if (typeof args?.day !== 'undefined') data.interviewDay = args.day || null;
-      if (typeof args?.time !== 'undefined') data.interviewTime = args.time || null;
-      if (typeof args?.location !== 'undefined') data.interviewLocation = args.location || null;
-      if (typeof args?.status !== 'undefined') data.interviewStatus = args.status || null;
-      data.aiMode = 'INTERVIEW';
       const conversation = await fetchConversationByIdentifier(waId, { includeMessages: false });
       if (!conversation) return { error: 'No encontré esa conversación.' };
-       await setAdminLastCandidate(waId);
+      await setAdminLastCandidate(waId);
+
+      const data: any = { aiMode: 'INTERVIEW', status: 'OPEN' };
+      const requestedDay = typeof args?.day === 'string' ? args.day : null;
+      const requestedTime = typeof args?.time === 'string' ? args.time : null;
+      const requestedLocation = typeof args?.location === 'string' ? args.location : null;
+      const requestedStatus =
+        typeof args?.status === 'string' ? String(args.status).toUpperCase() : null;
+
+      if (requestedDay && requestedTime) {
+        const scheduleAttempt = await attemptScheduleInterview({
+          conversationId: conversation.id,
+          contactId: conversation.contactId,
+          day: requestedDay,
+          time: requestedTime,
+          location: requestedLocation,
+          config
+        });
+        if (!scheduleAttempt.ok) {
+          const alternatives = scheduleAttempt.alternatives.map(slot => formatSlotHuman(slot));
+          return { error: scheduleAttempt.message, alternatives };
+        }
+        data.interviewDay = scheduleAttempt.slot.day;
+        data.interviewTime = scheduleAttempt.slot.time;
+        data.interviewLocation = scheduleAttempt.slot.location;
+        data.interviewStatus = requestedStatus || 'PENDING';
+      } else {
+        if (typeof args?.day !== 'undefined') data.interviewDay = requestedDay;
+        if (typeof args?.time !== 'undefined') data.interviewTime = requestedTime;
+        if (typeof args?.location !== 'undefined') data.interviewLocation = requestedLocation;
+        if (typeof args?.status !== 'undefined') data.interviewStatus = requestedStatus;
+      }
+
+      if (requestedStatus === 'CONFIRMED') {
+        await confirmActiveReservation(conversation.id);
+      }
+      if (requestedStatus === 'CANCELLED' || requestedStatus === 'ON_HOLD') {
+        await releaseActiveReservation({
+          conversationId: conversation.id,
+          status: requestedStatus as 'CANCELLED' | 'ON_HOLD'
+        });
+      }
+
       await prisma.conversation.update({
         where: { id: conversation.id },
         data
       });
+
       return { success: true, waId, updated: data };
     }
     case 'admin_stats': {

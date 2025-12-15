@@ -20,7 +20,13 @@ import {
   DEFAULT_INTERVIEW_DAY,
   DEFAULT_INTERVIEW_TIME,
   DEFAULT_INTERVIEW_LOCATION,
+  DEFAULT_INTERVIEW_TIMEZONE,
+  DEFAULT_INTERVIEW_SLOT_MINUTES,
+  DEFAULT_INTERVIEW_WEEKLY_AVAILABILITY,
+  DEFAULT_INTERVIEW_EXCEPTIONS,
+  DEFAULT_INTERVIEW_LOCATIONS,
   DEFAULT_TEST_PHONE_NUMBER,
+  updateInterviewScheduleConfig,
   updateAiModel
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
@@ -51,6 +57,14 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
     defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION,
     testPhoneNumber: DEFAULT_TEST_PHONE_NUMBER
+  };
+
+  const interviewScheduleDefaults = {
+    interviewTimezone: DEFAULT_INTERVIEW_TIMEZONE,
+    interviewSlotMinutes: DEFAULT_INTERVIEW_SLOT_MINUTES,
+    interviewWeeklyAvailability: DEFAULT_INTERVIEW_WEEKLY_AVAILABILITY,
+    interviewExceptions: DEFAULT_INTERVIEW_EXCEPTIONS,
+    interviewLocations: DEFAULT_INTERVIEW_LOCATIONS
   };
 
   function isMissingColumnError(err: any): boolean {
@@ -294,6 +308,63 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       prompt: updated.interviewAiPrompt || DEFAULT_INTERVIEW_AI_PROMPT,
       hasCustomPrompt: Boolean(updated.interviewAiPrompt),
       model: updated.interviewAiModel || DEFAULT_INTERVIEW_AI_MODEL
+    };
+  });
+
+  app.get('/interview-schedule', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return interviewScheduleDefaults;
+    }
+
+    return {
+      interviewTimezone: config.interviewTimezone || DEFAULT_INTERVIEW_TIMEZONE,
+      interviewSlotMinutes: config.interviewSlotMinutes || DEFAULT_INTERVIEW_SLOT_MINUTES,
+      interviewWeeklyAvailability: config.interviewWeeklyAvailability || DEFAULT_INTERVIEW_WEEKLY_AVAILABILITY,
+      interviewExceptions: config.interviewExceptions || DEFAULT_INTERVIEW_EXCEPTIONS,
+      interviewLocations: config.interviewLocations || DEFAULT_INTERVIEW_LOCATIONS
+    };
+  });
+
+  app.put('/interview-schedule', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const body = request.body as {
+      interviewTimezone?: string | null;
+      interviewSlotMinutes?: number | null;
+      interviewWeeklyAvailability?: string | null;
+      interviewExceptions?: string | null;
+      interviewLocations?: string | null;
+    };
+
+    const updated = await executeUpdate(reply, () =>
+      updateInterviewScheduleConfig({
+        interviewTimezone:
+          typeof body?.interviewTimezone === 'undefined' ? undefined : body.interviewTimezone,
+        interviewSlotMinutes:
+          typeof body?.interviewSlotMinutes === 'undefined' ? undefined : body.interviewSlotMinutes,
+        interviewWeeklyAvailability:
+          typeof body?.interviewWeeklyAvailability === 'undefined' ? undefined : body.interviewWeeklyAvailability,
+        interviewExceptions:
+          typeof body?.interviewExceptions === 'undefined' ? undefined : body.interviewExceptions,
+        interviewLocations:
+          typeof body?.interviewLocations === 'undefined' ? undefined : body.interviewLocations
+      })
+    );
+    if (!updated) return;
+
+    return {
+      interviewTimezone: updated.interviewTimezone || DEFAULT_INTERVIEW_TIMEZONE,
+      interviewSlotMinutes: updated.interviewSlotMinutes || DEFAULT_INTERVIEW_SLOT_MINUTES,
+      interviewWeeklyAvailability: updated.interviewWeeklyAvailability || DEFAULT_INTERVIEW_WEEKLY_AVAILABILITY,
+      interviewExceptions: updated.interviewExceptions || DEFAULT_INTERVIEW_EXCEPTIONS,
+      interviewLocations: updated.interviewLocations || DEFAULT_INTERVIEW_LOCATIONS
     };
   });
 

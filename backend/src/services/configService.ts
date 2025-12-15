@@ -12,6 +12,17 @@ export const DEFAULT_JOB_TITLE = 'Vendedor/a';
 export const DEFAULT_INTERVIEW_DAY = 'Lunes';
 export const DEFAULT_INTERVIEW_TIME = '10:00';
 export const DEFAULT_INTERVIEW_LOCATION = 'Online';
+export const DEFAULT_INTERVIEW_TIMEZONE = 'America/Santiago';
+export const DEFAULT_INTERVIEW_SLOT_MINUTES = 30;
+export const DEFAULT_INTERVIEW_WEEKLY_AVAILABILITY = JSON.stringify({
+  lunes: [{ start: '09:00', end: '18:00' }],
+  martes: [{ start: '09:00', end: '18:00' }],
+  miércoles: [{ start: '09:00', end: '18:00' }],
+  jueves: [{ start: '09:00', end: '18:00' }],
+  viernes: [{ start: '09:00', end: '18:00' }]
+});
+export const DEFAULT_INTERVIEW_EXCEPTIONS = JSON.stringify([]);
+export const DEFAULT_INTERVIEW_LOCATIONS = JSON.stringify([DEFAULT_INTERVIEW_LOCATION]);
 export const DEFAULT_TEST_PHONE_NUMBER = null;
 export const DEFAULT_ADMIN_AI_PROMPT =
   'Eres Hunter Admin, un asistente en español para managers de reclutamiento. Da respuestas claras y accionables, usa herramientas cuando te lo pidan.';
@@ -247,6 +258,42 @@ export async function updateTemplateConfig(input: {
   });
 }
 
+export async function updateInterviewScheduleConfig(input: {
+  interviewTimezone?: string | null;
+  interviewSlotMinutes?: number | null;
+  interviewWeeklyAvailability?: string | null;
+  interviewExceptions?: string | null;
+  interviewLocations?: string | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: Record<string, any> = {};
+  if (typeof input.interviewTimezone !== 'undefined') {
+    data.interviewTimezone = normalizeValue(input.interviewTimezone);
+  }
+  if (typeof input.interviewSlotMinutes !== 'undefined') {
+    const raw = input.interviewSlotMinutes;
+    const parsed =
+      typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : null;
+    data.interviewSlotMinutes = parsed && parsed > 0 ? parsed : null;
+  }
+  if (typeof input.interviewWeeklyAvailability !== 'undefined') {
+    data.interviewWeeklyAvailability = normalizeValue(input.interviewWeeklyAvailability);
+  }
+  if (typeof input.interviewExceptions !== 'undefined') {
+    data.interviewExceptions = normalizeValue(input.interviewExceptions);
+  }
+  if (typeof input.interviewLocations !== 'undefined') {
+    data.interviewLocations = normalizeValue(input.interviewLocations);
+  }
+  if (Object.keys(data).length === 0) {
+    return config;
+  }
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data
+  });
+}
+
 async function ensureConfigRecord(): Promise<SystemConfig> {
   let existing = await prisma.systemConfig.findUnique({ where: { id: SINGLETON_ID } });
   if (!existing) {
@@ -266,6 +313,11 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         defaultInterviewDay: DEFAULT_INTERVIEW_DAY,
         defaultInterviewTime: DEFAULT_INTERVIEW_TIME,
         defaultInterviewLocation: DEFAULT_INTERVIEW_LOCATION,
+        interviewTimezone: DEFAULT_INTERVIEW_TIMEZONE,
+        interviewSlotMinutes: DEFAULT_INTERVIEW_SLOT_MINUTES,
+        interviewWeeklyAvailability: DEFAULT_INTERVIEW_WEEKLY_AVAILABILITY,
+        interviewExceptions: DEFAULT_INTERVIEW_EXCEPTIONS,
+        interviewLocations: DEFAULT_INTERVIEW_LOCATIONS,
         testPhoneNumber: DEFAULT_TEST_PHONE_NUMBER,
         adminAiAddendum: DEFAULT_ADMIN_AI_ADDENDUM
       }
@@ -299,6 +351,21 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.defaultInterviewLocation) {
     updates.defaultInterviewLocation = DEFAULT_INTERVIEW_LOCATION;
+  }
+  if (!existing.interviewTimezone) {
+    updates.interviewTimezone = DEFAULT_INTERVIEW_TIMEZONE;
+  }
+  if (!existing.interviewSlotMinutes) {
+    updates.interviewSlotMinutes = DEFAULT_INTERVIEW_SLOT_MINUTES;
+  }
+  if (!existing.interviewWeeklyAvailability) {
+    updates.interviewWeeklyAvailability = DEFAULT_INTERVIEW_WEEKLY_AVAILABILITY;
+  }
+  if (!existing.interviewExceptions) {
+    updates.interviewExceptions = DEFAULT_INTERVIEW_EXCEPTIONS;
+  }
+  if (!existing.interviewLocations) {
+    updates.interviewLocations = DEFAULT_INTERVIEW_LOCATIONS;
   }
   if (!existing.aiModel) {
     updates.aiModel = DEFAULT_AI_MODEL;

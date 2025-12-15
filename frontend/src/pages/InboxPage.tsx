@@ -7,6 +7,8 @@ interface Props {
   onLogout: () => void;
   showSettings?: boolean;
   onOpenSettings?: () => void;
+  showAgenda?: boolean;
+  onOpenAgenda?: () => void;
   enableSimulator?: boolean;
 }
 
@@ -14,6 +16,8 @@ export const InboxPage: React.FC<Props> = ({
   onLogout,
   showSettings,
   onOpenSettings,
+  showAgenda,
+  onOpenAgenda,
   enableSimulator
 }) => {
   const POLLING_INTERVAL = 7000;
@@ -236,13 +240,18 @@ export const InboxPage: React.FC<Props> = ({
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minHeight: 0 }}>
       <header style={{ padding: '8px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <strong>Hunter CRM v2.3</strong>
+          <strong>Hunter CRM v2.4</strong>
           {backendError && <span style={{ fontSize: 12, color: '#b93800' }}>{backendError}</span>}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => setShowAddModal(true)} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
             + Agregar número
           </button>
+          {showAgenda && (
+            <button onClick={onOpenAgenda} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
+              Agenda
+            </button>
+          )}
           {showSettings && (
             <button onClick={onOpenSettings} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
               Configuración

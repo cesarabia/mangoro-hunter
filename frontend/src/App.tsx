@@ -3,8 +3,9 @@ import { LoginPage } from './pages/LoginPage';
 import { InboxPage } from './pages/InboxPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { PrivacyPage } from './pages/PrivacyPage';
+import { AgendaPage } from './pages/AgendaPage';
 
-type View = 'inbox' | 'settings';
+type View = 'inbox' | 'settings' | 'agenda';
 
 const decodeUserRole = (token: string | null): string | null => {
   if (!token) return null;
@@ -40,7 +41,7 @@ export const App: React.FC = () => {
   const isAdmin = userRole === 'ADMIN';
 
   useEffect(() => {
-    if (view === 'settings' && !isAdmin) {
+    if ((view === 'settings' || view === 'agenda') && !isAdmin) {
       setView('inbox');
     }
   }, [view, isAdmin]);
@@ -75,8 +76,18 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleOpenAgenda = () => {
+    if (isAdmin) {
+      setView('agenda');
+    }
+  };
+
   if (view === 'settings' && isAdmin) {
     return <SettingsPage onBack={() => setView('inbox')} />;
+  }
+
+  if (view === 'agenda' && isAdmin) {
+    return <AgendaPage onBack={() => setView('inbox')} />;
   }
 
   return (
@@ -84,6 +95,8 @@ export const App: React.FC = () => {
       onLogout={handleLogout}
       showSettings={isAdmin}
       onOpenSettings={handleOpenSettings}
+      showAgenda={isAdmin}
+      onOpenAgenda={handleOpenAgenda}
       enableSimulator
     />
   );

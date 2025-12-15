@@ -4,6 +4,14 @@ import { sendWhatsAppText, sendWhatsAppTemplate } from '../services/whatsappMess
 import { serializeJson } from '../utils/json';
 import { createConversationAndMaybeSend } from '../services/conversationCreateService';
 import { loadTemplateConfig, resolveTemplateVariables } from '../services/templateService';
+import { getSystemConfig } from '../services/configService';
+import {
+  attemptScheduleInterview,
+  confirmActiveReservation,
+  formatSlotHuman,
+  releaseActiveReservation
+} from '../services/interviewSchedulerService';
+import { sendAdminNotification } from '../services/adminNotificationService';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -416,26 +424,142 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       interviewStatus?: string | null;
     };
 
-    const data: Record<string, string | null> = {};
-    if (typeof body.interviewDay !== 'undefined') data.interviewDay = normalizeValue(body.interviewDay);
-    if (typeof body.interviewTime !== 'undefined') data.interviewTime = normalizeValue(body.interviewTime);
-    if (typeof body.interviewLocation !== 'undefined')
-      data.interviewLocation = normalizeValue(body.interviewLocation);
-    if (typeof body.interviewStatus !== 'undefined') data.interviewStatus = normalizeValue(body.interviewStatus);
+    const conversation = await prisma.conversation.findUnique({
+      where: { id },
+      include: { contact: true }
+    });
+    if (!conversation) {
+      return reply.code(404).send({ error: 'Conversation not found' });
+    }
+    if (conversation.isAdmin) {
+      return reply.code(400).send({ error: 'No aplica a conversación admin' });
+    }
 
+    const requestedDay =
+      typeof body.interviewDay !== 'undefined' ? normalizeValue(body.interviewDay) : conversation.interviewDay;
+    const requestedTime =
+      typeof body.interviewTime !== 'undefined' ? normalizeValue(body.interviewTime) : conversation.interviewTime;
+    const requestedLocation =
+      typeof body.interviewLocation !== 'undefined'
+        ? normalizeValue(body.interviewLocation)
+        : conversation.interviewLocation;
+
+    const requestedStatusRaw =
+      typeof body.interviewStatus !== 'undefined'
+        ? normalizeValue(body.interviewStatus)
+        : conversation.interviewStatus;
+    const requestedStatus = requestedStatusRaw ? requestedStatusRaw.toUpperCase() : null;
+
+    const wantsScheduleChange =
+      typeof body.interviewDay !== 'undefined' ||
+      typeof body.interviewTime !== 'undefined' ||
+      typeof body.interviewLocation !== 'undefined';
+
+    const config = await getSystemConfig();
+    let slot = { day: requestedDay, time: requestedTime, location: requestedLocation };
+    let reservationId: string | null = null;
+    let scheduleKind: 'SCHEDULED' | 'RESCHEDULED' | 'UNCHANGED' | null = null;
+
+    if (wantsScheduleChange && slot.day && slot.time) {
+      const scheduleAttempt = await attemptScheduleInterview({
+        conversationId: conversation.id,
+        contactId: conversation.contactId,
+        day: slot.day,
+        time: slot.time,
+        location: slot.location,
+        config
+      });
+      if (!scheduleAttempt.ok) {
+        const alternatives = scheduleAttempt.alternatives.map(item => formatSlotHuman(item));
+        return reply.code(409).send({ error: scheduleAttempt.message, alternatives });
+      }
+      slot = {
+        day: scheduleAttempt.slot.day,
+        time: scheduleAttempt.slot.time,
+        location: scheduleAttempt.slot.location
+      };
+      reservationId = scheduleAttempt.reservationId;
+      scheduleKind = scheduleAttempt.kind;
+    }
+
+    if (typeof body.interviewStatus !== 'undefined' && requestedStatus === 'CONFIRMED') {
+      const update = await confirmActiveReservation(conversation.id);
+      reservationId = reservationId || update.reservationId;
+    }
+    if (
+      typeof body.interviewStatus !== 'undefined' &&
+      (requestedStatus === 'CANCELLED' || requestedStatus === 'ON_HOLD')
+    ) {
+      const update = await releaseActiveReservation({
+        conversationId: conversation.id,
+        status: requestedStatus
+      });
+      reservationId = reservationId || update.reservationId;
+    }
+
+    const data: Record<string, any> = { aiMode: 'INTERVIEW', status: 'OPEN' };
+    if (typeof body.interviewDay !== 'undefined' || scheduleKind) data.interviewDay = slot.day;
+    if (typeof body.interviewTime !== 'undefined' || scheduleKind) data.interviewTime = slot.time;
+    if (typeof body.interviewLocation !== 'undefined' || scheduleKind) data.interviewLocation = slot.location;
+    if (typeof body.interviewStatus !== 'undefined') data.interviewStatus = requestedStatusRaw;
     if (Object.keys(data).length === 0) {
       return reply.code(400).send({ error: 'Sin cambios' });
     }
 
-    try {
-      const updated = await prisma.conversation.update({
-        where: { id },
-        data
+    const updated = await prisma.conversation.update({
+      where: { id },
+      data,
+      include: { contact: true }
+    });
+
+    if (scheduleKind === 'SCHEDULED' || scheduleKind === 'RESCHEDULED') {
+      await sendAdminNotification({
+        app,
+        eventType: scheduleKind === 'RESCHEDULED' ? 'INTERVIEW_RESCHEDULED' : 'INTERVIEW_SCHEDULED',
+        contact: updated.contact,
+        reservationId,
+        interviewDay: slot.day,
+        interviewTime: slot.time,
+        interviewLocation: slot.location
       });
-      return updated;
-    } catch (err) {
-      return reply.code(404).send({ error: 'Conversation not found' });
     }
+
+    if (typeof body.interviewStatus !== 'undefined' && requestedStatus === 'CANCELLED') {
+      await sendAdminNotification({
+        app,
+        eventType: 'INTERVIEW_CANCELLED',
+        contact: updated.contact,
+        reservationId,
+        interviewDay: slot.day,
+        interviewTime: slot.time,
+        interviewLocation: slot.location
+      });
+    }
+    if (typeof body.interviewStatus !== 'undefined' && requestedStatus === 'ON_HOLD') {
+      await sendAdminNotification({
+        app,
+        eventType: 'INTERVIEW_ON_HOLD',
+        contact: updated.contact,
+        reservationId,
+        interviewDay: slot.day,
+        interviewTime: slot.time,
+        interviewLocation: slot.location
+      });
+    }
+
+    if (typeof body.interviewStatus !== 'undefined' && requestedStatus === 'CONFIRMED') {
+      await sendAdminNotification({
+        app,
+        eventType: 'INTERVIEW_CONFIRMED',
+        contact: updated.contact,
+        reservationId,
+        interviewDay: slot.day,
+        interviewTime: slot.time,
+        interviewLocation: slot.location
+      });
+    }
+
+    return updated;
   });
 
   app.post('/:id/send-template', { preValidation: [app.authenticate] }, async (request, reply) => {

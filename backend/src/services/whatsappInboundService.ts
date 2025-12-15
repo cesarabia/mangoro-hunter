@@ -25,6 +25,13 @@ import { generateAdminAiResponse } from "./whatsappAdminAiService";
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from "./templateService";
 import { createConversationAndMaybeSend } from "./conversationCreateService";
 import { buildWaIdCandidates, normalizeWhatsAppId } from "../utils/whatsapp";
+import {
+  attemptScheduleInterview,
+  confirmActiveReservation,
+  formatSlotHuman,
+  releaseActiveReservation,
+} from "./interviewSchedulerService";
+import { sendAdminNotification } from "./adminNotificationService";
 
 interface InboundMedia {
   type: string;
@@ -47,74 +54,6 @@ interface InboundMessageParams {
 }
 
 const UPLOADS_BASE = path.join(__dirname, "..", "uploads");
-
-type AdminEventType = "RECRUIT_READY" | "INTERVIEW_SCHEDULED" | "INTERVIEW_CONFIRMED";
-
-async function sendAdminNotification(options: {
-  app: FastifyInstance;
-  eventType: AdminEventType;
-  contact: any;
-  interviewDay?: string | null;
-  interviewTime?: string | null;
-  interviewLocation?: string | null;
-  summary?: string;
-}) {
-  const { app, eventType, contact, interviewDay, interviewTime, interviewLocation, summary } = options;
-  const config = await getSystemConfig();
-  const adminWa = normalizeWhatsAppId(config.adminWaId || "");
-  if (!adminWa) return;
-  const { conversation } = await ensureAdminConversation(adminWa, adminWa);
-  const eventKey = `${eventType}:${contact?.id || contact?.waId || contact?.phone || ""}:${interviewDay || ""}:${interviewTime || ""}`;
-  const existing = await prisma.message.findFirst({
-    where: {
-      conversationId: conversation.id,
-      text: { contains: `[REF:${eventKey}]` },
-    },
-  });
-  if (existing) return;
-
-  let text = "";
-  if (eventType === "RECRUIT_READY") {
-    text = `🟢 Reclutamiento listo: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\nResumen: ${summary || "Datos mínimos recibidos."}\nPróximo paso: revisar y contactar.`;
-  } else if (eventType === "INTERVIEW_SCHEDULED") {
-    text = `🗓️ Entrevista agendada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: PENDIENTE.`;
-  } else {
-    text = `✅ Entrevista confirmada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}.`;
-  }
-  const textWithRef = `${text}\n[REF:${eventKey}]`;
-  let sendStatus: "WA_SENT" | "WA_FAILED" = "WA_SENT";
-  let sendError: string | null = null;
-  try {
-    const resp = await sendWhatsAppText(adminWa, textWithRef);
-    if (!resp.success) {
-      sendStatus = "WA_FAILED";
-      sendError = resp.error || "Unknown error";
-    }
-  } catch (err: any) {
-    sendStatus = "WA_FAILED";
-    sendError = err?.message || "Unknown error";
-    app.log.warn({ err }, "Admin notification WA failed");
-  }
-  await logAdminMessage(conversation.id, "OUTBOUND", textWithRef, {
-    adminNotification: true,
-    eventType,
-    status: sendStatus,
-    error: sendError,
-    contactId: contact?.id || null,
-  });
-}
-
-function formatInterviewSlot(
-  day?: string | null,
-  time?: string | null,
-  location?: string | null,
-): string {
-  const dayText = (day || "").trim() || "día por definir";
-  const timeText = (time || "").trim() || "hora por definir";
-  const locationText = (location || "").trim();
-  const when = `${dayText} ${timeText}`.trim();
-  return locationText ? `${when}, ${locationText}` : when;
-}
 
 async function mergeOrCreateContact(waId: string, preferredId?: string) {
   const candidates = buildWaIdCandidates(waId);
@@ -694,6 +633,7 @@ export async function maybeSendAutoReply(
         /\bno (puedo|sirve|voy|asistir|ir)\b/.test(lastInboundLower) ||
         /^no\s*[,!.?¿¡]*\s*$/.test(lastInboundLower) ||
         /^no\b(?!\s+tengo\b)/.test(lastInboundLower);
+      const wantsPause = /\b(en\s+pausa|pausa|mas\s+adelante|por\s+ahora\s+no)\b/.test(lastInboundLower);
       const wantsReschedule =
         /\b(reagend|reagendar|reprogram|reprogramar|cambiar|cambio|modificar|mover|cancelar|cancelacion|cancelación)\b/.test(
           lastInboundLower,
@@ -730,7 +670,42 @@ export async function maybeSendAutoReply(
         return;
       }
 
-      if (wantsReschedule && !hasScheduleDetails && !isYes && !isNo) {
+      if (wantsPause && !isYes) {
+        const lastOutbound = (conversation.messages || [])
+          .filter((m) => m.direction === "OUTBOUND")
+          .slice(-1)[0];
+        const lastOutboundText = stripAccents((lastOutbound?.text || "").toLowerCase());
+        const alreadyAcknowledgedPause =
+          lastOutboundText.includes("coordinación en pausa") || lastOutboundText.includes("coordinacion en pausa");
+        if (!alreadyAcknowledgedPause) {
+          const replyText =
+            "Listo, dejo la coordinación de la entrevista en pausa.\n" +
+            "Cuando quieras retomarla, escríbeme y dime 2 alternativas de día y hora.";
+          let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+          if (waId) {
+            sendResultRaw = await sendWhatsAppText(waId, replyText);
+          }
+          const normalizedSendResult = {
+            success: sendResultRaw.success,
+            messageId:
+              "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+            error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+          };
+          await prisma.message.create({
+            data: {
+              conversationId,
+              direction: "OUTBOUND",
+              text: replyText,
+              rawPayload: serializeJson({ autoReply: true, interviewOnHoldAck: true, sendResult: normalizedSendResult }),
+              timestamp: new Date(),
+              read: true,
+            },
+          });
+        }
+        return;
+      }
+
+      if ((wantsReschedule || isNo) && !isYes) {
         const lastOutbound = (conversation.messages || [])
           .filter((m) => m.direction === "OUTBOUND")
           .slice(-1)[0];
@@ -742,15 +717,6 @@ export async function maybeSendAutoReply(
           lastOutboundText.includes("dos horarios");
 
         if (!alreadyAskedAlternatives) {
-          if (conversation.interviewStatus === "CONFIRMED") {
-            await prisma.conversation
-              .update({
-                where: { id: conversationId },
-                data: { interviewStatus: "PENDING" },
-              })
-              .catch(() => {});
-          }
-
           const replyText =
             "Entiendo perfecto. ¿Qué 2 horarios (día y hora) te acomodan para proponerte una alternativa?\n" +
             "Si prefieres, también puedo dejar la coordinación en pausa.";
@@ -2230,15 +2196,18 @@ async function detectInterviewSignals(
     /^no\s*[,!.?¿¡]*\s*$/.test(lower) ||
     /^no\b(?!\s+tengo\b)/.test(lower);
 
-  if (isYes) {
-    statusUpdate = "CONFIRMED";
-  } else if (isNo) {
-    statusUpdate = "CANCELLED";
-  }
+  const normalized = stripAccents(lower);
+  const wantsPause = /\b(en\s+pausa|pausa|mas\s+adelante|m[aá]s\s+adelante|por\s+ahora\s+no)\b/.test(normalized);
+  const wantsReschedule =
+    /\b(reagend|reagendar|reprogram|reprogramar|cambiar|cambio|modificar|mover|cancelar|cancelacion|cancelación)\b/.test(
+      normalized,
+    ) && /\b(hora|horario|entrevista)\b/.test(normalized);
 
-  const parsed = parseDayTime(text);
-  if (parsed.day) updates.interviewDay = parsed.day;
-  if (parsed.time) updates.interviewTime = parsed.time;
+  if (isYes && !wantsReschedule && !wantsPause) {
+    statusUpdate = "CONFIRMED";
+  } else if (wantsPause || wantsReschedule || isNo) {
+    statusUpdate = "ON_HOLD";
+  }
 
   if (statusUpdate) {
     updates.interviewStatus = statusUpdate;
@@ -2416,20 +2385,79 @@ function isCancelPending(text: string): boolean {
   return /(cancelar|anular|olvidar)/.test(normalized);
 }
 
-async function refreshPendingBeforeSend(action: AdminPendingAction, text: string, logger: any) {
+async function refreshPendingBeforeSend(
+  action: AdminPendingAction,
+  text: string,
+  app: FastifyInstance,
+  logger: any,
+) {
   if (action.type !== "send_template") return;
   const config = await getSystemConfig();
   const templates = await loadTemplateConfig(logger);
   const parsed = parseLooseSchedule(text.toLowerCase());
+  let convo = await fetchConversationByIdentifier(action.targetWaId, { includeMessages: false });
   if (parsed && action.mode === "INTERVIEW" && (parsed.day || parsed.time || parsed.location)) {
-    await applyConversationInterviewUpdate(action.targetWaId, {
-      interviewDay: parsed.day,
-      interviewTime: parsed.time,
-      interviewLocation: parsed.location,
-      interviewStatus: "PENDING",
-    });
+    if (!convo) {
+      throw new Error("No encontré la conversación para preparar la entrevista.");
+    }
+    if (parsed.day && parsed.time) {
+      const scheduleAttempt = await attemptScheduleInterview({
+        conversationId: convo.id,
+        contactId: convo.contactId,
+        day: parsed.day,
+        time: parsed.time,
+        location: parsed.location,
+        config,
+      });
+      if (!scheduleAttempt.ok) {
+        const alternativesText =
+          scheduleAttempt.alternatives.length > 0
+            ? `\n\nOpciones:\n${scheduleAttempt.alternatives
+                .map((slot) => `- ${formatSlotHuman(slot)}`)
+                .join("\n")}`
+            : "";
+        throw new Error(`${scheduleAttempt.message}${alternativesText}`);
+      }
+      await prisma.conversation.update({
+        where: { id: convo.id },
+        data: {
+          aiMode: "INTERVIEW",
+          status: "OPEN",
+          interviewDay: scheduleAttempt.slot.day,
+          interviewTime: scheduleAttempt.slot.time,
+          interviewLocation: scheduleAttempt.slot.location,
+          interviewStatus: "PENDING",
+        },
+      });
+      if (scheduleAttempt.kind === "SCHEDULED" || scheduleAttempt.kind === "RESCHEDULED") {
+        await sendAdminNotification({
+          app,
+          eventType:
+            scheduleAttempt.kind === "RESCHEDULED" ? "INTERVIEW_RESCHEDULED" : "INTERVIEW_SCHEDULED",
+          contact: convo.contact,
+          reservationId: scheduleAttempt.reservationId,
+          interviewDay: scheduleAttempt.slot.day,
+          interviewTime: scheduleAttempt.slot.time,
+          interviewLocation: scheduleAttempt.slot.location,
+        });
+      }
+      convo = await fetchConversationByIdentifier(action.targetWaId, { includeMessages: false });
+    } else {
+      await prisma.conversation.update({
+        where: { id: convo.id },
+        data: {
+          aiMode: "INTERVIEW",
+          status: "OPEN",
+          ...(parsed.day ? { interviewDay: parsed.day } : {}),
+          ...(parsed.time ? { interviewTime: parsed.time } : {}),
+          ...(parsed.location ? { interviewLocation: parsed.location } : {}),
+          interviewStatus: "PENDING",
+        },
+      });
+      convo = await fetchConversationByIdentifier(action.targetWaId, { includeMessages: false });
+    }
   }
-  const convo = await fetchConversationByIdentifier(action.targetWaId, { includeMessages: false });
+
   const finalVars = resolveTemplateVariables(
     action.templateName,
     action.variables,
@@ -2604,9 +2632,79 @@ async function executePendingAction(params: {
   if (pendingAction.type === "interview_update") {
     if (!pendingAction.targetWaId) return false;
     try {
-      await applyConversationInterviewUpdate(pendingAction.targetWaId, pendingAction.updates, {
-        app,
-      });
+      const config = await getSystemConfig();
+      const convo = await fetchConversationByIdentifier(pendingAction.targetWaId, { includeMessages: false });
+      if (!convo) {
+        await sendAdminReply(app, adminConversationId, adminWaId, `No encontré la conversación de +${pendingAction.targetWaId}.`);
+        return true;
+      }
+      const day = typeof pendingAction.updates?.interviewDay === "string" ? pendingAction.updates.interviewDay : null;
+      const time = typeof pendingAction.updates?.interviewTime === "string" ? pendingAction.updates.interviewTime : null;
+      const location =
+        typeof pendingAction.updates?.interviewLocation === "string"
+          ? pendingAction.updates.interviewLocation
+          : null;
+
+      if (day && time) {
+        const scheduleAttempt = await attemptScheduleInterview({
+          conversationId: convo.id,
+          contactId: convo.contactId,
+          day,
+          time,
+          location,
+          config,
+        });
+        if (!scheduleAttempt.ok) {
+          const alternativesText =
+            scheduleAttempt.alternatives.length > 0
+              ? `\n\nOpciones:\n${scheduleAttempt.alternatives.map((slot) => `- ${formatSlotHuman(slot)}`).join("\n")}`
+              : "";
+          await sendAdminReply(
+            app,
+            adminConversationId,
+            adminWaId,
+            `${scheduleAttempt.message}${alternativesText}`,
+          );
+          return true;
+        }
+
+        await prisma.conversation.update({
+          where: { id: convo.id },
+          data: {
+            aiMode: "INTERVIEW",
+            status: "OPEN",
+            interviewDay: scheduleAttempt.slot.day,
+            interviewTime: scheduleAttempt.slot.time,
+            interviewLocation: scheduleAttempt.slot.location,
+            interviewStatus: "PENDING",
+          },
+        });
+
+        if (scheduleAttempt.kind === "SCHEDULED" || scheduleAttempt.kind === "RESCHEDULED") {
+          await sendAdminNotification({
+            app,
+            eventType:
+              scheduleAttempt.kind === "RESCHEDULED" ? "INTERVIEW_RESCHEDULED" : "INTERVIEW_SCHEDULED",
+            contact: convo.contact,
+            reservationId: scheduleAttempt.reservationId,
+            interviewDay: scheduleAttempt.slot.day,
+            interviewTime: scheduleAttempt.slot.time,
+            interviewLocation: scheduleAttempt.slot.location,
+          });
+        }
+      } else {
+        await prisma.conversation.update({
+          where: { id: convo.id },
+          data: {
+            aiMode: "INTERVIEW",
+            status: "OPEN",
+            ...(day ? { interviewDay: day } : {}),
+            ...(time ? { interviewTime: time } : {}),
+            ...(location ? { interviewLocation: location } : {}),
+            interviewStatus: "PENDING",
+          },
+        });
+      }
       const templates = await loadTemplateConfig(app.log);
       const templateName =
         templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE;
@@ -2772,7 +2870,18 @@ async function handleAdminPendingAction(
     pending.needsConfirmation &&
     (isConfirmSend(trimmed) || /^(si|sí|ok|dale|confirmo)/i.test(trimmed))
   ) {
-    await refreshPendingBeforeSend(pending, text, app.log);
+    try {
+      await refreshPendingBeforeSend(pending, text, app, app.log);
+      await saveAdminPendingAction(adminConversationId, pending);
+    } catch (err: any) {
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        err?.message || "No pude preparar el envío. Intenta de nuevo.",
+      );
+      return true;
+    }
     const executed = await executePendingAction({
       app,
       adminConversationId,
@@ -2994,17 +3103,61 @@ async function handleAdminPendingAction(
 
   const parsedInterview = parseInterviewInstruction(trimmed);
   if (parsedInterview && lastCandidateWaId) {
-    await applyConversationInterviewUpdate(
-      lastCandidateWaId,
-      {
-        interviewDay: parsedInterview.day,
-        interviewTime: parsedInterview.time,
-        interviewLocation: parsedInterview.location,
+    const convo = await fetchConversationByIdentifier(lastCandidateWaId, { includeMessages: false });
+    if (!convo) {
+      await sendAdminReply(app, adminConversationId, adminWaId, `No encontré la conversación de +${lastCandidateWaId}.`);
+      return true;
+    }
+
+    const scheduleAttempt = await attemptScheduleInterview({
+      conversationId: convo.id,
+      contactId: convo.contactId,
+      day: parsedInterview.day,
+      time: parsedInterview.time,
+      location: parsedInterview.location,
+      config,
+    });
+
+    if (!scheduleAttempt.ok) {
+      const alternativesText =
+        scheduleAttempt.alternatives.length > 0
+          ? `\n\nOpciones:\n${scheduleAttempt.alternatives
+              .map((slot) => `- ${formatSlotHuman(slot)}`)
+              .join("\n")}\n\nResponde con una opción (ej: "martes 13:30 en Providencia").`
+          : "";
+      await sendAdminReply(
+        app,
+        adminConversationId,
+        adminWaId,
+        `${scheduleAttempt.message}${alternativesText}`,
+      );
+      return true;
+    }
+
+    await prisma.conversation.update({
+      where: { id: convo.id },
+      data: {
+        aiMode: "INTERVIEW",
+        status: "OPEN",
+        interviewDay: scheduleAttempt.slot.day,
+        interviewTime: scheduleAttempt.slot.time,
+        interviewLocation: scheduleAttempt.slot.location,
         interviewStatus: "PENDING",
       },
-      { app },
-    );
-    const convo = await fetchConversationByIdentifier(lastCandidateWaId, { includeMessages: false });
+    });
+
+    if (scheduleAttempt.kind === "SCHEDULED" || scheduleAttempt.kind === "RESCHEDULED") {
+      await sendAdminNotification({
+        app,
+        eventType: scheduleAttempt.kind === "RESCHEDULED" ? "INTERVIEW_RESCHEDULED" : "INTERVIEW_SCHEDULED",
+        contact: convo.contact,
+        reservationId: scheduleAttempt.reservationId,
+        interviewDay: scheduleAttempt.slot.day,
+        interviewTime: scheduleAttempt.slot.time,
+        interviewLocation: scheduleAttempt.slot.location,
+      });
+    }
+
     const templates = await loadTemplateConfig(app.log);
     const templateName = templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE;
     await prisma.conversation.update({
@@ -3024,13 +3177,13 @@ async function handleAdminPendingAction(
       needsConfirmation: true,
       mode: "INTERVIEW",
     });
-    const locationText = parsedInterview.location || "Te enviaremos la dirección exacta por este medio.";
+    const locationText = scheduleAttempt.slot.location || "Te enviaremos la dirección exacta por este medio.";
     await sendAdminReply(
       app,
       adminConversationId,
       adminWaId,
-      `Actualicé a modo Entrevista: ${parsedInterview.day || "día por definir"} a ${
-        parsedInterview.time || "hora por definir"
+      `Agendé entrevista: ${scheduleAttempt.slot.day || "día por definir"} a ${
+        scheduleAttempt.slot.time || "hora por definir"
       } en ${locationText}. ¿Deseas que envíe la plantilla de entrevista? Responde CONFIRMAR ENVÍO.`,
     );
     return true;
@@ -3187,7 +3340,13 @@ async function applyConversationInterviewUpdate(
         : convo.interviewLocation,
     interviewStatus: nextStatus,
   };
-  if (!convo.isAdmin && (nextStatus === "CONFIRMED" || updates.interviewDay || updates.interviewTime)) {
+  if (
+    !convo.isAdmin &&
+    (nextStatus === "CONFIRMED" ||
+      nextStatus === "ON_HOLD" ||
+      updates.interviewDay ||
+      updates.interviewTime)
+  ) {
     data.status = "OPEN";
   }
   await prisma.conversation.update({
@@ -3196,28 +3355,48 @@ async function applyConversationInterviewUpdate(
   });
 
   if (opts?.app && convo.contact && !convo.isAdmin) {
-    const scheduleChanged =
-      (data.interviewDay || null) !== previous.interviewDay ||
-      (data.interviewTime || null) !== previous.interviewTime ||
-      (data.interviewLocation || null) !== previous.interviewLocation;
     const statusBecameConfirmed =
       nextStatus === "CONFIRMED" && previous.interviewStatus !== "CONFIRMED";
-    const hasCompleteSchedule = Boolean(data.interviewDay && data.interviewTime);
+    const statusBecameCancelled =
+      nextStatus === "CANCELLED" && previous.interviewStatus !== "CANCELLED";
+    const statusBecameOnHold =
+      nextStatus === "ON_HOLD" && previous.interviewStatus !== "ON_HOLD";
 
     if (statusBecameConfirmed) {
+      const reservationUpdate = await confirmActiveReservation(convo.id);
       await sendAdminNotification({
         app: opts.app,
         eventType: "INTERVIEW_CONFIRMED",
         contact: convo.contact,
+        reservationId: reservationUpdate.reservationId,
         interviewDay: data.interviewDay,
         interviewTime: data.interviewTime,
         interviewLocation: data.interviewLocation,
       });
-    } else if (scheduleChanged && nextStatus !== "CONFIRMED" && hasCompleteSchedule) {
+    } else if (statusBecameCancelled) {
+      const reservationUpdate = await releaseActiveReservation({
+        conversationId: convo.id,
+        status: "CANCELLED",
+      });
       await sendAdminNotification({
         app: opts.app,
-        eventType: "INTERVIEW_SCHEDULED",
+        eventType: "INTERVIEW_CANCELLED",
         contact: convo.contact,
+        reservationId: reservationUpdate.reservationId,
+        interviewDay: data.interviewDay,
+        interviewTime: data.interviewTime,
+        interviewLocation: data.interviewLocation,
+      });
+    } else if (statusBecameOnHold) {
+      const reservationUpdate = await releaseActiveReservation({
+        conversationId: convo.id,
+        status: "ON_HOLD",
+      });
+      await sendAdminNotification({
+        app: opts.app,
+        eventType: "INTERVIEW_ON_HOLD",
+        contact: convo.contact,
+        reservationId: reservationUpdate.reservationId,
         interviewDay: data.interviewDay,
         interviewTime: data.interviewTime,
         interviewLocation: data.interviewLocation,

@@ -41,6 +41,14 @@ interface InterviewAiConfigResponse {
   model: string;
 }
 
+interface InterviewScheduleConfigResponse {
+  interviewTimezone: string;
+  interviewSlotMinutes: number;
+  interviewWeeklyAvailability: string;
+  interviewExceptions: string;
+  interviewLocations: string;
+}
+
 interface TemplatesConfigResponse {
   templateInterviewInvite: string;
   templateGeneralFollowup: string;
@@ -113,6 +121,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [resetStatus, setResetStatus] = useState<string | null>(null);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [interviewTimezone, setInterviewTimezone] = useState('America/Santiago');
+  const [interviewSlotMinutes, setInterviewSlotMinutes] = useState(30);
+  const [interviewWeeklyAvailability, setInterviewWeeklyAvailability] = useState('');
+  const [interviewExceptions, setInterviewExceptions] = useState('[]');
+  const [interviewLocations, setInterviewLocations] = useState('');
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  const [scheduleStatus, setScheduleStatus] = useState<string | null>(null);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   const getModelOptions = (current: string) => {
     const base = ['gpt-4.1-mini', 'gpt-5-chat-latest'];
     return base.includes(current) ? base : [...base, current];
@@ -122,13 +138,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     const loadAll = async () => {
       setLoading(true);
       try {
-        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, templates] = await Promise.all([
+        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, schedule, templates] = await Promise.all([
           apiClient.get('/api/config/whatsapp') as Promise<WhatsappConfigResponse>,
           apiClient.get('/api/config/ai') as Promise<AiConfigResponse>,
           apiClient.get('/api/config/admin-account') as Promise<AdminAccountResponse>,
           apiClient.get('/api/config/ai-prompt') as Promise<AiPromptResponse>,
           apiClient.get('/api/config/admin-ai') as Promise<AdminAiConfigResponse>,
           apiClient.get('/api/config/interview-ai') as Promise<InterviewAiConfigResponse>,
+          apiClient.get('/api/config/interview-schedule') as Promise<InterviewScheduleConfigResponse>,
           apiClient.get('/api/config/templates') as Promise<TemplatesConfigResponse>
         ]);
 
@@ -151,6 +168,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setAdminAiModel(adminAi.model || 'gpt-4.1-mini');
         setInterviewAiPrompt(interviewAi.prompt || '');
         setInterviewAiModel(interviewAi.model || 'gpt-4.1-mini');
+        setInterviewTimezone(schedule.interviewTimezone || 'America/Santiago');
+        setInterviewSlotMinutes(schedule.interviewSlotMinutes || 30);
+        setInterviewWeeklyAvailability(schedule.interviewWeeklyAvailability || '');
+        setInterviewExceptions(schedule.interviewExceptions || '[]');
+        setInterviewLocations(schedule.interviewLocations || '');
         setTemplateInterviewInvite(templates.templateInterviewInvite || '');
         setTemplateGeneralFollowup(templates.templateGeneralFollowup || '');
         setTemplateLanguageCode(templates.templateLanguageCode || 'es_CL');
@@ -325,6 +347,27 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       setInterviewAiError(err.message || 'No se pudo guardar la IA entrevistador');
     } finally {
       setSavingInterviewAi(false);
+    }
+  };
+
+  const handleSaveInterviewSchedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingSchedule(true);
+    setScheduleStatus(null);
+    setScheduleError(null);
+    try {
+      await apiClient.put('/api/config/interview-schedule', {
+        interviewTimezone: interviewTimezone.trim() || null,
+        interviewSlotMinutes: Number.isFinite(interviewSlotMinutes) ? interviewSlotMinutes : null,
+        interviewWeeklyAvailability: interviewWeeklyAvailability.trim() || null,
+        interviewExceptions: interviewExceptions.trim() || null,
+        interviewLocations: interviewLocations.trim() || null
+      });
+      setScheduleStatus('Disponibilidad guardada');
+    } catch (err: any) {
+      setScheduleError(err.message || 'No se pudo guardar la disponibilidad');
+    } finally {
+      setSavingSchedule(false);
     }
   };
 
@@ -672,6 +715,72 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
                 >
                   {savingInterviewAi ? 'Guardando...' : 'Guardar IA Entrevista'}
+                </button>
+              </form>
+            </section>
+
+            <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <h2>Agenda / Disponibilidad</h2>
+              <p style={{ color: '#666', marginBottom: 16 }}>
+                Configura disponibilidad para evitar double-booking. Disponibilidad/ubicaciones/excepciones se guardan como JSON.
+              </p>
+              <form onSubmit={handleSaveInterviewSchedule} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label>
+                  <div>Timezone</div>
+                  <input
+                    type="text"
+                    value={interviewTimezone}
+                    onChange={e => setInterviewTimezone(e.target.value)}
+                    placeholder="ej: America/Santiago"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label>
+                  <div>Duración slot (min)</div>
+                  <input
+                    type="number"
+                    value={interviewSlotMinutes}
+                    onChange={e => setInterviewSlotMinutes(parseInt(e.target.value, 10) || 0)}
+                    min={5}
+                    max={240}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label>
+                  <div>Ubicaciones (JSON)</div>
+                  <textarea
+                    value={interviewLocations}
+                    onChange={e => setInterviewLocations(e.target.value)}
+                    placeholder='["Providencia","Online"]'
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 64 }}
+                  />
+                </label>
+                <label>
+                  <div>Disponibilidad semanal (JSON)</div>
+                  <textarea
+                    value={interviewWeeklyAvailability}
+                    onChange={e => setInterviewWeeklyAvailability(e.target.value)}
+                    placeholder='{"lunes":[{"start":"09:00","end":"18:00"}],"martes":[{"start":"09:00","end":"18:00"}]}'
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 120 }}
+                  />
+                </label>
+                <label>
+                  <div>Excepciones (JSON)</div>
+                  <textarea
+                    value={interviewExceptions}
+                    onChange={e => setInterviewExceptions(e.target.value)}
+                    placeholder='["2025-12-25"]'
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 64 }}
+                  />
+                </label>
+                {scheduleStatus && <p style={{ color: 'green' }}>{scheduleStatus}</p>}
+                {scheduleError && <p style={{ color: 'red' }}>{scheduleError}</p>}
+                <button
+                  type="submit"
+                  disabled={savingSchedule}
+                  style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
+                >
+                  {savingSchedule ? 'Guardando...' : 'Guardar disponibilidad'}
                 </button>
               </form>
             </section>
