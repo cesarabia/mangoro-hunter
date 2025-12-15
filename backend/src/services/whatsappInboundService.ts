@@ -2619,10 +2619,11 @@ async function maybeUpdateContactName(
   if (contact.candidateName && isSuspiciousCandidateName(contact.candidateName)) {
     updates.candidateName = null;
   }
-  const display = normalizeName(profileName);
-  if (display && display !== contact.displayName) {
-    updates.displayName = display;
+  const displayFromProfile = normalizeName(profileName);
+  if (displayFromProfile && displayFromProfile !== contact.displayName) {
+    updates.displayName = displayFromProfile;
   }
+  const display = displayFromProfile || normalizeName(contact.displayName || null);
   const existingCandidate = contact.candidateName?.trim() || null;
   const labeledParts = extractLabeledNameParts(fallbackText);
   const candidateFromLabels = buildCandidateNameFromLabels({
