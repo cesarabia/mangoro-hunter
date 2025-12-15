@@ -604,12 +604,18 @@ export async function maybeSendAutoReply(
         (m) => m.direction === "INBOUND",
       );
       const assessment = assessRecruitmentReadiness(conversation.contact, inboundMessages);
-      const alreadyClosed = (conversation.messages || []).some(
-        (m) =>
-          m.direction === "OUTBOUND" &&
-          typeof m.text === "string" &&
-          stripAccents(m.text).toLowerCase().includes("equipo revis"),
-      );
+      const alreadyClosed = (conversation.messages || []).some((m) => {
+        if (m.direction !== "OUTBOUND" || typeof m.text !== "string") return false;
+        const normalized = stripAccents(m.text).toLowerCase();
+        if (normalized.includes("ya tenemos los datos minimo") || normalized.includes("ya tenemos los datos minimos")) {
+          return true;
+        }
+        if (normalized.includes("ya registre tu postulacion") || normalized.includes("ya registraste tu postulacion")) {
+          return true;
+        }
+        if (normalized.includes("equipo revisara tu postulacion")) return true;
+        return false;
+      });
 
       const lastInbound = inboundMessages.slice(-1)[0];
       const lastInboundText = (lastInbound?.transcriptText || lastInbound?.text || "").trim();
