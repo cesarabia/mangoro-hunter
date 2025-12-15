@@ -27,6 +27,8 @@ interface AdminAccountResponse {
 interface AiPromptResponse {
   aiPrompt: string;
   aiModel?: string;
+  jobSheet?: string | null;
+  faq?: string | null;
 }
 
 interface AdminAiConfigResponse {
@@ -65,6 +67,11 @@ interface SalesAiConfigResponse {
   knowledgeBase: string;
   hasCustomPrompt: boolean;
   hasCustomKnowledgeBase: boolean;
+}
+
+interface AdminNotificationsConfigResponse {
+  detailLevel: string;
+  templates: Record<string, string>;
 }
 
 type WeekdayKey = 'lunes' | 'martes' | 'miercoles' | 'jueves' | 'viernes' | 'sabado' | 'domingo';
@@ -190,6 +197,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [aiPromptStatus, setAiPromptStatus] = useState<string | null>(null);
   const [aiPromptError, setAiPromptError] = useState<string | null>(null);
   const [savingAiPrompt, setSavingAiPrompt] = useState(false);
+  const [recruitJobSheet, setRecruitJobSheet] = useState('');
+  const [recruitFaq, setRecruitFaq] = useState('');
   const [adminAiPrompt, setAdminAiPrompt] = useState('');
   const [adminAiModel, setAdminAiModel] = useState('gpt-4.1-mini');
   const [savingAdminAi, setSavingAdminAi] = useState(false);
@@ -233,6 +242,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [salesAiStatus, setSalesAiStatus] = useState<string | null>(null);
   const [salesAiError, setSalesAiError] = useState<string | null>(null);
 
+  const [adminNotifDetailLevel, setAdminNotifDetailLevel] = useState('MEDIUM');
+  const [notifRecruitReady, setNotifRecruitReady] = useState('');
+  const [notifInterviewScheduled, setNotifInterviewScheduled] = useState('');
+  const [notifInterviewConfirmed, setNotifInterviewConfirmed] = useState('');
+  const [notifInterviewOnHold, setNotifInterviewOnHold] = useState('');
+  const [notifSellerDailySummary, setNotifSellerDailySummary] = useState('');
+  const [savingAdminNotifs, setSavingAdminNotifs] = useState(false);
+  const [adminNotifsStatus, setAdminNotifsStatus] = useState<string | null>(null);
+  const [adminNotifsError, setAdminNotifsError] = useState<string | null>(null);
+
   const [cleanupPanelOpen, setCleanupPanelOpen] = useState(false);
   const [cleanupConfirmText, setCleanupConfirmText] = useState('');
   const [cleaning, setCleaning] = useState(false);
@@ -248,7 +267,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     const loadAll = async () => {
       setLoading(true);
       try {
-        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, salesAi, schedule, templates] = await Promise.all([
+        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, salesAi, adminNotifs, schedule, templates] = await Promise.all([
           apiClient.get('/api/config/whatsapp') as Promise<WhatsappConfigResponse>,
           apiClient.get('/api/config/ai') as Promise<AiConfigResponse>,
           apiClient.get('/api/config/admin-account') as Promise<AdminAccountResponse>,
@@ -256,6 +275,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
           apiClient.get('/api/config/admin-ai') as Promise<AdminAiConfigResponse>,
           apiClient.get('/api/config/interview-ai') as Promise<InterviewAiConfigResponse>,
           apiClient.get('/api/config/sales-ai') as Promise<SalesAiConfigResponse>,
+          apiClient.get('/api/config/admin-notifications') as Promise<AdminNotificationsConfigResponse>,
           apiClient.get('/api/config/interview-schedule') as Promise<InterviewScheduleConfigResponse>,
           apiClient.get('/api/config/templates') as Promise<TemplatesConfigResponse>
         ]);
@@ -275,12 +295,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setAdminEmail(admin.adminEmail || 'admin@example.com');
         setAiPrompt(aiPromptRes.aiPrompt || defaultAiPrompt);
         setAiModel(aiPromptRes.aiModel || ai.aiModel || 'gpt-4.1-mini');
+        setRecruitJobSheet((aiPromptRes.jobSheet || '').toString());
+        setRecruitFaq((aiPromptRes.faq || '').toString());
         setAdminAiPrompt(adminAi.prompt || '');
         setAdminAiModel(adminAi.model || 'gpt-4.1-mini');
         setInterviewAiPrompt(interviewAi.prompt || '');
         setInterviewAiModel(interviewAi.model || 'gpt-4.1-mini');
         setSalesAiPrompt(salesAi.prompt || '');
         setSalesKnowledgeBase(salesAi.knowledgeBase || '');
+        setAdminNotifDetailLevel((adminNotifs.detailLevel || 'MEDIUM').toUpperCase());
+        setNotifRecruitReady(adminNotifs.templates?.RECRUIT_READY || '');
+        setNotifInterviewScheduled(adminNotifs.templates?.INTERVIEW_SCHEDULED || '');
+        setNotifInterviewConfirmed(adminNotifs.templates?.INTERVIEW_CONFIRMED || '');
+        setNotifInterviewOnHold(adminNotifs.templates?.INTERVIEW_ON_HOLD || '');
+        setNotifSellerDailySummary(adminNotifs.templates?.SELLER_DAILY_SUMMARY || '');
         setInterviewTimezone(schedule.interviewTimezone || 'America/Santiago');
         setInterviewSlotMinutes(schedule.interviewSlotMinutes || 30);
         setInterviewLocationsList(parseLocations(schedule.interviewLocations || ''));
@@ -392,12 +420,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     try {
       const res = (await apiClient.put('/api/config/ai-prompt', {
         aiPrompt: aiPrompt.trim() || null,
-        aiModel
+        aiModel,
+        jobSheet: recruitJobSheet.trim() || null,
+        faq: recruitFaq.trim() || null
       })) as AiPromptResponse;
       setAiPrompt(res.aiPrompt);
       if (res.aiModel) {
         setAiModel(res.aiModel);
       }
+      setRecruitJobSheet((res.jobSheet || '').toString());
+      setRecruitFaq((res.faq || '').toString());
       setAiPromptStatus('Prompt actualizado');
     } catch (err: any) {
       setAiPromptError(err.message || 'No se pudo guardar el prompt');
@@ -451,6 +483,36 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       setCleanupError(err.message || 'No se pudo limpiar datos de prueba');
     } finally {
       setCleaning(false);
+    }
+  };
+
+  const handleSaveAdminNotifications = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingAdminNotifs(true);
+    setAdminNotifsStatus(null);
+    setAdminNotifsError(null);
+    try {
+      const res = (await apiClient.put('/api/config/admin-notifications', {
+        detailLevel: adminNotifDetailLevel,
+        templates: {
+          RECRUIT_READY: notifRecruitReady,
+          INTERVIEW_SCHEDULED: notifInterviewScheduled,
+          INTERVIEW_CONFIRMED: notifInterviewConfirmed,
+          INTERVIEW_ON_HOLD: notifInterviewOnHold,
+          SELLER_DAILY_SUMMARY: notifSellerDailySummary
+        }
+      })) as AdminNotificationsConfigResponse;
+      setAdminNotifDetailLevel((res.detailLevel || 'MEDIUM').toUpperCase());
+      setNotifRecruitReady(res.templates?.RECRUIT_READY || '');
+      setNotifInterviewScheduled(res.templates?.INTERVIEW_SCHEDULED || '');
+      setNotifInterviewConfirmed(res.templates?.INTERVIEW_CONFIRMED || '');
+      setNotifInterviewOnHold(res.templates?.INTERVIEW_ON_HOLD || '');
+      setNotifSellerDailySummary(res.templates?.SELLER_DAILY_SUMMARY || '');
+      setAdminNotifsStatus('Notificaciones guardadas');
+    } catch (err: any) {
+      setAdminNotifsError(err.message || 'No se pudo guardar la configuración');
+    } finally {
+      setSavingAdminNotifs(false);
     }
   };
 
@@ -832,6 +894,24 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   />
                 </label>
                 <label>
+                  <div>Ficha del cargo (para responder “quiero info”)</div>
+                  <textarea
+                    value={recruitJobSheet}
+                    onChange={e => setRecruitJobSheet(e.target.value)}
+                    placeholder="Ej:\nCargo: Vendedor/a\n- Modalidad: terreno\n- Requisitos: experiencia en ventas\n- Proceso: revisamos y contactamos por WhatsApp"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 120 }}
+                  />
+                </label>
+                <label>
+                  <div>FAQ breve (opcional)</div>
+                  <textarea
+                    value={recruitFaq}
+                    onChange={e => setRecruitFaq(e.target.value)}
+                    placeholder="Ej:\n- ¿Cómo postulo?\n- ¿Qué necesito enviar?\n- ¿En cuánto responden?"
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 90 }}
+                  />
+                </label>
+                <label>
                   <div>Modelo</div>
                   <select
                     value={aiModel}
@@ -894,6 +974,76 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
                 >
                   {savingAdminAi ? 'Guardando...' : 'Guardar IA Admin'}
+                </button>
+              </form>
+            </section>
+
+            <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <h2>Notificaciones Admin</h2>
+              <form onSubmit={handleSaveAdminNotifications} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label>
+                  <div>Nivel de detalle</div>
+                  <select
+                    value={adminNotifDetailLevel}
+                    onChange={e => setAdminNotifDetailLevel(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  >
+                    <option value="SHORT">Corto</option>
+                    <option value="MEDIUM">Medio</option>
+                    <option value="DETAILED">Detallado</option>
+                  </select>
+                </label>
+                <small style={{ color: '#666' }}>
+                  Placeholders: {'{{name}}'}, {'{{phone}}'}, {'{{summary}}'}, {'{{when}}'}, {'{{interviewDay}}'}, {'{{interviewTime}}'}, {'{{interviewLocation}}'}, {'{{recommendation}}'}.
+                </small>
+                <label>
+                  <div>Template RECRUIT_READY</div>
+                  <textarea
+                    value={notifRecruitReady}
+                    onChange={e => setNotifRecruitReady(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 110 }}
+                  />
+                </label>
+                <label>
+                  <div>Template INTERVIEW_SCHEDULED</div>
+                  <textarea
+                    value={notifInterviewScheduled}
+                    onChange={e => setNotifInterviewScheduled(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 90 }}
+                  />
+                </label>
+                <label>
+                  <div>Template INTERVIEW_CONFIRMED</div>
+                  <textarea
+                    value={notifInterviewConfirmed}
+                    onChange={e => setNotifInterviewConfirmed(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 80 }}
+                  />
+                </label>
+                <label>
+                  <div>Template INTERVIEW_ON_HOLD</div>
+                  <textarea
+                    value={notifInterviewOnHold}
+                    onChange={e => setNotifInterviewOnHold(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 80 }}
+                  />
+                </label>
+                <label>
+                  <div>Template SELLER_DAILY_SUMMARY</div>
+                  <textarea
+                    value={notifSellerDailySummary}
+                    onChange={e => setNotifSellerDailySummary(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc', minHeight: 110 }}
+                  />
+                </label>
+                {adminNotifsStatus && <p style={{ color: 'green' }}>{adminNotifsStatus}</p>}
+                {adminNotifsError && <p style={{ color: 'red' }}>{adminNotifsError}</p>}
+                <button
+                  type="submit"
+                  disabled={savingAdminNotifs}
+                  style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
+                >
+                  {savingAdminNotifs ? 'Guardando...' : 'Guardar notificaciones'}
                 </button>
               </form>
             </section>

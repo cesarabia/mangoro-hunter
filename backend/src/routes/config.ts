@@ -14,6 +14,8 @@ import {
   DEFAULT_INTERVIEW_AI_MODEL,
   DEFAULT_SALES_AI_PROMPT,
   DEFAULT_SALES_KNOWLEDGE_BASE,
+  DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL,
+  DEFAULT_ADMIN_NOTIFICATION_TEMPLATES,
   DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
   DEFAULT_TEMPLATE_INTERVIEW_INVITE,
   DEFAULT_TEMPLATE_LANGUAGE_CODE,
@@ -30,7 +32,11 @@ import {
   DEFAULT_TEST_PHONE_NUMBER,
   updateInterviewScheduleConfig,
   updateSalesAiConfig,
-  updateAiModel
+  updateAiModel,
+  updateRecruitmentContent,
+  updateAdminNotificationConfig,
+  DEFAULT_RECRUIT_JOB_SHEET,
+  DEFAULT_RECRUIT_FAQ
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
@@ -278,12 +284,16 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!config) {
       return {
         aiPrompt: DEFAULT_AI_PROMPT,
-        aiModel: DEFAULT_AI_MODEL
+        aiModel: DEFAULT_AI_MODEL,
+        jobSheet: DEFAULT_RECRUIT_JOB_SHEET,
+        faq: DEFAULT_RECRUIT_FAQ
       };
     }
     return {
       aiPrompt: config.aiPrompt || DEFAULT_AI_PROMPT,
-      aiModel: config.aiModel || DEFAULT_AI_MODEL
+      aiModel: config.aiModel || DEFAULT_AI_MODEL,
+      jobSheet: (config as any).recruitJobSheet || DEFAULT_RECRUIT_JOB_SHEET,
+      faq: typeof (config as any).recruitFaq === 'string' ? (config as any).recruitFaq : DEFAULT_RECRUIT_FAQ
     };
   });
 
@@ -292,19 +302,29 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const body = request.body as { aiPrompt?: string | null; aiModel?: string | null };
+    const body = request.body as { aiPrompt?: string | null; aiModel?: string | null; jobSheet?: string | null; faq?: string | null };
     const updated = await executeUpdate(reply, async () => {
-      const cfg = await updateAiPrompt(body?.aiPrompt ?? null);
+      if (typeof body?.aiPrompt !== 'undefined') {
+        await updateAiPrompt(body.aiPrompt ?? null);
+      }
       if (typeof body?.aiModel !== 'undefined') {
         await updateAiModel(body.aiModel ?? null);
       }
-      return cfg;
+      if (typeof body?.jobSheet !== 'undefined' || typeof body?.faq !== 'undefined') {
+        await updateRecruitmentContent({
+          jobSheet: typeof body?.jobSheet === 'undefined' ? undefined : body.jobSheet ?? null,
+          faq: typeof body?.faq === 'undefined' ? undefined : body.faq ?? null
+        });
+      }
+      return await getSystemConfig();
     });
     if (!updated) return;
     const fresh = await getSystemConfig();
     return {
       aiPrompt: fresh.aiPrompt || DEFAULT_AI_PROMPT,
-      aiModel: fresh.aiModel || DEFAULT_AI_MODEL
+      aiModel: fresh.aiModel || DEFAULT_AI_MODEL,
+      jobSheet: (fresh as any).recruitJobSheet || DEFAULT_RECRUIT_JOB_SHEET,
+      faq: typeof (fresh as any).recruitFaq === 'string' ? (fresh as any).recruitFaq : DEFAULT_RECRUIT_FAQ
     };
   });
 
@@ -417,6 +437,89 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       knowledgeBase: updated.salesKnowledgeBase || DEFAULT_SALES_KNOWLEDGE_BASE,
       hasCustomPrompt: Boolean(updated.salesAiPrompt),
       hasCustomKnowledgeBase: Boolean(updated.salesKnowledgeBase)
+    };
+  });
+
+  app.get('/admin-notifications', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const config = await loadConfigSafe(request);
+    const templatesRaw = config?.adminNotificationTemplates || DEFAULT_ADMIN_NOTIFICATION_TEMPLATES;
+    let templatesParsed: any = null;
+    try {
+      templatesParsed = JSON.parse(templatesRaw);
+    } catch {
+      templatesParsed = null;
+    }
+    const templates =
+      templatesParsed && typeof templatesParsed === 'object' && !Array.isArray(templatesParsed)
+        ? templatesParsed
+        : JSON.parse(DEFAULT_ADMIN_NOTIFICATION_TEMPLATES);
+
+    return {
+      detailLevel: config?.adminNotificationDetailLevel || DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL,
+      templates
+    };
+  });
+
+  app.put('/admin-notifications', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const body = request.body as { detailLevel?: string | null; templates?: any };
+    const allowedLevels = new Set(['SHORT', 'MEDIUM', 'DETAILED']);
+    if (typeof body?.detailLevel === 'string') {
+      const level = body.detailLevel.trim().toUpperCase();
+      if (!allowedLevels.has(level)) {
+        return reply.code(400).send({ error: 'Nivel inválido. Usa SHORT, MEDIUM o DETAILED.' });
+      }
+    }
+
+    if (typeof body?.templates !== 'undefined') {
+      if (!body.templates || typeof body.templates !== 'object' || Array.isArray(body.templates)) {
+        return reply.code(400).send({ error: 'Templates debe ser un objeto JSON (clave -> texto).' });
+      }
+      for (const [key, value] of Object.entries(body.templates)) {
+        if (typeof key !== 'string' || typeof value !== 'string') {
+          return reply.code(400).send({ error: 'Templates inválidos: cada template debe ser un string.' });
+        }
+      }
+    }
+
+    const updated = await executeUpdate(reply, () =>
+      updateAdminNotificationConfig({
+        detailLevel:
+          typeof body?.detailLevel === 'undefined'
+            ? undefined
+            : body.detailLevel
+              ? body.detailLevel.trim().toUpperCase()
+              : null,
+        templates:
+          typeof body?.templates === 'undefined'
+            ? undefined
+            : serializeJson(body.templates)
+      })
+    );
+    if (!updated) return;
+
+    const fresh = await getSystemConfig();
+    let templatesParsed: any = null;
+    try {
+      templatesParsed = fresh.adminNotificationTemplates ? JSON.parse(fresh.adminNotificationTemplates) : null;
+    } catch {
+      templatesParsed = null;
+    }
+    const templates =
+      templatesParsed && typeof templatesParsed === 'object' && !Array.isArray(templatesParsed)
+        ? templatesParsed
+        : JSON.parse(DEFAULT_ADMIN_NOTIFICATION_TEMPLATES);
+
+    return {
+      detailLevel: fresh.adminNotificationDetailLevel || DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL,
+      templates
     };
   });
 

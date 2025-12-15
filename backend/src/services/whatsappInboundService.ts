@@ -15,11 +15,13 @@ import {
   updateAdminAiConfig,
   normalizeModelId,
   DEFAULT_TEMPLATE_INTERVIEW_INVITE,
+  DEFAULT_RECRUIT_JOB_SHEET,
   DEFAULT_SALES_AI_PROMPT,
   DEFAULT_SALES_KNOWLEDGE_BASE,
 } from "./configService";
 import { DEFAULT_AI_PROMPT } from "../constants/ai";
 import { serializeJson } from "../utils/json";
+import { getContactDisplayName } from "../utils/contactDisplay";
 import { getEffectiveOpenAiKey, getSuggestedReply } from "./aiService";
 import { sendWhatsAppText, SendResult } from "./whatsappMessageService";
 import { processAdminCommand, fetchConversationByIdentifier, setConversationStatusByWaId } from "./whatsappAdminCommandService";
@@ -402,6 +404,24 @@ export async function handleInboundWhatsAppMessage(
       return { conversationId: adminThread.conversation.id };
     }
 
+    if (isAdminRecruitmentSummaryRequest(trimmedEffective)) {
+      const result = await buildAdminRecruitmentSummaryReply({
+        adminConversationId: adminThread.conversation.id,
+        text: trimmedEffective,
+        lastCandidateWaId: adminThread.conversation.adminLastCandidateWaId || null,
+        config,
+      });
+      if (result.resolvedWaId) {
+        await prisma.conversation.update({
+          where: { id: adminThread.conversation.id },
+          data: { adminLastCandidateWaId: result.resolvedWaId },
+        });
+        adminThread.conversation.adminLastCandidateWaId = result.resolvedWaId;
+      }
+      await sendAdminReply(app, adminThread.conversation.id, waId, result.replyText);
+      return { conversationId: adminThread.conversation.id };
+    }
+
     const aiResponse = await generateAdminAiResponse(app, {
       waId,
       text: effectiveText || "",
@@ -590,6 +610,92 @@ export async function maybeSendAutoReply(
           typeof m.text === "string" &&
           stripAccents(m.text).toLowerCase().includes("equipo revis"),
       );
+
+      const lastInbound = inboundMessages.slice(-1)[0];
+      const lastInboundText = (lastInbound?.transcriptText || lastInbound?.text || "").trim();
+      const lastOutbound = (conversation.messages || []).filter((m) => m.direction === "OUTBOUND").slice(-1)[0];
+      const lastOutboundText = stripAccents((lastOutbound?.text || "").toLowerCase());
+      const lastOutboundWasInfoMenu =
+        lastOutboundText.includes("quieres 1") &&
+        lastOutboundText.includes("postular") &&
+        lastOutboundText.includes("2") &&
+        lastOutboundText.includes("info");
+      const jobSheet = String((config as any)?.recruitJobSheet || DEFAULT_RECRUIT_JOB_SHEET);
+      const faq = String((config as any)?.recruitFaq || "");
+
+      if (!assessment.ready && !alreadyClosed && lastInboundText) {
+        const missing: string[] = [];
+        if (!assessment.fields.name) missing.push("nombre y apellido");
+        if (!assessment.fields.location) missing.push("comuna/ciudad");
+        if (!assessment.fields.rut) missing.push("RUT");
+        if (!assessment.fields.experience) missing.push("experiencia en ventas (años/rubros/terreno)");
+        if (!assessment.fields.availability) missing.push("disponibilidad");
+
+        const hasOutbound = Boolean(lastOutbound);
+        const isFirstMessage = inboundMessages.length === 1 && !hasOutbound;
+        const wantsApply = isRecruitChoiceOne(lastInboundText) || isRecruitApplyIntent(lastInboundText);
+        const wantsInfo = isRecruitChoiceTwo(lastInboundText) || isRecruitInfoIntent(lastInboundText);
+
+        let replyText: string | null = null;
+        let meta: Record<string, any> | null = null;
+
+        if (lastOutboundWasInfoMenu) {
+          if (isRecruitChoiceOne(lastInboundText)) {
+            replyText = buildRecruitApplyRequestReply();
+            meta = { recruitFlow: "APPLY_REQUEST_FROM_MENU" };
+          } else if (isRecruitChoiceTwo(lastInboundText)) {
+            replyText = buildRecruitInfoFollowupReply(faq);
+            meta = { recruitFlow: "INFO_FOLLOWUP" };
+          }
+        } else if (isFirstMessage && wantsInfo) {
+          replyText = buildRecruitInfoMenuReply(jobSheet);
+          meta = { recruitFlow: "INFO_MENU" };
+        } else if (wantsApply) {
+          // If the candidate hasn't provided any data yet, ask the full one-shot form; otherwise ask only for missing fields.
+          replyText = missing.length >= 5 ? buildRecruitApplyRequestReply() : buildRecruitMissingFieldsReply(missing);
+          meta = { recruitFlow: missing.length >= 5 ? "APPLY_REQUEST" : "MISSING_FIELDS", missing };
+        } else {
+          const hasAnyData =
+            Boolean(assessment.fields.location) ||
+            Boolean(assessment.fields.rut) ||
+            Boolean(assessment.fields.experience) ||
+            Boolean(assessment.fields.availability) ||
+            Boolean(assessment.fields.email);
+          if (hasAnyData && missing.length > 0) {
+            replyText = buildRecruitMissingFieldsReply(missing);
+            meta = { recruitFlow: "MISSING_FIELDS", missing };
+          }
+        }
+
+        if (replyText) {
+          let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+          if (waId) {
+            sendResultRaw = await sendWhatsAppText(waId, replyText);
+          }
+          const normalizedSendResult = {
+            success: sendResultRaw.success,
+            messageId: "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+            error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+          };
+          await prisma.message.create({
+            data: {
+              conversationId,
+              direction: "OUTBOUND",
+              text: replyText,
+              rawPayload: serializeJson({
+                autoReply: true,
+                mode: "RECRUIT",
+                ...(meta || {}),
+                sendResult: normalizedSendResult,
+              }),
+              timestamp: new Date(),
+              read: true,
+            },
+          });
+          return;
+        }
+      }
+
       if (assessment.ready && !alreadyClosed) {
         const name =
           assessment.fields.name ||
@@ -942,6 +1048,15 @@ export async function maybeSendAutoReply(
     let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
     let model: string | undefined =
       normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+    if (mode === "RECRUIT") {
+      const jobSheet = String((config as any)?.recruitJobSheet || "").trim();
+      const faq = String((config as any)?.recruitFaq || "").trim();
+      const jobPart = jobSheet ? `\n\nFicha del cargo (editable):\n${truncateText(jobSheet, 2000)}` : "";
+      const faqPart = faq ? `\n\nFAQ (editable):\n${truncateText(faq, 1500)}` : "";
+      if (jobPart || faqPart) {
+        prompt = `${prompt}${jobPart}${faqPart}`.trim();
+      }
+    }
     if (mode === "INTERVIEW") {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
       prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}\n\n` +
@@ -1043,7 +1158,7 @@ export async function maybeSendAutoReply(
     // Notificación admin: reclutamiento listo cuando estamos en modo RECRUIT y se envía un mensaje de cierre
     const convoForNotif = await prisma.conversation.findUnique({
       where: { id: conversationId },
-      include: { contact: true, messages: { orderBy: { timestamp: "desc" }, take: 5 } },
+      include: { contact: true, messages: { orderBy: { timestamp: "desc" }, take: 60 } },
     });
     if (
       convoForNotif &&
@@ -1051,10 +1166,9 @@ export async function maybeSendAutoReply(
       convoForNotif.aiMode === "RECRUIT" &&
       suggestionText.toLowerCase().includes("equipo revisará")
     ) {
-      const lastInbound = convoForNotif.messages?.find((m) => m.direction === "INBOUND");
-      const summary = lastInbound?.text
-        ? `Último mensaje: ${lastInbound.text.slice(0, 120)}`
-        : "Datos mínimos recibidos.";
+      const inboundMessages = (convoForNotif.messages || []).filter((m) => m.direction === "INBOUND");
+      const assessment = assessRecruitmentReadiness(convoForNotif.contact, inboundMessages);
+      const summary = assessment.summary || "Datos mínimos recibidos.";
       await sendAdminNotification({
         app,
         eventType: "RECRUIT_READY",
@@ -1436,8 +1550,29 @@ function extractExperienceSnippet(text: string): string | null {
   if (!text) return null;
   const lower = text.toLowerCase();
   if (/no tengo experiencia|sin experiencia/.test(lower)) return "sin experiencia";
+
+  const labeled = text.match(/\b(?:experiencia|exp)\s*[:\-]\s*([^\n|]{3,160})/i);
+  if (labeled?.[1]) {
+    return truncateText(labeled[1].replace(/\s+/g, " ").trim(), 110);
+  }
+
   const yearsMatch = text.match(/\b(\d{1,2})\s*(?:año|años)\b/i);
-  if (yearsMatch?.[1]) return `${yearsMatch[1]} años`;
+  const years = yearsMatch?.[1] ? `${yearsMatch[1]} años` : null;
+  const hasTerrain = /\b(terreno|en terreno|puerta a puerta|p2p)\b/i.test(text);
+  const rubroMatch = text.match(/\bventas\s+(?:de|en)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ]{3,30}(?:\s+[A-Za-zÁÉÍÓÚáéíóúÑñ]{3,30})?)/i);
+  const rubros: string[] = [];
+  if (hasTerrain) rubros.push("terreno");
+  if (rubroMatch?.[1]) rubros.push(rubroMatch[1].replace(/\s+/g, " ").trim());
+
+  if (years) {
+    const extra = rubros.length > 0 ? ` (${rubros.join(", ")})` : "";
+    return `${years}${extra}`.trim();
+  }
+
+  if (rubros.length > 0) {
+    return `ventas (${rubros.join(", ")})`;
+  }
+
   if (/experienc/.test(lower)) return "con experiencia";
   if (/trabaj|ventas/.test(lower)) return "menciona trabajo/ventas";
   return null;
@@ -1446,6 +1581,10 @@ function extractExperienceSnippet(text: string): string | null {
 function extractAvailabilitySnippet(text: string): string | null {
   if (!text) return null;
   const lower = text.toLowerCase();
+  const labeled = text.match(/\b(?:disponibilidad|disponible)\s*[:\-]\s*([^\n|]{3,120})/i);
+  if (labeled?.[1]) {
+    return truncateText(labeled[1].replace(/\s+/g, " ").trim(), 90);
+  }
   if (/inmediata|inmediato/.test(lower)) return "inmediata";
   if (/disponibil/.test(lower)) return "menciona disponibilidad";
   if (/full\s*time|part\s*time/.test(lower)) return "full/part time";
@@ -1984,6 +2123,387 @@ function isAdminCommandText(text?: string): boolean {
   return ["/pendientes", "/resumen", "/estado", "/ayuda"].some((cmd) =>
     trimmed.startsWith(cmd),
   );
+}
+
+function isRecruitChoiceOne(text: string): boolean {
+  const normalized = stripAccents(text.trim()).toLowerCase();
+  if (!normalized) return false;
+  return normalized === "1" || normalized.startsWith("1 ") || /\b(postul|postular|postulacion|postulación)\b/.test(normalized);
+}
+
+function isRecruitChoiceTwo(text: string): boolean {
+  const normalized = stripAccents(text.trim()).toLowerCase();
+  if (!normalized) return false;
+  return normalized === "2" || normalized.startsWith("2 ") || /\b(info|informacion|información|detalles|mas info|más info|quiero saber)\b/.test(normalized);
+}
+
+function isRecruitApplyIntent(text: string): boolean {
+  const normalized = stripAccents(text.trim()).toLowerCase();
+  if (!normalized) return false;
+  if (/\b(postul|postular|postulacion|postulación|quiero trabajar|quiero el trabajo|quiero aplicar|me interesa postular)\b/.test(normalized)) {
+    return true;
+  }
+  if (extractChileRut(text) || extractEmail(text)) return true;
+  return false;
+}
+
+function isRecruitInfoIntent(text: string): boolean {
+  const normalized = stripAccents(text.trim()).toLowerCase();
+  if (!normalized) return false;
+  if (isRecruitApplyIntent(text)) return false;
+  if (/^(hola|buenas|buenos dias|buenas tardes|buenas noches)\b/.test(normalized)) return true;
+  return (
+    /\b(info|informacion|información|detalles|de que se trata|de qué se trata|de que trata|de qué trata)\b/.test(normalized) ||
+    /\b(quiero saber|me puedes contar|me podr[íi]as contar)\b/.test(normalized)
+  );
+}
+
+function extractRecruitJobBullets(jobSheet: string): string[] {
+  const lines = (jobSheet || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const bullets = lines
+    .filter((line) => /^[-*•]\s*\S/.test(line))
+    .map((line) => line.replace(/^[-*•]\s*/, "").trim())
+    .filter(Boolean);
+
+  const extra: string[] = [];
+  for (const line of lines) {
+    if (/^cargo\s*:/i.test(line)) continue;
+    if (/^[-*•]\s*\S/.test(line)) continue;
+    extra.push(line);
+  }
+
+  const merged = [...bullets, ...extra]
+    .map((line) => truncateText(line.replace(/\s+/g, " ").trim(), 90))
+    .filter(Boolean);
+
+  const unique: string[] = [];
+  for (const line of merged) {
+    if (!unique.find((item) => stripAccents(item).toLowerCase() === stripAccents(line).toLowerCase())) {
+      unique.push(line);
+    }
+    if (unique.length >= 3) break;
+  }
+  return unique;
+}
+
+function buildRecruitInfoMenuReply(jobSheet: string): string {
+  const bullets = extractRecruitJobBullets(jobSheet);
+  const bulletLines = bullets.length > 0 ? bullets.map((b) => `• ${b}`) : ["• Cargo en ventas", "• Requisitos: experiencia + disponibilidad", "• Proceso: revisamos y contactamos"];
+  const trimmedBullets = bulletLines.slice(0, 3);
+  return [
+    "Hola, gracias por escribir a Postulaciones.",
+    "Te cuento del cargo:",
+    ...trimmedBullets,
+    "¿Quieres 1) postular o 2) más info?",
+  ]
+    .slice(0, 6)
+    .join("\n");
+}
+
+function buildRecruitApplyRequestReply(): string {
+  return [
+    "Perfecto. Para postular, envíame en un solo mensaje:",
+    "• Nombre y apellido",
+    "• Comuna/ciudad",
+    "• RUT",
+    "• Experiencia en ventas (años/rubros/terreno)",
+    "• Disponibilidad para empezar (email opcional)",
+  ].join("\n");
+}
+
+function buildRecruitInfoFollowupReply(faq: string): string {
+  const lines = (faq || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((line) => truncateText(line, 140));
+  if (lines.length === 0) {
+    return [
+      "Claro. ¿Qué te gustaría saber en particular? (requisitos, modalidad, renta, etc.)",
+      "Si quieres postular ahora, responde 1 y te pido los datos en 1 mensaje.",
+    ].join("\n");
+  }
+  return [
+    "Claro, info rápida:",
+    ...lines,
+    "Si quieres postular ahora, responde 1.",
+  ]
+    .slice(0, 6)
+    .join("\n");
+}
+
+function buildRecruitMissingFieldsReply(missing: string[]): string {
+  const missingText = missing.join(", ");
+  return `Gracias. Para completar tu postulación, me falta: ${missingText}.\n¿Me lo envías en un solo mensaje, por favor?`;
+}
+
+function isAdminRecruitmentSummaryRequest(text: string): boolean {
+  const normalized = stripAccents(text.trim()).toLowerCase();
+  if (!normalized) return false;
+  if (normalized.startsWith("/")) return false;
+  if (/\b(ultimo|último)\s+reclut/.test(normalized)) return true;
+  const hasSummary = /\b(resumen|resume|resumir|aplica|aplicar|calza|sirve)\b/.test(normalized);
+  const hasRecruit = /\b(reclut|postul|postulación|candidato)\b/.test(normalized) || /\b(ultimo|último)\b/.test(normalized);
+  return hasSummary && hasRecruit;
+}
+
+function normalizeForFuzzy(value: string): string {
+  return stripAccents(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  const aa = a || "";
+  const bb = b || "";
+  if (aa === bb) return 0;
+  if (!aa) return bb.length;
+  if (!bb) return aa.length;
+
+  const prev = new Array(bb.length + 1).fill(0).map((_, i) => i);
+  for (let i = 0; i < aa.length; i++) {
+    let current = i + 1;
+    const prevDiagonalStart = prev[0];
+    prev[0] = current;
+    let prevDiagonal = prevDiagonalStart;
+    for (let j = 0; j < bb.length; j++) {
+      const temp = prev[j + 1];
+      const cost = aa[i] === bb[j] ? 0 : 1;
+      prev[j + 1] = Math.min(prev[j + 1] + 1, current + 1, prevDiagonal + cost);
+      current = prev[j + 1];
+      prevDiagonal = temp;
+    }
+  }
+  return prev[bb.length];
+}
+
+function fuzzyNameScore(query: string, candidate: string): number {
+  const q = normalizeForFuzzy(query);
+  const c = normalizeForFuzzy(candidate);
+  if (!q || !c) return 0;
+  if (q === c) return 1;
+  const maxLen = Math.max(q.length, c.length);
+  const dist = levenshteinDistance(q, c);
+  const stringScore = maxLen > 0 ? 1 - dist / maxLen : 0;
+
+  const qTokens = q.split(" ").filter(Boolean);
+  const cTokens = new Set(c.split(" ").filter(Boolean));
+  const hit = qTokens.filter((t) => cTokens.has(t)).length;
+  const tokenScore = qTokens.length > 0 ? hit / qTokens.length : 0;
+
+  return Math.max(0, Math.min(1, stringScore * 0.7 + tokenScore * 0.3));
+}
+
+function extractNameQueryFromAdminText(text: string): string | null {
+  const cleaned = normalizeForFuzzy(text)
+    .replace(/\+?\d{9,15}\b/g, " ")
+    .replace(/\b(reclutamiento|reclutar|reclut|postulacion|postulación|postular|postul)\b/g, " ")
+    .replace(/\b(resumen|resume|resumir|ultimo|último|listo|lista|de|del|la|el|para|por|candidato|candidata)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned || cleaned.length < 3) return null;
+  return cleaned;
+}
+
+async function resolveLastRecruitReadyContact(adminConversationId: string): Promise<{ contactId: string; waId: string; label: string } | null> {
+  const lastNotif = await prisma.message.findFirst({
+    where: {
+      conversationId: adminConversationId,
+      direction: "OUTBOUND",
+      rawPayload: { contains: "\"adminNotification\":true" },
+      text: { contains: "RECRUIT_READY" },
+    },
+    orderBy: { timestamp: "desc" },
+  });
+  if (!lastNotif) return null;
+
+  let contactId: string | null = null;
+  try {
+    const raw = lastNotif.rawPayload ? JSON.parse(lastNotif.rawPayload) : null;
+    if (raw && typeof raw.contactId === "string") contactId = raw.contactId;
+  } catch {
+    contactId = null;
+  }
+  if (contactId) {
+    const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+    const waId = normalizeWhatsAppId(contact?.waId || contact?.phone || "");
+    if (waId) {
+      return { contactId, waId, label: getContactDisplayName(contact as any) };
+    }
+  }
+
+  const waIdFromText = extractWaIdFromText(lastNotif.text || "");
+  if (!waIdFromText) return null;
+  const convo = await fetchConversationByIdentifier(waIdFromText, { includeMessages: false });
+  if (!convo) return null;
+  return {
+    contactId: convo.contactId,
+    waId: waIdFromText,
+    label: getContactDisplayName(convo.contact as any),
+  };
+}
+
+async function findCandidateMatchesByName(params: { query: string; limit?: number; config: SystemConfig }) {
+  const limit = typeof params.limit === "number" ? Math.max(1, Math.min(params.limit, 3)) : 3;
+  const thresholdDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  const adminWa = normalizeWhatsAppId(params.config.adminWaId || "");
+  const conversations = await prisma.conversation.findMany({
+    where: {
+      isAdmin: false,
+      updatedAt: { gte: thresholdDate },
+      ...(adminWa ? { contact: { waId: { not: adminWa } } } : {}),
+    },
+    orderBy: { updatedAt: "desc" },
+    take: 250,
+    include: { contact: true },
+  });
+
+  const scored = conversations
+    .map((c) => {
+      const waId = normalizeWhatsAppId(c.contact?.waId || c.contact?.phone || "");
+      if (!waId) return null;
+      const label = getContactDisplayName(c.contact as any);
+      const score = fuzzyNameScore(params.query, label);
+      return { waId, label, score, updatedAt: c.updatedAt.toISOString() };
+    })
+    .filter(Boolean) as Array<{ waId: string; label: string; score: number; updatedAt: string }>;
+
+  return scored
+    .sort((a, b) => b.score - a.score || b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, limit);
+}
+
+async function buildAdminRecruitmentSummaryReply(params: {
+  adminConversationId: string;
+  text: string;
+  lastCandidateWaId: string | null;
+  config: SystemConfig;
+}): Promise<{ replyText: string; resolvedWaId: string | null }> {
+  const explicitWaId = extractWaIdFromText(params.text);
+  const nameQuery = extractNameQueryFromAdminText(params.text);
+  const wantsLastRecruitReady = /\b(ultimo|último)\s+reclut/.test(stripAccents(params.text).toLowerCase());
+
+  const lastRecruitReady = wantsLastRecruitReady
+    ? await resolveLastRecruitReadyContact(params.adminConversationId)
+    : null;
+
+  if (explicitWaId && nameQuery) {
+    const convoByNumber = await fetchConversationByIdentifier(explicitWaId, { includeMessages: false });
+    const labelByNumber = convoByNumber ? getContactDisplayName(convoByNumber.contact as any) : null;
+    const score = labelByNumber ? fuzzyNameScore(nameQuery, labelByNumber) : 0;
+    if (!labelByNumber || score < 0.55) {
+      const matches = await findCandidateMatchesByName({ query: nameQuery, config: params.config });
+      const lines = matches.map((m, idx) => `${idx + 1}) ${m.label} (+${m.waId})`);
+      const extra = lines.length > 0 ? `\n\nCoincidencias por nombre:\n${lines.join("\n")}` : "";
+      return {
+        resolvedWaId: null,
+        replyText:
+          `Veo un posible conflicto: indicaste +${explicitWaId} pero el nombre no calza con “${nameQuery}”.\n` +
+          `Número indicado: +${explicitWaId}${labelByNumber ? ` (${labelByNumber})` : ""}` +
+          `${extra}\n\nResponde con el número correcto (+569...).`,
+      };
+    }
+    // Número y nombre consistentes: usar el número indicado.
+  }
+
+  let resolvedWaId: string | null =
+    explicitWaId ||
+    (nameQuery
+      ? null
+      : wantsLastRecruitReady
+        ? lastRecruitReady?.waId || null
+        : params.lastCandidateWaId || null);
+
+  if (!resolvedWaId && nameQuery) {
+    if (wantsLastRecruitReady && lastRecruitReady?.waId) {
+      const score = fuzzyNameScore(nameQuery, lastRecruitReady.label);
+      if (score >= 0.55) {
+        resolvedWaId = lastRecruitReady.waId;
+      }
+    }
+  }
+
+  if (!resolvedWaId && nameQuery) {
+    const matches = await findCandidateMatchesByName({ query: nameQuery, config: params.config });
+    if (matches.length === 0) {
+      if (wantsLastRecruitReady && lastRecruitReady?.waId) {
+        resolvedWaId = lastRecruitReady.waId;
+      } else {
+        return {
+          resolvedWaId: null,
+          replyText:
+            `No encontré candidatos que calcen con “${nameQuery}”.\n` +
+            "Envíame el número (+569...) o escribe “último reclutamiento” para usar el más reciente.",
+        };
+      }
+    } else if (matches.length === 1 || (matches[0].score >= 0.78 && matches[0].score - (matches[1]?.score || 0) >= 0.18)) {
+      resolvedWaId = matches[0].waId;
+    } else {
+      const lines = matches.map((m, idx) => `${idx + 1}) ${m.label} (+${m.waId})`);
+      return {
+        resolvedWaId: null,
+        replyText:
+          `Encontré varios candidatos parecidos a “${nameQuery}”:\n${lines.join("\n")}\n\n` +
+          "Responde con el número correcto (+569...).",
+      };
+    }
+  }
+
+  if (!resolvedWaId && wantsLastRecruitReady && lastRecruitReady?.waId) {
+    resolvedWaId = lastRecruitReady.waId;
+  }
+
+  if (!resolvedWaId) {
+    const recent = await prisma.conversation.findFirst({
+      where: { isAdmin: false },
+      orderBy: { updatedAt: "desc" },
+      include: { contact: true, messages: { orderBy: { timestamp: "desc" }, take: 1 } },
+    });
+    const waId = normalizeWhatsAppId(recent?.contact?.waId || recent?.contact?.phone || "");
+    if (!waId) {
+      return { resolvedWaId: null, replyText: "No pude inferir el candidato. Envíame el número (+569...)."};
+    }
+    resolvedWaId = waId;
+  }
+
+  const convo = await fetchConversationByIdentifier(resolvedWaId, { includeMessages: true, messageLimit: 80 });
+  if (!convo) {
+    return { resolvedWaId: null, replyText: `No encontré conversación para +${resolvedWaId}.` };
+  }
+
+  const inbound = (convo.messages || []).filter((m: any) => m.direction === "INBOUND");
+  const assessment = assessRecruitmentReadiness(convo.contact, inbound);
+  const missing: string[] = [];
+  if (!assessment.fields.name) missing.push("nombre y apellido");
+  if (!assessment.fields.location) missing.push("comuna/ciudad");
+  if (!assessment.fields.rut) missing.push("RUT");
+  if (!assessment.fields.experience) missing.push("experiencia");
+  if (!assessment.fields.availability) missing.push("disponibilidad");
+
+  const statusLine = assessment.ready
+    ? "Datos mínimos: OK ✅"
+    : `Datos mínimos: incompleto ⚠️ (faltan: ${missing.join(", ")})`;
+
+  const lines = [
+    `Resumen reclutamiento: ${getContactDisplayName(convo.contact as any)} (+${resolvedWaId})`,
+    statusLine,
+    assessment.fields.location ? `Comuna/Ciudad: ${assessment.fields.location}` : null,
+    assessment.fields.rut ? `RUT: ${assessment.fields.rut}` : null,
+    assessment.fields.experience ? `Experiencia: ${assessment.fields.experience}` : null,
+    assessment.fields.availability ? `Disponibilidad: ${assessment.fields.availability}` : null,
+    assessment.fields.email ? `Email: ${assessment.fields.email}` : null,
+    assessment.ready ? "Recomendación: contactar para coordinar entrevista." : "Recomendación: pedir faltantes y luego contactar.",
+  ].filter(Boolean) as string[];
+
+  return { resolvedWaId, replyText: lines.join("\n") };
 }
 
 async function maybeUpdateContactName(

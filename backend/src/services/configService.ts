@@ -9,6 +9,13 @@ export const DEFAULT_TEMPLATE_GENERAL_FOLLOWUP = 'postulacion_completar_1';
 export const DEFAULT_TEMPLATE_LANGUAGE_CODE = 'es_CL';
 export const DEFAULT_AI_MODEL = 'gpt-4.1-mini';
 export const DEFAULT_JOB_TITLE = 'Vendedor/a';
+export const DEFAULT_RECRUIT_JOB_SHEET = `
+Cargo: Vendedor/a
+- Tipo: ventas (terreno o punto fijo)
+- Requisitos: experiencia en ventas + disponibilidad
+- Proceso: revisamos tu postulación y te contactamos por WhatsApp
+`.trim();
+export const DEFAULT_RECRUIT_FAQ = null;
 export const DEFAULT_INTERVIEW_DAY = 'Lunes';
 export const DEFAULT_INTERVIEW_TIME = '10:00';
 export const DEFAULT_INTERVIEW_LOCATION = 'Online';
@@ -65,6 +72,24 @@ Guía rápida:
 - Objeción precio: valida, compara valor, pregunta prioridad (precio vs resultado).
 - Registro: usa "registro visita ..." o "registro venta ...".
 `.trim();
+
+export const DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL = 'MEDIUM';
+export const DEFAULT_ADMIN_NOTIFICATION_TEMPLATES = JSON.stringify({
+  RECRUIT_READY:
+    '🟢 Reclutamiento listo: {{name}}\\nTel: {{phone}}\\n{{summary}}\\nPróximo paso: revisar y contactar.',
+  INTERVIEW_SCHEDULED:
+    '🗓️ Entrevista agendada: {{name}}\\nTel: {{phone}}\\n{{when}}\\nEstado: PENDIENTE.',
+  INTERVIEW_RESCHEDULED:
+    '🔁 Entrevista reagendada: {{name}}\\nTel: {{phone}}\\n{{when}}\\nEstado: PENDIENTE.',
+  INTERVIEW_CONFIRMED:
+    '✅ Entrevista confirmada: {{name}}\\nTel: {{phone}}\\n{{when}}.',
+  INTERVIEW_ON_HOLD:
+    '⏸️ Entrevista en pausa: {{name}}\\nTel: {{phone}}\\n{{when}}\\nEstado: EN PAUSA.',
+  INTERVIEW_CANCELLED:
+    '❌ Entrevista cancelada: {{name}}\\nTel: {{phone}}\\n{{when}}\\nEstado: CANCELADA.',
+  SELLER_DAILY_SUMMARY: '📊 Resumen diario ventas: {{name}}\\nTel: {{phone}}\\n{{summary}}',
+  SELLER_WEEKLY_SUMMARY: '📈 Resumen semanal ventas: {{name}}\\nTel: {{phone}}\\n{{summary}}'
+});
 
 export async function getSystemConfig(): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
@@ -148,6 +173,48 @@ export async function updateAiPrompt(aiPrompt?: string | null): Promise<SystemCo
     data: {
       aiPrompt: normalizeValue(aiPrompt)
     }
+  });
+}
+
+export async function updateRecruitmentContent(input: {
+  jobSheet?: string | null;
+  faq?: string | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: any = {};
+  if (typeof input.jobSheet !== 'undefined') {
+    data.recruitJobSheet = normalizeValue(input.jobSheet);
+  }
+  if (typeof input.faq !== 'undefined') {
+    data.recruitFaq = normalizeValue(input.faq);
+  }
+  if (Object.keys(data).length === 0) {
+    return config;
+  }
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data
+  });
+}
+
+export async function updateAdminNotificationConfig(input: {
+  detailLevel?: string | null;
+  templates?: string | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: any = {};
+  if (typeof input.detailLevel !== 'undefined') {
+    data.adminNotificationDetailLevel = normalizeValue(input.detailLevel);
+  }
+  if (typeof input.templates !== 'undefined') {
+    data.adminNotificationTemplates = normalizeValue(input.templates);
+  }
+  if (Object.keys(data).length === 0) {
+    return config;
+  }
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data
   });
 }
 
@@ -344,6 +411,10 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         interviewAiPrompt: DEFAULT_INTERVIEW_AI_PROMPT,
         interviewAiModel: DEFAULT_INTERVIEW_AI_MODEL,
         aiModel: DEFAULT_AI_MODEL,
+        recruitJobSheet: DEFAULT_RECRUIT_JOB_SHEET,
+        recruitFaq: DEFAULT_RECRUIT_FAQ,
+        adminNotificationDetailLevel: DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL,
+        adminNotificationTemplates: DEFAULT_ADMIN_NOTIFICATION_TEMPLATES,
         templateInterviewInvite: DEFAULT_TEMPLATE_INTERVIEW_INVITE,
         templateGeneralFollowup: DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
         templateLanguageCode: DEFAULT_TEMPLATE_LANGUAGE_CODE,
@@ -426,6 +497,24 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (typeof (existing as any).salesKnowledgeBase === 'undefined') {
     updates.salesKnowledgeBase = DEFAULT_SALES_KNOWLEDGE_BASE;
+  }
+  if (typeof (existing as any).recruitJobSheet === 'undefined') {
+    updates.recruitJobSheet = DEFAULT_RECRUIT_JOB_SHEET;
+  } else if (!existing.recruitJobSheet) {
+    updates.recruitJobSheet = DEFAULT_RECRUIT_JOB_SHEET;
+  }
+  if (typeof (existing as any).recruitFaq === 'undefined') {
+    updates.recruitFaq = DEFAULT_RECRUIT_FAQ;
+  }
+  if (typeof (existing as any).adminNotificationDetailLevel === 'undefined') {
+    updates.adminNotificationDetailLevel = DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL;
+  } else if (!existing.adminNotificationDetailLevel) {
+    updates.adminNotificationDetailLevel = DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL;
+  }
+  if (typeof (existing as any).adminNotificationTemplates === 'undefined') {
+    updates.adminNotificationTemplates = DEFAULT_ADMIN_NOTIFICATION_TEMPLATES;
+  } else if (!existing.adminNotificationTemplates) {
+    updates.adminNotificationTemplates = DEFAULT_ADMIN_NOTIFICATION_TEMPLATES;
   }
   if (!existing.interviewAiPrompt) {
     updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;

@@ -127,6 +127,8 @@ model SystemConfig {
   openAiApiKey    String?
   aiPrompt        String?
   aiModel         String?
+  recruitJobSheet String?
+  recruitFaq      String?
   adminEmail      String?
   adminWaId       String?
   adminAiPrompt   String?
@@ -149,6 +151,8 @@ model SystemConfig {
   testPhoneNumber String?
   salesAiPrompt    String?
   salesKnowledgeBase String?
+  adminNotificationDetailLevel String?
+  adminNotificationTemplates String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
