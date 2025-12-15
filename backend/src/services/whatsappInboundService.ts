@@ -2414,22 +2414,13 @@ async function buildAdminRecruitmentSummaryReply(params: {
     // Número y nombre consistentes: usar el número indicado.
   }
 
+  // If the admin explicitly asked for "último reclutamiento", prioritize the latest RECRUIT_READY signal.
+  // (Name typos are common; we use the name only as context, not as a selector.)
   let resolvedWaId: string | null =
     explicitWaId ||
-    (nameQuery
-      ? null
-      : wantsLastRecruitReady
-        ? lastRecruitReady?.waId || null
-        : params.lastCandidateWaId || null);
-
-  if (!resolvedWaId && nameQuery) {
-    if (wantsLastRecruitReady && lastRecruitReady?.waId) {
-      const score = fuzzyNameScore(nameQuery, lastRecruitReady.label);
-      if (score >= 0.55) {
-        resolvedWaId = lastRecruitReady.waId;
-      }
-    }
-  }
+    (wantsLastRecruitReady
+      ? lastRecruitReady?.waId || null
+      : params.lastCandidateWaId || null);
 
   if (!resolvedWaId && nameQuery) {
     const matches = await findCandidateMatchesByName({ query: nameQuery, config: params.config });
