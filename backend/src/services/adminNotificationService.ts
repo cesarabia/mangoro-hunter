@@ -11,7 +11,9 @@ export type AdminEventType =
   | 'INTERVIEW_RESCHEDULED'
   | 'INTERVIEW_CONFIRMED'
   | 'INTERVIEW_CANCELLED'
-  | 'INTERVIEW_ON_HOLD';
+  | 'INTERVIEW_ON_HOLD'
+  | 'SELLER_DAILY_SUMMARY'
+  | 'SELLER_WEEKLY_SUMMARY';
 
 function formatInterviewSlot(day?: string | null, time?: string | null, location?: string | null): string {
   const dayText = (day || '').trim() || 'día por definir';
@@ -100,6 +102,10 @@ export async function sendAdminNotification(options: {
     text = `🗓️ Entrevista agendada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: PENDIENTE.`;
   } else if (eventType === 'INTERVIEW_RESCHEDULED') {
     text = `🔁 Entrevista reagendada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: PENDIENTE.`;
+  } else if (eventType === 'SELLER_DAILY_SUMMARY') {
+    text = `📊 Resumen diario vendedor: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${summary || 'Sin datos.'}`;
+  } else if (eventType === 'SELLER_WEEKLY_SUMMARY') {
+    text = `📈 Resumen semanal vendedor: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${summary || 'Sin datos.'}`;
   } else if (eventType === 'INTERVIEW_CANCELLED') {
     text = `❌ Entrevista cancelada: ${contact?.candidateName || contact?.displayName || contact?.waId}\nTel: +${contact?.waId}\n${formatInterviewSlot(interviewDay, interviewTime, interviewLocation)}\nEstado: CANCELADA.`;
   } else if (eventType === 'INTERVIEW_ON_HOLD') {
@@ -131,4 +137,3 @@ export async function sendAdminNotification(options: {
     contactId: contact?.id || null
   });
 }
-

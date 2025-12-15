@@ -32,6 +32,14 @@ import {
   releaseActiveReservation,
 } from "./interviewSchedulerService";
 import { sendAdminNotification } from "./adminNotificationService";
+import {
+  buildSellerSummary,
+  createSellerEvent,
+  detectSellerEvent,
+  isDailySummaryRequest,
+  isPitchRequest,
+  isWeeklySummaryRequest,
+} from "./sellerService";
 
 interface InboundMedia {
   type: string;
@@ -745,6 +753,116 @@ export async function maybeSendAutoReply(
       }
     }
 
+    if (mode === "SELLER") {
+      const lastInboundText = (lastInbound?.transcriptText || lastInbound?.text || "").trim();
+      const lastInboundLower = stripAccents(lastInboundText).toLowerCase();
+
+      if (!lastInboundText) return;
+
+      const pitchRequest = isPitchRequest(lastInboundLower);
+      const dailySummary = isDailySummaryRequest(lastInboundLower);
+      const weeklySummary = isWeeklySummaryRequest(lastInboundLower);
+      const event = detectSellerEvent(lastInboundText);
+
+      let replyText: string | null = null;
+
+      if (pitchRequest) {
+        replyText =
+          "Pitch corto (Postulaciones):\n" +
+          "Hola, ¿cómo estás? Trabajo con Postulaciones y estoy ayudando a personas/negocios a resolver [necesidad] de forma simple.\n" +
+          "En 20 segundos: te muestro el beneficio principal, el precio/plan y coordinamos el siguiente paso.\n" +
+          "¿Te interesaría que te cuente en 1 minuto y ver si calza contigo?";
+      } else if (dailySummary || weeklySummary) {
+        const range = weeklySummary ? "WEEK" : "DAY";
+        const summary = await buildSellerSummary({
+          contactId: conversation.contactId,
+          config,
+          range,
+        });
+        const amountPart =
+          typeof summary.totalAmountClp === "number" ? `\nTotal CLP: $${summary.totalAmountClp}` : "";
+        const detail = summary.lines.length > 0 ? `\n\nÚltimos eventos:\n${summary.lines.join("\n")}` : "";
+        const adminBody = `${summary.label}\nVisitas: ${summary.visits}\nVentas: ${summary.sales}${amountPart}${detail}`;
+
+        await sendAdminNotification({
+          app,
+          eventType: weeklySummary ? "SELLER_WEEKLY_SUMMARY" : "SELLER_DAILY_SUMMARY",
+          contact: conversation.contact,
+          reservationId: summary.refKey,
+          summary: adminBody,
+        });
+
+        replyText = `Listo. ${summary.label} enviado al administrador.\nVisitas: ${summary.visits} · Ventas: ${summary.sales}`;
+      } else if (event) {
+        await createSellerEvent({
+          conversationId,
+          contactId: conversation.contactId,
+          type: event.type,
+          rawText: lastInboundText,
+          data: event.data,
+        });
+
+        if (event.type === "VISIT") {
+          replyText =
+            "Visita registrada.\n" +
+            "Si quieres, agrega: comuna/sector, resultado (interesado/no interesado) y próximo paso.";
+        } else {
+          const amount = typeof event.data?.amountClp === "number" ? ` ($${event.data.amountClp} CLP)` : "";
+          replyText =
+            `Venta registrada${amount}.\n` +
+            "Si quieres, agrega: producto/plan, cantidad y si quedó pago/pendiente.";
+        }
+      } else if (/\b(objecion|objeción|caro|precio)\b/.test(lastInboundLower)) {
+        replyText =
+          "Objeción precio (respuesta corta):\n" +
+          "Te entiendo. Para que lo compares bien: lo clave es [beneficio principal] y [ahorro/resultado].\n" +
+          "¿Qué te importa más: bajar el costo mensual o maximizar el resultado?";
+      } else if (/\b(no me interesa|no interesado|no quiero)\b/.test(lastInboundLower)) {
+        replyText =
+          "Perfecto, gracias por decírmelo.\n" +
+          "Antes de cerrar: ¿es porque no lo necesitas ahora o porque no es el tipo de solución que buscas?";
+      } else if (/\b(primer dia|primer día|onboarding)\b/.test(lastInboundLower)) {
+        replyText =
+          "Onboarding rápido (primer día):\n" +
+          "1) Define tu objetivo del día (visitas/ventas).\n" +
+          "2) Ten listo tu pitch + 2 objeciones.\n" +
+          "3) Registra cada visita/venta aquí para el resumen.\n" +
+          "¿Quieres que armemos tu plan de hoy en 3 pasos?";
+      } else {
+        replyText =
+          "Puedo ayudarte con:\n" +
+          "- Pitch/guiones\n" +
+          "- Respuestas a objeciones\n" +
+          "- Registrar visita/venta (escribe: \"registro visita ...\" o \"registro venta ...\")\n" +
+          "- Resumen diario/semanal (pídeme \"resumen diario\" o \"resumen semanal\")\n" +
+          "¿Qué necesitas ahora?";
+      }
+
+      if (!replyText) return;
+
+      let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+      if (waId) {
+        sendResultRaw = await sendWhatsAppText(waId, replyText);
+      }
+      const normalizedSendResult = {
+        success: sendResultRaw.success,
+        messageId:
+          "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+        error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+      };
+      await prisma.message.create({
+        data: {
+          conversationId,
+          direction: "OUTBOUND",
+          text: replyText,
+          rawPayload: serializeJson({ autoReply: true, mode: "SELLER", sendResult: normalizedSendResult }),
+          timestamp: new Date(),
+          read: true,
+        },
+      });
+      return;
+    }
+
     const context = conversation.messages
       .map((m) => {
         const line = buildAiMessageText(m);
@@ -1065,6 +1183,34 @@ async function maybeHandleContextualAttachmentReply(params: {
         direction: "OUTBOUND",
         text: replyText,
         rawPayload: serializeJson({ autoReply: true, attachmentContextual: true, mode: "INTERVIEW", sendResult: normalizedSendResult }),
+        timestamp: new Date(),
+        read: true,
+      },
+    });
+    return true;
+  }
+
+  if (mode === "SELLER") {
+    const snippet = truncateText(cleaned, 1200);
+    const replyText =
+      `Leí tu adjunto y pude extraer este texto:\n\n${snippet}\n\n` +
+      "¿Qué necesitas hacer con esto? (por ejemplo: registrar una visita/venta, preparar una oferta o responder una objeción)";
+
+    let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+    if (waId) {
+      sendResultRaw = await sendWhatsAppText(waId, replyText);
+    }
+    const normalizedSendResult = {
+      success: sendResultRaw.success,
+      messageId: "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+      error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+    };
+    await prisma.message.create({
+      data: {
+        conversationId,
+        direction: "OUTBOUND",
+        text: replyText,
+        rawPayload: serializeJson({ autoReply: true, attachmentContextual: true, mode: "SELLER", sendResult: normalizedSendResult }),
         timestamp: new Date(),
         read: true,
       },

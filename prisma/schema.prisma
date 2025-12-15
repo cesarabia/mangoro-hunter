@@ -33,6 +33,7 @@ model Contact {
   notes         String?
   conversations Conversation[]
   interviewReservations InterviewReservation[]
+  sellerEvents  SellerEvent[]
   applications  Application[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -54,6 +55,7 @@ model Conversation {
   interviewLocation String?
   interviewStatus String?
   interviewReservations InterviewReservation[]
+  sellerEvents  SellerEvent[]
   adminLastCandidateWaId String?
   adminPendingAction    String?
   messages      Message[]
@@ -167,4 +169,22 @@ model InterviewReservation {
   @@index([contactId])
   @@index([startAt])
   @@unique([startAt, location, activeKey])
+}
+
+model SellerEvent {
+  id             String        @id @default(cuid())
+  conversation   Conversation  @relation(fields: [conversationId], references: [id])
+  conversationId String
+  contact        Contact       @relation(fields: [contactId], references: [id])
+  contactId      String
+  type           String
+  occurredAt     DateTime
+  rawText        String
+  dataJson       String?
+  createdAt      DateTime      @default(now())
+
+  @@index([conversationId])
+  @@index([contactId])
+  @@index([occurredAt])
+  @@index([type])
 }

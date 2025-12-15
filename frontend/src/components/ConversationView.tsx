@@ -231,7 +231,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     }
   };
 
-  const handleModeChange = async (mode: 'RECRUIT' | 'INTERVIEW' | 'OFF') => {
+  const handleModeChange = async (mode: 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF') => {
     if (!conversation || conversation.aiMode === mode || modeSaving) return;
     setModeSaving(true);
     try {
@@ -309,7 +309,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const noContactReason = conversation?.contact?.noContactReason || null;
   const noContactAtLabel = noContactAt ? formatFullTimestamp(noContactAt) : '';
   const secondaryLabel = [profileDisplay, waId ? `+${waId}` : ''].filter(Boolean).join(' · ');
-  const aiMode: 'RECRUIT' | 'INTERVIEW' | 'OFF' = conversation?.aiMode || 'RECRUIT';
+  const aiMode: 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF' = conversation?.aiMode || 'RECRUIT';
   const aiPaused = Boolean(conversation?.aiPaused);
   const isManualMode = aiMode === 'OFF' || aiPaused;
   const within24h = conversation?.within24h !== false;
@@ -326,9 +326,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       : requiredTemplate === 'entrevista_confirmacion_1'
       ? 3
       : 0;
-  const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'OFF'; label: string }> = [
+  const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF'; label: string }> = [
     { key: 'RECRUIT', label: 'Reclutamiento' },
     { key: 'INTERVIEW', label: 'Entrevista' },
+    { key: 'SELLER', label: 'Vendedor' },
     { key: 'OFF', label: 'Manual' }
   ];
 
@@ -574,6 +575,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
                     <option value="">Estado entrevista</option>
                     <option value="PENDING">Pendiente</option>
                     <option value="CONFIRMED">Confirmada</option>
+                    <option value="ON_HOLD">En pausa</option>
                     <option value="CANCELLED">Cancelada</option>
                   </select>
                 </div>

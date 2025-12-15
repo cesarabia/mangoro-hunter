@@ -5,7 +5,7 @@ import { serializeJson } from '../utils/json';
 import { loadTemplateConfig, resolveTemplateVariables } from './templateService';
 import { DEFAULT_TEMPLATE_GENERAL_FOLLOWUP, DEFAULT_TEMPLATE_INTERVIEW_INVITE } from './configService';
 
-type Mode = 'RECRUIT' | 'INTERVIEW' | 'OFF';
+type Mode = 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF';
 type Status = 'NEW' | 'OPEN' | 'CLOSED';
 
 export interface CreateAndSendParams {
@@ -28,6 +28,7 @@ export interface CreateAndSendResult {
 function normalizeMode(value?: string | null): Mode {
   const normalized = (value || '').toUpperCase();
   if (normalized === 'INTERVIEW') return 'INTERVIEW';
+  if (normalized === 'SELLER' || normalized === 'VENDEDOR' || normalized === 'VENDOR') return 'SELLER';
   if (normalized === 'OFF' || normalized === 'MANUAL') return 'OFF';
   return 'RECRUIT';
 }

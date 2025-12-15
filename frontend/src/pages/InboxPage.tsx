@@ -42,7 +42,7 @@ export const InboxPage: React.FC<Props> = ({
   const [backendError, setBackendError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newPhone, setNewPhone] = useState('');
-  const [newMode, setNewMode] = useState<'RECRUIT' | 'INTERVIEW' | 'OFF'>('RECRUIT');
+  const [newMode, setNewMode] = useState<'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF'>('RECRUIT');
   const [newStatus, setNewStatus] = useState<'NEW' | 'OPEN' | 'CLOSED'>('NEW');
   const [sendTemplateNow, setSendTemplateNow] = useState(true);
   const [creatingConversation, setCreatingConversation] = useState(false);
@@ -240,7 +240,7 @@ export const InboxPage: React.FC<Props> = ({
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minHeight: 0 }}>
       <header style={{ padding: '8px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <strong>Hunter CRM v2.4</strong>
+          <strong>Hunter CRM v2.5</strong>
           {backendError && <span style={{ fontSize: 12, color: '#b93800' }}>{backendError}</span>}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -373,11 +373,12 @@ export const InboxPage: React.FC<Props> = ({
                 Modo inicial
                 <select
                   value={newMode}
-                  onChange={e => setNewMode(e.target.value as 'RECRUIT' | 'INTERVIEW' | 'OFF')}
+                  onChange={e => setNewMode(e.target.value as 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF')}
                   style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                 >
                   <option value="RECRUIT">Reclutamiento</option>
                   <option value="INTERVIEW">Entrevista</option>
+                  <option value="SELLER">Vendedor</option>
                   <option value="OFF">Manual</option>
                 </select>
               </label>

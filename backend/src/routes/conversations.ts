@@ -189,7 +189,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const normalizedStatus = ['NEW', 'OPEN', 'CLOSED'].includes(conversation.status)
       ? conversation.status
       : 'NEW';
-    const normalizedMode = ['RECRUIT', 'INTERVIEW', 'OFF'].includes(conversation.aiMode)
+    const normalizedMode = ['RECRUIT', 'INTERVIEW', 'SELLER', 'OFF'].includes(conversation.aiMode)
       ? conversation.aiMode
       : 'RECRUIT';
 
@@ -369,7 +369,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   app.patch('/:id/ai-mode', { preValidation: [app.authenticate] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { mode?: string };
-    const allowed = ['RECRUIT', 'INTERVIEW', 'OFF'];
+    const allowed = ['RECRUIT', 'INTERVIEW', 'SELLER', 'OFF'];
     const nextMode = body.mode?.toUpperCase();
 
     if (!nextMode || !allowed.includes(nextMode)) {
@@ -396,7 +396,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
     if (body.mode) {
       const nextMode = body.mode.toUpperCase();
-      if (!['RECRUIT', 'INTERVIEW', 'OFF'].includes(nextMode)) {
+      if (!['RECRUIT', 'INTERVIEW', 'SELLER', 'OFF'].includes(nextMode)) {
         return reply.code(400).send({ error: 'Modo inválido' });
       }
       data.aiMode = nextMode;
