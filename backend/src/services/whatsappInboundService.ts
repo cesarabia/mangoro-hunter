@@ -654,40 +654,20 @@ export async function maybeSendAutoReply(
     const lastInbound = (conversation.messages || [])
       .filter((m) => m.direction === "INBOUND")
       .slice(-1)[0];
-    if (
-      mode === "INTERVIEW" &&
-      (lastInbound?.mediaType === "image" || lastInbound?.mediaType === "document")
-    ) {
-      const lastOutbound = (conversation.messages || [])
-        .filter((m) => m.direction === "OUTBOUND")
-        .slice(-1)[0];
-      const lastOutboundText = stripAccents((lastOutbound?.text || "").toLowerCase());
-      const alreadyAcked = lastOutboundText.includes("recibimos tu adjunto");
-      if (!alreadyAcked) {
-        const ackText =
-          "Gracias, recibimos tu adjunto. Si necesitas cambiar la entrevista, indícame 2 alternativas (día y hora).";
-        let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
-        if (waId) {
-          sendResultRaw = await sendWhatsAppText(waId, ackText);
-        }
-        const normalizedSendResult = {
-          success: sendResultRaw.success,
-          messageId:
-            "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
-          error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
-        };
-        await prisma.message.create({
-          data: {
-            conversationId,
-            direction: "OUTBOUND",
-            text: ackText,
-            rawPayload: serializeJson({ autoReply: true, attachmentAck: true, sendResult: normalizedSendResult }),
-            timestamp: new Date(),
-            read: true,
-          },
-        });
-      }
-      return;
+    const lastInboundTranscript = (lastInbound?.transcriptText || "").trim();
+    const lastInboundHasAttachment =
+      lastInbound?.direction === "INBOUND" &&
+      (lastInbound?.mediaType === "image" || lastInbound?.mediaType === "document");
+    if (lastInboundHasAttachment && lastInboundTranscript) {
+      const handled = await maybeHandleContextualAttachmentReply({
+        app,
+        conversation,
+        conversationId,
+        waId,
+        mode,
+        extractedText: lastInboundTranscript,
+      });
+      if (handled) return;
     }
 
     if (mode === "INTERVIEW") {
@@ -921,6 +901,201 @@ export async function maybeSendAutoReply(
   } catch (err) {
     app.log.error({ err, conversationId }, "Auto-reply processing failed");
   }
+}
+
+function looksLikeCvText(text: string): boolean {
+  const cleaned = normalizeExtractedText(text || "");
+  const lower = stripAccents(cleaned).toLowerCase();
+  if (!lower) return false;
+  if (/\b(curriculum|curriculum vitae|curr[ií]culum|cv|vitae|hoja de vida)\b/.test(lower)) return true;
+  const score = [
+    Boolean(extractChileRut(cleaned)),
+    Boolean(extractEmail(cleaned)),
+    Boolean(extractLocation(cleaned)),
+    Boolean(extractExperienceSnippet(cleaned)),
+    Boolean(extractAvailabilitySnippet(cleaned)),
+  ].filter(Boolean).length;
+  return score >= 2;
+}
+
+function looksLikeNutritionLabelText(text: string): boolean {
+  const cleaned = normalizeExtractedText(text || "");
+  const lower = stripAccents(cleaned).toLowerCase();
+  if (!lower) return false;
+  return (
+    /\b(informacion nutricional|informacion nutricional|ingredientes|calorias|kcal|proteinas|grasas|carbohidratos|porcion|porción|azucares|azúcares|sodio)\b/.test(
+      lower,
+    ) && lower.length < 2000
+  );
+}
+
+function looksLikeAddressText(text: string): boolean {
+  const cleaned = normalizeExtractedText(text || "");
+  const lower = stripAccents(cleaned).toLowerCase();
+  if (!lower) return false;
+  if (/\b(calle|av|avenida|piso|oficina|dept|departamento|nro|numero|número|esquina|sector)\b/.test(lower)) return true;
+  if (/\b\d{1,4}\b/.test(lower) && /\b([a-z]{3,})\b/.test(lower)) return true;
+  return false;
+}
+
+function formatInterviewSummary(conversation: any): string | null {
+  const day = conversation?.interviewDay || null;
+  const time = conversation?.interviewTime || null;
+  const location = conversation?.interviewLocation || null;
+  if (!day && !time && !location) return null;
+  const parts = [
+    day && time ? `${day} ${time}` : day ? day : time ? time : null,
+    location ? location : null,
+  ].filter(Boolean) as string[];
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+async function maybeHandleContextualAttachmentReply(params: {
+  app: FastifyInstance;
+  conversation: any;
+  conversationId: string;
+  waId: string | null | undefined;
+  mode: string;
+  extractedText: string;
+}): Promise<boolean> {
+  const { app, conversation, conversationId, waId, mode, extractedText } = params;
+  const cleaned = normalizeExtractedText(extractedText || "");
+  if (!cleaned) return false;
+
+  if (mode === "RECRUIT") {
+    const inboundMessages = (conversation.messages || []).filter((m: any) => m.direction === "INBOUND");
+    const assessment = assessRecruitmentReadiness(conversation.contact, inboundMessages);
+    const hasAnyData =
+      Boolean(assessment.fields.location) ||
+      Boolean(assessment.fields.rut) ||
+      Boolean(assessment.fields.experience) ||
+      Boolean(assessment.fields.availability) ||
+      Boolean(assessment.fields.email);
+
+    const looksLikeCv = looksLikeCvText(cleaned);
+    const detected: string[] = [];
+    if (assessment.fields.name) detected.push(`Nombre: ${assessment.fields.name}`);
+    if (assessment.fields.location) detected.push(`Comuna/Ciudad: ${assessment.fields.location}`);
+    if (assessment.fields.rut) detected.push(`RUT: ${assessment.fields.rut}`);
+    if (assessment.fields.experience) detected.push(`Experiencia: ${assessment.fields.experience}`);
+    if (assessment.fields.availability) detected.push(`Disponibilidad: ${assessment.fields.availability}`);
+    if (assessment.fields.email) detected.push(`Email: ${assessment.fields.email}`);
+
+    const missing: string[] = [];
+    if (!assessment.fields.name) missing.push("nombre y apellido");
+    if (!assessment.fields.location) missing.push("comuna/ciudad");
+    if (!assessment.fields.rut) missing.push("RUT");
+    if (!assessment.fields.experience) missing.push("experiencia en ventas (años/rubros/terreno)");
+    if (!assessment.fields.availability) missing.push("disponibilidad");
+
+    let replyText: string;
+    if (looksLikeCv || hasAnyData) {
+      const detectedText = detected.length > 0 ? detected.join(" | ") : "No logré identificar datos clave.";
+      if (missing.length === 0) {
+        replyText =
+          `Gracias, pude leer tu adjunto. Detecté: ${detectedText}.\n` +
+          "Con eso ya tengo los datos mínimos. El equipo revisará tu postulación y te contactará por este medio.";
+      } else {
+        replyText =
+          `Gracias, pude leer tu adjunto. Detecté: ${detectedText}.\n` +
+          `Para completar, me falta: ${missing.join(", ")}.\n` +
+          "¿Me lo puedes escribir en un solo mensaje, por favor?";
+      }
+    } else {
+      replyText =
+        "Gracias, recibí tu adjunto, pero no veo información clara para registrar tu postulación.\n" +
+        "¿Puedes enviarme tu CV o escribir en un solo mensaje: nombre y apellido, comuna/ciudad, RUT, experiencia en ventas y disponibilidad para empezar?";
+    }
+
+    let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+    if (waId) {
+      sendResultRaw = await sendWhatsAppText(waId, replyText);
+    }
+    const normalizedSendResult = {
+      success: sendResultRaw.success,
+      messageId: "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+      error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+    };
+    await prisma.message.create({
+      data: {
+        conversationId,
+        direction: "OUTBOUND",
+        text: replyText,
+        rawPayload: serializeJson({ autoReply: true, attachmentContextual: true, mode: "RECRUIT", sendResult: normalizedSendResult }),
+        timestamp: new Date(),
+        read: true,
+      },
+    });
+    return true;
+  }
+
+  if (mode === "INTERVIEW") {
+    const parsed = parseDayTime(cleaned);
+    const hasScheduleDetails = Boolean(parsed.day || parsed.time);
+    const looksLikeCv = looksLikeCvText(cleaned);
+    const looksLikeNutrition = looksLikeNutritionLabelText(cleaned);
+    const looksLikeAddress = looksLikeAddressText(cleaned);
+
+    const currentSummary = formatInterviewSummary(conversation);
+    const currentAsk = currentSummary
+      ? `Para coordinar, ¿confirmas ${currentSummary} o necesitas reagendar?`
+      : "Para coordinar la entrevista, ¿qué día y hora te acomodan? Si puedes, dame 2 alternativas.";
+
+    let hint = "un archivo";
+    if (looksLikeNutrition) hint = "una etiqueta nutricional / información de producto";
+    else if (looksLikeAddress) hint = "una dirección/ubicación";
+    else if (looksLikeCv) hint = "un CV/documento de postulación";
+    else if (hasScheduleDetails) hint = "información de fecha/hora";
+
+    let replyText: string;
+    if (hasScheduleDetails) {
+      const parts = [
+        parsed.day && parsed.time ? `${parsed.day} ${parsed.time}` : parsed.day ? parsed.day : parsed.time ? parsed.time : null,
+      ].filter(Boolean) as string[];
+      const extractedSchedule = parts.join(" ");
+      replyText =
+        `Gracias, pude leer tu adjunto. Veo ${hint}${extractedSchedule ? `: ${extractedSchedule}` : ""}.\n` +
+        (currentSummary
+          ? `Lo que tengo agendado ahora es: ${currentSummary}.\n¿Quieres mantenerlo o cambiarlo? Si quieres cambiarlo, indícame 2 alternativas (día y hora).`
+          : "¿Me confirmas si esa fecha/hora es la que quieres para la entrevista? Si no, indícame 2 alternativas (día y hora).");
+    } else if (looksLikeAddress) {
+      replyText =
+        `Gracias, pude leer tu adjunto. Parece ${hint}.\n` +
+        `${currentAsk}\nSi quieres cambiar la dirección/lugar, dime el lugar exacto o el nombre del punto de referencia.`;
+    } else if (looksLikeCv) {
+      replyText =
+        `Gracias, pude leer tu adjunto. Parece ${hint}.\n` +
+        `${currentAsk}\nSi necesitas cambiar la entrevista, indícame 2 alternativas (día y hora).`;
+    } else {
+      replyText =
+        `Gracias, pude leer tu adjunto, pero parece ${hint} y no veo información directa sobre la entrevista.\n` +
+        "¿Querías enviarme tu CV o algo sobre la entrevista?\n" +
+        currentAsk;
+    }
+
+    let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+    if (waId) {
+      sendResultRaw = await sendWhatsAppText(waId, replyText);
+    }
+    const normalizedSendResult = {
+      success: sendResultRaw.success,
+      messageId: "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+      error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+    };
+    await prisma.message.create({
+      data: {
+        conversationId,
+        direction: "OUTBOUND",
+        text: replyText,
+        rawPayload: serializeJson({ autoReply: true, attachmentContextual: true, mode: "INTERVIEW", sendResult: normalizedSendResult }),
+        timestamp: new Date(),
+        read: true,
+      },
+    });
+    return true;
+  }
+
+  return false;
 }
 
 async function maybeNotifyRecruitmentReady(
@@ -1722,6 +1897,12 @@ function extractNameFromText(text?: string): string | null {
       normalizedLower,
     ) ||
     /\b(cv|curric|curr[íi]cul|vitae|pdf|word|docx|documento|archivo|imagen|foto)\b/.test(
+      normalizedLower,
+    ) ||
+    /\b(calle|avenida|av\\.?|direccion|direcci[oó]n|ubicacion|ubicación|mapa|google|waze|piso|oficina|departamento|dept|esquina|sector|nro|numero|número)\b/.test(
+      normalizedLower,
+    ) ||
+    /\b(informacion nutricional|ingredientes|calorias|kcal|proteinas|grasas|carbohidratos|azucares|azúcares|sodio|porcion|porción)\b/.test(
       normalizedLower,
     );
   if (hasDisqualifyingIntent) return null;
