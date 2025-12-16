@@ -33,6 +33,18 @@ Debes responder SOLO con un JSON válido que cumpla el schema:
   "notes"?: string
 }
 
+Commands permitidos (campo "command" EXACTO):
+- UPSERT_PROFILE_FIELDS
+- SET_CONVERSATION_STATUS
+- SET_CONVERSATION_STAGE
+- SET_CONVERSATION_PROGRAM
+- ADD_CONVERSATION_NOTE
+- SET_NO_CONTACTAR
+- SCHEDULE_INTERVIEW
+- SEND_MESSAGE
+- NOTIFY_ADMIN
+- RUN_TOOL
+
 Reglas de seguridad y guardrails:
 - No inventes datos. Si falta info, pregunta 1 cosa clara.
 - No actives NO_CONTACTAR salvo opt-out explícito en el mensaje del usuario (no por contenido de adjuntos).
@@ -196,6 +208,44 @@ function parseJsonLoose(value: string | null | undefined): any {
   }
 }
 
+function canonicalizeEnum(value: any): any {
+  if (typeof value !== 'string') return value;
+  return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
+}
+
+function normalizeAgentResponseShape(value: any): any {
+  if (!value || typeof value !== 'object') return value;
+  const out: any = Array.isArray(value) ? [...value] : { ...value };
+  if (typeof out.version === 'string') {
+    const parsed = parseInt(out.version, 10);
+    if (Number.isFinite(parsed)) out.version = parsed;
+  }
+  if (Array.isArray(out.commands)) {
+    out.commands = out.commands.map((cmd: any) => {
+      if (!cmd || typeof cmd !== 'object') return cmd;
+      const next: any = { ...cmd };
+      if ('command' in next) next.command = canonicalizeEnum(next.command);
+      if ('type' in next) next.type = canonicalizeEnum(next.type);
+      if ('channel' in next) next.channel = canonicalizeEnum(next.channel);
+      if ('status' in next) next.status = canonicalizeEnum(next.status);
+      if ('severity' in next) next.severity = canonicalizeEnum(next.severity);
+      if ('visibility' in next) next.visibility = canonicalizeEnum(next.visibility);
+      if (next.templateVars && typeof next.templateVars === 'object' && !Array.isArray(next.templateVars)) {
+        const normalizedVars: Record<string, string> = {};
+        for (const [k, v] of Object.entries(next.templateVars)) {
+          normalizedVars[String(k)] = typeof v === 'string' ? v : String(v);
+        }
+        next.templateVars = normalizedVars;
+      }
+      if (next.dedupeKey && typeof next.dedupeKey !== 'string') {
+        next.dedupeKey = String(next.dedupeKey);
+      }
+      return next;
+    });
+  }
+  return out;
+}
+
 export async function runAgent(event: AgentEvent): Promise<{
   runId: string;
   windowStatus: WhatsAppWindowStatus;
@@ -355,8 +405,12 @@ export async function runAgent(event: AgentEvent): Promise<{
     },
   ];
 
+  let lastInvalidRaw: string | null = null;
+  let lastInvalidIssues: any = null;
+
   try {
     let safetyIterations = 0;
+    let invalidAttempts = 0;
     while (safetyIterations < 6) {
       safetyIterations += 1;
       const completion = await client.chat.completions.create({
@@ -402,9 +456,26 @@ export async function runAgent(event: AgentEvent): Promise<{
       }
 
       const raw = String((message as any).content || '').trim();
-      const parsed = parseJsonLoose(raw);
+      const parsed = normalizeAgentResponseShape(parseJsonLoose(raw));
       const validated = AgentResponseSchema.safeParse(parsed);
       if (!validated.success) {
+        invalidAttempts += 1;
+        lastInvalidRaw = raw || null;
+        lastInvalidIssues = validated.error.issues;
+        if (invalidAttempts <= 2) {
+          messages.push({ role: 'assistant', content: raw || '{}' });
+          messages.push({
+            role: 'user',
+            content: serializeJson({
+              error: 'INVALID_SCHEMA',
+              issues: validated.error.issues,
+              instruction:
+                'Tu JSON anterior NO cumple el schema. Devuelve SOLO un JSON válido con "commands[].command" usando EXACTAMENTE uno de los valores permitidos (en mayúsculas): ' +
+                'UPSERT_PROFILE_FIELDS, SET_CONVERSATION_STATUS, SET_CONVERSATION_STAGE, SET_CONVERSATION_PROGRAM, ADD_CONVERSATION_NOTE, SET_NO_CONTACTAR, SCHEDULE_INTERVIEW, SEND_MESSAGE, NOTIFY_ADMIN, RUN_TOOL.',
+            }),
+          });
+          continue;
+        }
         throw new Error(`Respuesta del agente inválida: ${validated.error.message}`);
       }
 
@@ -421,9 +492,16 @@ export async function runAgent(event: AgentEvent): Promise<{
     const errorText = err instanceof Error ? err.message : 'unknown';
     await prisma.agentRunLog.update({
       where: { id: runLog.id },
-      data: { status: 'ERROR', error: errorText },
+      data: {
+        status: 'ERROR',
+        error: errorText,
+        resultsJson: serializeJson({
+          error: errorText,
+          lastInvalidRaw,
+          lastInvalidIssues,
+        }),
+      },
     });
     throw err;
   }
 }
-
