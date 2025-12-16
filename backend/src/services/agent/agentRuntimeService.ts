@@ -5,6 +5,7 @@ import { getSystemConfig, DEFAULT_AI_MODEL, normalizeModelId } from '../configSe
 import { serializeJson } from '../../utils/json';
 import { AgentResponse, AgentResponseSchema } from './commandSchema';
 import { normalizeText, piiSanitizeText, resolveLocation, stableHash, validateRut } from './tools';
+import { validateAgentResponseSemantics } from './semanticValidation';
 
 type WhatsAppWindowStatus = 'IN_24H' | 'OUTSIDE_24H';
 
@@ -537,6 +538,28 @@ export async function runAgent(event: AgentEvent): Promise<{
           continue;
         }
         throw new Error(`Respuesta del agente inválida: ${validated.error.message}`);
+      }
+
+      const semanticIssues = validateAgentResponseSemantics(validated.data);
+      if (semanticIssues.length > 0) {
+        invalidAttempts += 1;
+        lastInvalidRaw = raw || null;
+        lastInvalidIssues = semanticIssues;
+        if (invalidAttempts <= 2) {
+          messages.push({ role: 'assistant', content: raw || '{}' });
+          messages.push({
+            role: 'user',
+            content: serializeJson({
+              error: 'INVALID_SEMANTICS',
+              issues: semanticIssues,
+              instruction:
+                'Tu JSON es válido, pero faltan campos requeridos. Corrige los comandos. ' +
+                'En SEND_MESSAGE: si type=SESSION_TEXT debes incluir "text". Si type=TEMPLATE debes incluir "templateName" (y variables si aplica).',
+            }),
+          });
+          continue;
+        }
+        throw new Error(`Respuesta del agente inválida: ${serializeJson(semanticIssues)}`);
       }
 
       await prisma.agentRunLog.update({
