@@ -224,7 +224,11 @@ function normalizeAgentResponseShape(value: any): any {
   if (Array.isArray(out.commands)) {
     out.commands = out.commands.map((cmd: any) => {
       if (!cmd || typeof cmd !== 'object') return cmd;
-      const next: any = { ...cmd };
+      let next: any = { ...cmd };
+      if (next.parameters && typeof next.parameters === 'object' && !Array.isArray(next.parameters)) {
+        next = { ...next, ...(next.parameters as any) };
+        delete next.parameters;
+      }
       if ('command' in next) next.command = canonicalizeEnum(next.command);
       if ('type' in next) next.type = canonicalizeEnum(next.type);
       if ('channel' in next) next.channel = canonicalizeEnum(next.channel);
