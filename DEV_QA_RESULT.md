@@ -5,8 +5,8 @@ Fecha: 2025-12-16
 ## Build stamp (DEV)
 - URL: `https://hunter.mangoro.app/`
 - Health: `https://hunter.mangoro.app/api/health`
-- gitSha: `f0cdbef`
-- startedAt: `2025-12-16T21:01:41.251Z`
+- gitSha: `4940843`
+- startedAt: `2025-12-16T21:06:48.261Z`
 
 ## SAFE OUTBOUND MODE (DEV) — PASS
 Regla no negociable: **ALLOWLIST_ONLY** y allowlist efectiva solo 2 números.
@@ -60,4 +60,3 @@ Verificación técnica mínima realizada (sin UI manual):
 - `GET /` sirve HTML y bundle JS.
 - `GET /api/health` OK con gitSha.
 - `GET /api/conversations` devuelve `401` sin token (route existe).
-
