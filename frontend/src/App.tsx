@@ -6,9 +6,10 @@ import { PrivacyPage } from './pages/PrivacyPage';
 import { AgendaPage } from './pages/AgendaPage';
 import { ConfigPage } from './pages/ConfigPage';
 import { SimulatorPage } from './pages/SimulatorPage';
+import { ReviewPage } from './pages/ReviewPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
-type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config';
+type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review';
 
 const decodeUserRole = (token: string | null): string | null => {
   if (!token) return null;
@@ -59,7 +60,7 @@ export const App: React.FC = () => {
   const isAdmin = userRole === 'ADMIN';
 
   useEffect(() => {
-    if ((view === 'config' || view === 'agenda' || view === 'simulator') && !isAdmin) {
+    if ((view === 'config' || view === 'agenda' || view === 'simulator' || view === 'review') && !isAdmin) {
       setView('inbox');
     }
   }, [view, isAdmin]);
@@ -207,6 +208,37 @@ export const App: React.FC = () => {
     );
   }
 
+  if (view === 'review' && isAdmin) {
+    return (
+      <Layout
+        view={view}
+        setView={setView}
+        onLogout={handleLogout}
+        isAdmin={isAdmin}
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        setWorkspaceId={setWorkspaceId}
+        outboundPolicy={outboundPolicy}
+        versionInfo={versionInfo}
+      >
+        <ReviewPage
+          onGoInbox={() => setView('inbox')}
+          onGoInactive={() => setView('inactive')}
+          onGoAgenda={() => setView('agenda')}
+          onGoConfig={() => setView('config')}
+          onGoSimulator={(sessionId?: string) => {
+            try {
+              if (sessionId) localStorage.setItem('simulatorSelectedSessionId', String(sessionId));
+            } catch {
+              // ignore
+            }
+            setView('simulator');
+          }}
+        />
+      </Layout>
+    );
+  }
+
   return (
     <Layout
       view={view}
@@ -348,6 +380,7 @@ const Layout: React.FC<{
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {navButton('inbox', 'Inbox')}
           {navButton('inactive', 'Inactivos')}
+          {isAdmin && navButton('review', 'Ayuda / QA')}
           {isAdmin && navButton('simulator', 'Simulador')}
           {isAdmin && navButton('agenda', 'Agenda')}
           {isAdmin && navButton('config', 'Configuración')}

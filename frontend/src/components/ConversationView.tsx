@@ -108,6 +108,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const previousCountRef = useRef(0);
+  const [isNarrow, setIsNarrow] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 900;
+  });
+  const [detailsOpen, setDetailsOpen] = useState<boolean>(() => false);
   const [aiPausedSaving, setAiPausedSaving] = useState(false);
   const [interviewDay, setInterviewDay] = useState('');
   const [interviewTime, setInterviewTime] = useState('');
@@ -128,11 +133,19 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [programError, setProgramError] = useState<string | null>(null);
 
   useEffect(() => {
+    const handleResize = () => setIsNarrow(window.innerWidth < 900);
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
     if (!conversation) {
       setSendError(null);
       setModeSaving(false);
       setTemplateVariables([]);
       setDownloadError(null);
+      setDetailsOpen(false);
       setInterviewDay('');
       setInterviewTime('');
       setInterviewLocation('');
@@ -151,6 +164,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setProgramError(null);
       return;
     }
+    setDetailsOpen(false);
     setAutoScrollEnabled(true);
     scrollToBottom();
     previousCountRef.current = conversation.messages?.length ?? 0;
@@ -408,10 +422,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const templateConfig = conversation?.templates || {};
   const templateInterviewInvite = templateConfig.templateInterviewInvite || null;
   const templateGeneralFollowup = templateConfig.templateGeneralFollowup || null;
+  const programSlug = conversation?.program?.slug || '';
+  const isInterviewContext = programSlug === 'interview' || aiMode === 'INTERVIEW';
   const requiredTemplate =
-    aiMode === 'INTERVIEW' ? templateInterviewInvite : templateGeneralFollowup;
+    isInterviewContext ? templateInterviewInvite : templateGeneralFollowup;
   const requiredTemplateLabel =
-    aiMode === 'INTERVIEW' ? 'entrevista' : 'seguimiento';
+    isInterviewContext ? 'entrevista' : 'seguimiento';
   const templateVariableCount =
     requiredTemplate === 'postulacion_completar_1'
       ? 1
@@ -518,6 +534,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     }
   };
 
+  const textWrapStyle = {
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+    wordBreak: 'break-word'
+  } as const;
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -530,7 +552,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setNamePanelOpen(value => !value);
+                    setDetailsOpen(true);
+                    setNamePanelOpen(true);
                     setNameStatus(null);
                     setNameError(null);
                     setManualNameDraft(conversation?.contact?.candidateNameManual || '');
@@ -554,53 +577,46 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 </button>
               )}
             </div>
-            {secondaryLabel && <div style={{ fontSize: 12, color: '#666' }}>{secondaryLabel}</div>}
-            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: '#555' }}>
-                Estado: <strong>{conversation?.status || 'NEW'}</strong>
-              </span>
-              <span style={{ fontSize: 12, color: '#555' }}>
-                Stage: <strong>{conversation?.conversationStage || conversation?.stage || '—'}</strong>
-              </span>
-              <span style={{ fontSize: 12, color: '#555' }}>
-                PhoneLine: <strong>{conversation?.phoneLine?.alias || conversation?.phoneLineId || '—'}</strong>
-              </span>
-              <span style={{ fontSize: 12, color: '#555' }}>
-                Ventana WhatsApp:{' '}
-                <strong>{conversation?.within24h === false ? 'OUTSIDE_24H' : 'IN_24H'}</strong>
-              </span>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
-                Program:
-                <select
-                  value={programId}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setProgramId(next);
-                    handleProgramUpdate(next);
-                  }}
-                  disabled={programSaving}
-                  style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
-                >
-                  <option value="">—</option>
-                  {programOptions.map((p: any) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {onReplayInSimulator && !isAdmin ? (
-                <button
-                  type="button"
-                  onClick={() => onReplayInSimulator(conversation.id)}
-                  style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
-                >
-                  Abrir en Simulador (Replay)
-                </button>
-              ) : null}
-              {programError ? <span style={{ fontSize: 12, color: '#b93800' }}>{programError}</span> : null}
-            </div>
-            {!isAdmin && namePanelOpen && (
+            {secondaryLabel && <div style={{ fontSize: 12, color: '#666', ...textWrapStyle }}>{secondaryLabel}</div>}
+            {detailsOpen && (
+              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: '#555' }}>
+                  Estado: <strong>{conversation?.status || 'NEW'}</strong>
+                </span>
+                <span style={{ fontSize: 12, color: '#555' }}>
+                  Stage: <strong>{conversation?.conversationStage || conversation?.stage || '—'}</strong>
+                </span>
+                <span style={{ fontSize: 12, color: '#555' }}>
+                  PhoneLine: <strong>{conversation?.phoneLine?.alias || conversation?.phoneLineId || '—'}</strong>
+                </span>
+                <span style={{ fontSize: 12, color: '#555' }}>
+                  Ventana WhatsApp:{' '}
+                  <strong>{conversation?.within24h === false ? 'OUTSIDE_24H' : 'IN_24H'}</strong>
+                </span>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+                  Program:
+                  <select
+                    value={programId}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setProgramId(next);
+                      handleProgramUpdate(next);
+                    }}
+                    disabled={programSaving}
+                    style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                  >
+                    <option value="">—</option>
+                    {programOptions.map((p: any) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {programError ? <span style={{ fontSize: 12, color: '#b93800' }}>{programError}</span> : null}
+              </div>
+            )}
+            {detailsOpen && !isAdmin && namePanelOpen && (
               <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa', maxWidth: 520 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Nombre visible (manual)</div>
                 <input
@@ -647,170 +663,169 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 {nameError && <div style={{ marginTop: 6, fontSize: 12, color: '#b93800' }}>{nameError}</div>}
               </div>
             )}
-            {noContact ? (
-              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ fontSize: 11, color: '#a8071a', background: '#fff1f0', border: '1px solid #ff7875', borderRadius: 8, padding: '6px 8px', display: 'inline-block', maxWidth: 520 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 2 }}>NO CONTACTAR</div>
-                  <div style={{ color: '#a8071a' }}>
-                    {noContactAt ? (
-                      <span title={noContactAtLabel}>Activado: {formatMessageTime(noContactAt)}</span>
-                    ) : (
-                      <span>Activado: (sin timestamp)</span>
-                    )}
-                    {noContactReason ? ` · Motivo: ${noContactReason}` : ''}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button
-                    onClick={handleReactivateContact}
-                    disabled={noContactSaving}
-                    style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#fff', fontSize: 12 }}
-                  >
-                    {noContactSaving ? 'Procesando…' : 'Reactivar contacto'}
-                  </button>
-                </div>
-                {noContactError && <div style={{ fontSize: 12, color: '#b93800' }}>{noContactError}</div>}
-              </div>
-            ) : (
-              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button
-                    onClick={() => {
-                      setNoContactPanelOpen(value => !value);
-                      setNoContactError(null);
-                    }}
-                    disabled={noContactSaving}
-                    style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
-                  >
-                    Marcar NO_CONTACTAR
-                  </button>
-                </div>
-                {noContactPanelOpen && (
-                  <div style={{ border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa', maxWidth: 520 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Motivo (visible en CRM)</div>
-                    <textarea
-                      value={noContactReasonDraft}
-                      onChange={e => setNoContactReasonDraft(e.target.value)}
-                      rows={2}
-                      style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 13, resize: 'vertical' }}
-                      placeholder="Ej: solicitó no recibir mensajes / contacto erróneo / spam…"
-                    />
-                    <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <button
-                        onClick={handleSetNoContact}
-                        disabled={noContactSaving}
-                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
-                      >
-                        {noContactSaving ? 'Procesando…' : 'Confirmar NO_CONTACTAR'}
-                      </button>
-                      <button
-                        onClick={() => {
-                          setNoContactPanelOpen(false);
-                          setNoContactReasonDraft('');
-                          setNoContactError(null);
-                        }}
-                        disabled={noContactSaving}
-                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
-                      >
-                        Cancelar
-                      </button>
+            {detailsOpen && !isAdmin ? (
+              noContact ? (
+                <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontSize: 11, color: '#a8071a', background: '#fff1f0', border: '1px solid #ff7875', borderRadius: 8, padding: '6px 8px', display: 'inline-block', maxWidth: 520, ...textWrapStyle }}>
+                    <div style={{ fontWeight: 700, marginBottom: 2 }}>NO CONTACTAR</div>
+                    <div style={{ color: '#a8071a' }}>
+                      {noContactAt ? (
+                        <span title={noContactAtLabel}>Activado: {formatMessageTime(noContactAt)}</span>
+                      ) : (
+                        <span>Activado: (sin timestamp)</span>
+                      )}
+                      {noContactReason ? ` · Motivo: ${noContactReason}` : ''}
                     </div>
-                    {noContactError && <div style={{ marginTop: 6, fontSize: 12, color: '#b93800' }}>{noContactError}</div>}
                   </div>
-                )}
-              </div>
-            )}
-          </div>
-          {hasConversation && !isAdmin && (
-            <button
-              onClick={handleAiPauseToggle}
-              disabled={aiPausedSaving}
-              style={{
-                padding: '6px 10px',
-                borderRadius: 8,
-                border: '1px solid #ccc',
-                background: aiPaused ? '#ffe8cc' : '#f6f6f6',
-                fontSize: 12
-              }}
-            >
-              {aiPaused ? 'Silencio activado' : 'Silenciar IA'}
-            </button>
-          )}
-        </div>
-        {hasConversation && !isAdmin && (
-          <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 13, marginBottom: 4 }}>Modo del candidato:</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {modeOptions.map(option => (
-                <button
-                  key={option.key}
-                  onClick={() => handleModeChange(option.key)}
-                  disabled={modeSaving || aiMode === option.key}
-                  style={{
-                    padding: '4px 10px',
-                    borderRadius: 999,
-                    border: aiMode === option.key ? '1px solid #111' : '1px solid #ccc',
-                    background: aiMode === option.key ? '#111' : '#fff',
-                    color: aiMode === option.key ? '#fff' : '#333',
-                    cursor: modeSaving ? 'not-allowed' : 'pointer',
-                    fontSize: 12
-                  }}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            {aiMode === 'INTERVIEW' && (
-              <div style={{ marginTop: 10, padding: 10, border: '1px solid #eee', borderRadius: 8, background: '#fafafa', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>Entrevista</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  <input
-                    value={interviewDay}
-                    onChange={e => setInterviewDay(e.target.value)}
-                    placeholder="Día (ej: Lunes)"
-                    style={{ flex: '1 1 140px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-                  />
-                  <input
-                    value={interviewTime}
-                    onChange={e => setInterviewTime(e.target.value)}
-                    placeholder="Hora (ej: 10:00)"
-                    style={{ flex: '1 1 120px', minWidth: 120, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-                  />
-                  <input
-                    value={interviewLocation}
-                    onChange={e => setInterviewLocation(e.target.value)}
-                    placeholder="Lugar (ej: Online)"
-                    style={{ flex: '2 1 200px', minWidth: 160, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-                  />
-                  <select
-                    value={interviewStatus}
-                    onChange={e => setInterviewStatus(e.target.value)}
-                    style={{ flex: '1 1 160px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
-                  >
-                    <option value="">Estado entrevista</option>
-                    <option value="PENDING">Pendiente</option>
-                    <option value="CONFIRMED">Confirmada</option>
-                    <option value="ON_HOLD">En pausa</option>
-                    <option value="CANCELLED">Cancelada</option>
-                  </select>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      onClick={handleReactivateContact}
+                      disabled={noContactSaving}
+                      style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#fff', fontSize: 12 }}
+                    >
+                      {noContactSaving ? 'Procesando…' : 'Reactivar contacto'}
+                    </button>
+                  </div>
+                  {noContactError && <div style={{ fontSize: 12, color: '#b93800' }}>{noContactError}</div>}
                 </div>
-                <button
-                  onClick={handleInterviewSave}
-                  disabled={interviewSaving}
-                  style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
-                >
-                  {interviewSaving ? 'Guardando...' : 'Guardar entrevista'}
-                </button>
-                <div style={{ fontSize: 11, color: '#666' }}>Las plantillas de entrevista usan estos valores; si están vacíos se usan los defaults de Configuración.</div>
-              </div>
-            )}
+              ) : (
+                <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      onClick={() => {
+                        setNoContactPanelOpen(value => !value);
+                        setNoContactError(null);
+                      }}
+                      disabled={noContactSaving}
+                      style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                    >
+                      Marcar NO_CONTACTAR
+                    </button>
+                  </div>
+                  {noContactPanelOpen && (
+                    <div style={{ border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa', maxWidth: 520 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Motivo (visible en CRM)</div>
+                      <textarea
+                        value={noContactReasonDraft}
+                        onChange={e => setNoContactReasonDraft(e.target.value)}
+                        rows={2}
+                        style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 13, resize: 'vertical', ...textWrapStyle }}
+                        placeholder="Ej: solicitó no recibir mensajes / contacto erróneo / spam…"
+                      />
+                      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button
+                          onClick={handleSetNoContact}
+                          disabled={noContactSaving}
+                          style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+                        >
+                          {noContactSaving ? 'Procesando…' : 'Confirmar NO_CONTACTAR'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setNoContactPanelOpen(false);
+                            setNoContactReasonDraft('');
+                            setNoContactError(null);
+                          }}
+                          disabled={noContactSaving}
+                          style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                      {noContactError && <div style={{ marginTop: 6, fontSize: 12, color: '#b93800' }}>{noContactError}</div>}
+                    </div>
+                  )}
+                </div>
+              )
+            ) : null}
           </div>
-        )}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
+            {onReplayInSimulator && !isAdmin ? (
+              <button
+                type="button"
+                onClick={() => onReplayInSimulator(conversation.id)}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', cursor: 'pointer', fontSize: 12 }}
+              >
+                Replay
+              </button>
+            ) : null}
+            {hasConversation ? (
+              <button
+                type="button"
+                onClick={() => setDetailsOpen((v) => !v)}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', cursor: 'pointer', fontSize: 12 }}
+              >
+                {detailsOpen ? 'Cerrar detalles' : 'Detalles'}
+              </button>
+            ) : null}
+            {hasConversation && !isAdmin ? (
+              <button
+                onClick={handleAiPauseToggle}
+                disabled={aiPausedSaving}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: '1px solid #ccc',
+                  background: aiPaused ? '#ffe8cc' : '#f6f6f6',
+                  fontSize: 12
+                }}
+              >
+                {aiPaused ? 'Silencio activado' : 'Silenciar IA'}
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {detailsOpen && hasConversation && !isAdmin && isInterviewContext ? (
+          <div style={{ marginTop: 10, padding: 10, border: '1px solid #eee', borderRadius: 8, background: '#fafafa', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Entrevista</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <input
+                value={interviewDay}
+                onChange={e => setInterviewDay(e.target.value)}
+                placeholder="Día (ej: Martes)"
+                style={{ flex: '1 1 140px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+              />
+              <input
+                value={interviewTime}
+                onChange={e => setInterviewTime(e.target.value)}
+                placeholder="Hora (ej: 13:00)"
+                style={{ flex: '1 1 120px', minWidth: 120, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+              />
+              <input
+                value={interviewLocation}
+                onChange={e => setInterviewLocation(e.target.value)}
+                placeholder="Lugar (ej: Providencia)"
+                style={{ flex: '2 1 200px', minWidth: 160, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+              />
+              <select
+                value={interviewStatus}
+                onChange={e => setInterviewStatus(e.target.value)}
+                style={{ flex: '1 1 160px', minWidth: 140, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+              >
+                <option value="">Estado entrevista</option>
+                <option value="PENDING">Pendiente</option>
+                <option value="CONFIRMED">Confirmada</option>
+                <option value="ON_HOLD">En pausa</option>
+                <option value="CANCELLED">Cancelada</option>
+              </select>
+            </div>
+            <button
+              onClick={handleInterviewSave}
+              disabled={interviewSaving}
+              style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
+            >
+              {interviewSaving ? 'Guardando...' : 'Guardar entrevista'}
+            </button>
+            <div style={{ fontSize: 11, color: '#666' }}>
+              Las plantillas de entrevista usan estos valores; si están vacíos se usan los defaults de Configuración.
+            </div>
+          </div>
+        ) : null}
       </div>
       <div
         ref={messagesRef}
         onScroll={handleScroll}
-        style={{ flex: 1, padding: 16, overflowY: 'auto', background: '#fafafa', minHeight: 0 }}
+        style={{ flex: 1, padding: 16, overflowY: 'auto', overflowX: 'hidden', background: '#fafafa', minHeight: 0 }}
       >
         {hasConversation ? (
           (() => {
@@ -838,7 +853,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 items.push(
                   <div key={m.id} style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
                     <div style={{ maxWidth: 520, textAlign: 'center' }}>
-                      <div style={{ fontSize: 12, color: '#666', background: '#fff', border: '1px dashed #ddd', borderRadius: 10, padding: '8px 10px', whiteSpace: 'pre-wrap' }}>
+                      <div style={{ fontSize: 12, color: '#666', background: '#fff', border: '1px dashed #ddd', borderRadius: 10, padding: '8px 10px', ...textWrapStyle }}>
                         {m.text || '(evento del sistema)'}
                       </div>
                       {time && (
@@ -871,10 +886,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                       fontSize: 14,
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: 6
+                      gap: 6,
+                      minWidth: 0,
+                      overflowX: 'hidden'
                     }}
                   >
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{m.text || describeMedia(m) || '(sin texto)'}</div>
+                    <div style={textWrapStyle}>{m.text || describeMedia(m) || '(sin texto)'}</div>
                     {m.mediaType && (
                       <div style={{ fontSize: 12, color: '#555', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                         <span>{describeMedia(m)}</span>
@@ -889,7 +906,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                       </div>
                     )}
                     {m.transcriptText && (
-                      <div style={{ fontSize: 12, color: '#333', background: '#f6f6f6', padding: '6px 8px', borderRadius: 8 }}>
+                      <div style={{ fontSize: 12, color: '#333', background: '#f6f6f6', padding: '6px 8px', borderRadius: 8, ...textWrapStyle }}>
                         Transcripción: {m.transcriptText}
                       </div>
                     )}

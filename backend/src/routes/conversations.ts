@@ -107,7 +107,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       where: { workspaceId: access.workspaceId },
       include: {
         contact: true,
-        program: { select: { id: true, name: true } },
+        program: { select: { id: true, name: true, slug: true } },
         phoneLine: { select: { id: true, alias: true } },
         messages: {
           orderBy: { timestamp: 'desc' },
@@ -204,7 +204,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       where: { id, workspaceId: access.workspaceId },
       include: {
         contact: true,
-        program: { select: { id: true, name: true } },
+        program: { select: { id: true, name: true, slug: true } },
         phoneLine: { select: { id: true, alias: true } },
         messages: {
           orderBy: { timestamp: 'asc' }
@@ -256,17 +256,26 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
     const programId =
       typeof body.programId === 'string' && body.programId.trim() ? body.programId.trim() : null;
+    let nextAiMode: string | null = null;
     if (programId) {
       const program = await prisma.program.findFirst({
         where: { id: programId, workspaceId: access.workspaceId, archivedAt: null },
-        select: { id: true }
+        select: { id: true, slug: true }
       });
       if (!program) return reply.code(400).send({ error: 'Program inválido' });
+      const slug = String(program.slug || '').toLowerCase();
+      if (slug === 'interview') nextAiMode = 'INTERVIEW';
+      else if (slug === 'sales') nextAiMode = 'SELLER';
+      else if (slug === 'recruitment') nextAiMode = 'RECRUIT';
     }
 
     await prisma.conversation.update({
       where: { id },
-      data: { programId, updatedAt: new Date() }
+      data: {
+        programId,
+        ...(nextAiMode && !conversation.isAdmin ? { aiMode: nextAiMode } : {}),
+        updatedAt: new Date()
+      }
     });
     return { ok: true };
   });

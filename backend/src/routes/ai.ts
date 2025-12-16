@@ -7,7 +7,8 @@ import {
   DEFAULT_INTERVIEW_AI_MODEL,
   INTERVIEW_AI_POLICY_ADDENDUM,
   DEFAULT_AI_MODEL,
-  normalizeModelId
+  normalizeModelId,
+  DEFAULT_SALES_AI_PROMPT
 } from '../services/configService';
 import { DEFAULT_AI_PROMPT, DEFAULT_MANUAL_SUGGEST_PROMPT } from '../constants/ai';
 import OpenAI from 'openai';
@@ -40,6 +41,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
     const conversation = await prisma.conversation.findUnique({
       where: { id },
       include: {
+        program: { select: { slug: true } },
         messages: {
           orderBy: { timestamp: 'asc' }
         }
@@ -51,8 +53,19 @@ export async function registerAiRoutes(app: FastifyInstance) {
     }
 
     const paused = Boolean((conversation as any).aiPaused);
+    const programSlug = String((conversation as any)?.program?.slug || '').toLowerCase();
+    const inferredMode =
+      programSlug === 'interview'
+        ? 'INTERVIEW'
+        : programSlug === 'sales'
+        ? 'SELLER'
+        : programSlug === 'recruitment'
+        ? 'RECRUIT'
+        : null;
     const mode = paused
       ? 'OFF'
+      : inferredMode
+      ? inferredMode
       : conversation.aiMode === 'INTERVIEW'
       ? 'INTERVIEW'
       : conversation.aiMode === 'OFF'
@@ -74,6 +87,10 @@ export async function registerAiRoutes(app: FastifyInstance) {
       prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
       prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}`;
       model = normalizeModelId(config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL) || DEFAULT_INTERVIEW_AI_MODEL;
+    }
+    if (mode === 'SELLER') {
+      prompt = config.salesAiPrompt?.trim() || DEFAULT_SALES_AI_PROMPT;
+      model = normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
     }
 
     if (mode === 'OFF') {

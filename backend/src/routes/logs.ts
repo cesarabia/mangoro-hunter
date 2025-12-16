@@ -114,5 +114,43 @@ export async function registerLogRoutes(app: FastifyInstance) {
       error: r.error,
     }));
   });
-}
 
+  app.get('/outbound-messages', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+
+    const limitRaw = (request.query as any)?.limit;
+    const limit = typeof limitRaw === 'string' ? parseInt(limitRaw, 10) : 50;
+    const take = Number.isFinite(limit) && limit > 0 && limit <= 200 ? limit : 50;
+
+    const conversationIdRaw = (request.query as any)?.conversationId;
+    const conversationId = typeof conversationIdRaw === 'string' && conversationIdRaw.trim() ? conversationIdRaw.trim() : null;
+
+    const logs = await prisma.outboundMessageLog.findMany({
+      where: { workspaceId: access.workspaceId, ...(conversationId ? { conversationId } : {}) },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        createdAt: true,
+        conversationId: true,
+        channel: true,
+        type: true,
+        dedupeKey: true,
+        blockedReason: true,
+        waMessageId: true,
+      },
+    });
+
+    return logs.map((o) => ({
+      id: o.id,
+      createdAt: o.createdAt.toISOString(),
+      conversationId: o.conversationId,
+      channel: o.channel,
+      type: o.type,
+      dedupeKey: o.dedupeKey,
+      blockedReason: o.blockedReason,
+      waMessageId: o.waMessageId,
+    }));
+  });
+}
