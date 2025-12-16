@@ -309,6 +309,7 @@ async function listActiveReservationsByStartAt(params: { startAtUtc: Date[]; loc
       where: {
         startAt: { in: startAt },
         location: params.location,
+        archivedAt: null,
       },
       select: { id: true, startAt: true, location: true },
     }),
@@ -538,6 +539,7 @@ export async function attemptScheduleInterview(params: {
     where: {
       startAt: desiredSlot.startAt,
       location: desiredSlot.location,
+      archivedAt: null,
     },
     select: { id: true },
   });

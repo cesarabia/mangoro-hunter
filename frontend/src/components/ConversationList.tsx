@@ -26,22 +26,14 @@ const isSuspiciousCandidateName = (value?: string | null) => {
     'hola quiero postular',
     'quiero postular',
     'postular',
-    'hola',
-    'buenas',
     'no puedo',
     'no me sirve',
     'confirmo',
     'medio dia',
     'mediodia',
-    'confirmar',
-    'inmediata',
-    'inmediato',
-    'gracias'
+    'confirmar'
   ];
   if (patterns.some(p => lower.includes(p))) return true;
-  if (/\b(cancelar|cancelaci[oó]n|reagend|reprogram|cambiar|modificar|mover)\b/i.test(lower)) return true;
-  if (/\b(cv|cb|curric|curr[íi]cul|vitae|adjunt|archivo|documento|imagen|foto|pdf|word|docx)\b/i.test(lower)) return true;
-  if (/\b(tengo|adjunto|envio|envi[ée]|enviar|mando|mand[ée]|subo)\b/i.test(lower)) return true;
   if (/(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)/i.test(value)) return true;
   if (/medio ?d[ií]a/i.test(value)) return true;
   return false;
@@ -108,15 +100,12 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const unreadCount = c.unreadCount || 0;
           const hasUnread = unreadCount > 0;
           const isAdmin = Boolean(c.isAdmin);
-          const manualName = !isAdmin ? (c.contact?.candidateNameManual || '').trim() : '';
           const rawCandidate = c.contact?.candidateName || null;
           const validCandidate = !isAdmin && rawCandidate && !isSuspiciousCandidateName(rawCandidate);
           const waId = c.contact?.waId || c.contact?.phone || '';
           const profileDisplay = c.contact?.displayName || c.contact?.name || '';
           const primaryName = isAdmin
             ? 'Administrador'
-            : manualName
-            ? manualName
             : validCandidate
             ? rawCandidate
             : profileDisplay || waId || 'Sin nombre';
@@ -138,14 +127,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontWeight: hasUnread ? 700 : 600 }}>
-                  {primaryName}
-                  {!isAdmin && manualName ? (
-                    <span style={{ marginLeft: 6, fontSize: 11, color: '#666' }} title="Nombre manual (override)">
-                      ✏️
-                    </span>
-                  ) : null}
-                </span>
+                <span style={{ fontWeight: hasUnread ? 700 : 600 }}>{primaryName}</span>
                 {hasUnread && (
                   <span
                     style={{

@@ -72,6 +72,8 @@ async function processIncomingPayload(app: FastifyInstance, payload: any) {
     for (const msg of messages) {
       if (!msg.from) continue;
       await handleInboundWhatsAppMessage(app, {
+        waMessageId: msg.id,
+        waPhoneNumberId: msg.waPhoneNumberId,
         from: msg.from,
         text: msg.text ?? "",
         media: msg.media,
@@ -87,6 +89,8 @@ async function processIncomingPayload(app: FastifyInstance, payload: any) {
 }
 
 function extractMessages(payload: any): Array<{
+  id?: string;
+  waPhoneNumberId?: string;
   from: string;
   text: string | undefined;
   timestamp?: number;
@@ -102,6 +106,8 @@ function extractMessages(payload: any): Array<{
   } | null;
 }> {
   const collected: Array<{
+    id?: string;
+    waPhoneNumberId?: string;
     from: string;
     text: string | undefined;
     timestamp?: number;
@@ -120,8 +126,12 @@ function extractMessages(payload: any): Array<{
   }> = [];
 
   if (payload?.messages && Array.isArray(payload.messages)) {
+    const waPhoneNumberId =
+      payload?.metadata?.phone_number_id || payload?.metadata?.phoneNumberId || null;
     for (const msg of payload.messages) {
       collected.push({
+        id: msg.id,
+        waPhoneNumberId: msg?.metadata?.phone_number_id || waPhoneNumberId || undefined,
         from: msg.from,
         text: msg.text?.body || msg?.[msg.type]?.caption,
         timestamp: msg.timestamp,
@@ -137,9 +147,12 @@ function extractMessages(payload: any): Array<{
       const changes = entry?.changes || [];
       for (const change of changes) {
         const value = change?.value;
+        const waPhoneNumberId = value?.metadata?.phone_number_id || value?.metadata?.phoneNumberId || null;
         if (Array.isArray(value?.messages)) {
           for (const message of value.messages) {
             collected.push({
+              id: message.id,
+              waPhoneNumberId: waPhoneNumberId || message?.metadata?.phone_number_id || undefined,
               from: message.from,
               text: message.text?.body || message?.[message.type]?.caption,
               timestamp: message.timestamp

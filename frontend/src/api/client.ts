@@ -1,15 +1,18 @@
 export const apiClient = {
   async request(path: string, options: RequestInit = {}) {
     const token = localStorage.getItem('token');
+    const workspaceId = localStorage.getItem('workspaceId');
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     };
+    const workspaceHeader: HeadersInit = workspaceId ? { 'X-Workspace-Id': workspaceId } : {};
 
     const res = await fetch(path, {
       ...options,
       headers: {
         ...headers,
+        ...workspaceHeader,
         ...(options.headers || {})
       }
     });

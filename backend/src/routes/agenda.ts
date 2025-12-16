@@ -137,6 +137,32 @@ export async function registerAgendaRoutes(app: FastifyInstance) {
         request.log.error({ err }, 'No se pudo crear bloqueo agenda');
         return reply.code(500).send({ error: 'No se pudo crear el bloqueo.' });
       }
+
+      if (existing.archivedAt) {
+        const revived = await prisma.interviewSlotBlock.update({
+          where: { id: existing.id },
+          data: {
+            archivedAt: null,
+            endAt: resolved.slot.endAt,
+            timezone: resolved.slot.timezone,
+            reason: reason && reason.length > 0 ? reason : null,
+            tag: tag && tag.length > 0 ? tag : null
+          }
+        });
+        return {
+          ok: true,
+          block: {
+            id: revived.id,
+            startAt: revived.startAt.toISOString(),
+            endAt: revived.endAt.toISOString(),
+            timezone: revived.timezone,
+            location: revived.location,
+            reason: revived.reason,
+            tag: revived.tag
+          },
+          revived: true
+        };
+      }
       return {
         ok: true,
         block: {
@@ -159,7 +185,10 @@ export async function registerAgendaRoutes(app: FastifyInstance) {
     }
     const { id } = request.params as { id: string };
     try {
-      await prisma.interviewSlotBlock.delete({ where: { id } });
+      await prisma.interviewSlotBlock.update({
+        where: { id },
+        data: { archivedAt: new Date() }
+      });
       return { ok: true };
     } catch {
       return reply.code(404).send({ error: 'Bloqueo no encontrado' });

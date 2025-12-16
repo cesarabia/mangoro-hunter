@@ -229,6 +229,12 @@ export async function sendAdminNotification(options: {
   const adminWaIds = getAdminWaIdAllowlist(config);
   if (adminWaIds.length === 0) return;
 
+  const enabledEventsParsed = safeJsonParse<unknown>(config.adminNotificationEnabledEvents);
+  if (Array.isArray(enabledEventsParsed) && enabledEventsParsed.length > 0) {
+    const enabledSet = new Set(enabledEventsParsed.map((v) => String(v)));
+    if (!enabledSet.has(eventType)) return;
+  }
+
   const eventKey = `${eventType}:${contact?.id || contact?.waId || contact?.phone || ''}:${reservationId || ''}:${interviewDay || ''}:${interviewTime || ''}:${interviewLocation || ''}`;
 
   const displayName = getContactDisplayName(contact);
@@ -247,7 +253,9 @@ export async function sendAdminNotification(options: {
   const templatesDefault = safeJsonParse<Record<string, string>>(DEFAULT_ADMIN_NOTIFICATION_TEMPLATES) || {};
   const templatesCustom = safeJsonParse<Record<string, string>>(config.adminNotificationTemplates) || {};
   const templates = { ...templatesDefault, ...templatesCustom };
-  const detailLevel = (config.adminNotificationDetailLevel || DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL).toUpperCase();
+  const detailLevelsByEvent = safeJsonParse<Record<string, string>>(config.adminNotificationDetailLevelsByEvent) || {};
+  const effectiveDetailLevel = detailLevelsByEvent[eventType] || config.adminNotificationDetailLevel || DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL;
+  const detailLevel = effectiveDetailLevel.toUpperCase();
 
   const recommendation = (() => {
     if (eventType !== 'RECRUIT_READY') return '';

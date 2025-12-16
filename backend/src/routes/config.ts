@@ -8,6 +8,11 @@ import {
   updateInterviewAiConfig,
   updateTemplateConfig,
   updateWhatsAppConfig,
+  getDefaultOutboundPolicy,
+  getOutboundAllowlist,
+  getOutboundPolicy,
+  getEffectiveOutboundAllowlist,
+  updateOutboundSafetyConfig,
   DEFAULT_ADMIN_AI_PROMPT,
   DEFAULT_ADMIN_AI_MODEL,
   DEFAULT_INTERVIEW_AI_PROMPT,
@@ -35,6 +40,7 @@ import {
   updateAiModel,
   updateRecruitmentContent,
   updateAdminNotificationConfig,
+  updateWorkflowConfig,
   updateAuthorizedNumbersConfig,
   DEFAULT_RECRUIT_JOB_SHEET,
   DEFAULT_RECRUIT_FAQ,
@@ -47,6 +53,12 @@ import { buildWaIdCandidates, normalizeWhatsAppId } from '../utils/whatsapp';
 import { prisma } from '../db/client';
 import { sendWhatsAppTemplate } from '../services/whatsappMessageService';
 import { serializeJson } from '../utils/json';
+import { archiveConversation } from '../services/conversationArchiveService';
+import {
+  DEFAULT_WORKFLOW_ARCHIVE_DAYS,
+  DEFAULT_WORKFLOW_INACTIVITY_DAYS,
+  DEFAULT_WORKFLOW_RULES
+} from '../services/workflowService';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -309,6 +321,81 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     };
   });
 
+  app.get('/outbound-safety', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return {
+        outboundPolicy: getDefaultOutboundPolicy(),
+        outboundPolicyStored: null,
+        defaultPolicy: getDefaultOutboundPolicy(),
+        outboundAllowlist: [],
+        effectiveAllowlist: [],
+        adminNumbers: [],
+        testNumbers: []
+      };
+    }
+    return {
+      outboundPolicy: getOutboundPolicy(config),
+      outboundPolicyStored: (config as any).outboundPolicy || null,
+      defaultPolicy: getDefaultOutboundPolicy(),
+      outboundAllowlist: getOutboundAllowlist(config),
+      effectiveAllowlist: getEffectiveOutboundAllowlist(config),
+      adminNumbers: getAdminWaIdAllowlist(config),
+      testNumbers: getTestWaIdAllowlist(config)
+    };
+  });
+
+  app.put('/outbound-safety', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const body = request.body as {
+      outboundPolicy?: string | null;
+      outboundAllowlist?: string[] | null;
+    };
+
+    const normalizePolicy = (raw: unknown) => {
+      if (raw === null) return null;
+      if (typeof raw !== 'string') return undefined;
+      const upper = raw.trim().toUpperCase();
+      if (!upper) return null;
+      if (upper === 'ALLOW_ALL' || upper === 'ALLOWLIST_ONLY' || upper === 'BLOCK_ALL') return upper;
+      return undefined;
+    };
+
+    const outboundPolicy = typeof body?.outboundPolicy === 'undefined' ? undefined : normalizePolicy(body.outboundPolicy);
+    if (typeof body?.outboundPolicy !== 'undefined' && typeof outboundPolicy === 'undefined') {
+      return reply.code(400).send({ error: 'outboundPolicy inválido (ALLOW_ALL | ALLOWLIST_ONLY | BLOCK_ALL).' });
+    }
+    if (outboundPolicy === 'ALLOW_ALL' && getDefaultOutboundPolicy() !== 'ALLOW_ALL') {
+      return reply.code(400).send({ error: 'En DEV no se permite ALLOW_ALL. Usa ALLOWLIST_ONLY.' });
+    }
+
+    const allowlist = typeof body?.outboundAllowlist === 'undefined' ? undefined : body.outboundAllowlist;
+
+    const updated = await executeUpdate(reply, () =>
+      updateOutboundSafetyConfig({
+        outboundPolicy: outboundPolicy as any,
+        outboundAllowlist: allowlist as any,
+      }),
+    );
+    if (!updated) return;
+
+    return {
+      outboundPolicy: getOutboundPolicy(updated),
+      outboundPolicyStored: (updated as any).outboundPolicy || null,
+      defaultPolicy: getDefaultOutboundPolicy(),
+      outboundAllowlist: getOutboundAllowlist(updated),
+      effectiveAllowlist: getEffectiveOutboundAllowlist(updated),
+      adminNumbers: getAdminWaIdAllowlist(updated),
+      testNumbers: getTestWaIdAllowlist(updated)
+    };
+  });
+
   app.get('/ai', { preValidation: [app.authenticate] }, async (request, reply) => {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
@@ -519,21 +606,46 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     }
 
     const config = await loadConfigSafe(request);
-    const templatesRaw = config?.adminNotificationTemplates || DEFAULT_ADMIN_NOTIFICATION_TEMPLATES;
-    let templatesParsed: any = null;
+    const templatesDefault = JSON.parse(DEFAULT_ADMIN_NOTIFICATION_TEMPLATES);
+    let templatesCustom: any = null;
     try {
-      templatesParsed = JSON.parse(templatesRaw);
+      templatesCustom = config?.adminNotificationTemplates ? JSON.parse(config.adminNotificationTemplates) : null;
     } catch {
-      templatesParsed = null;
+      templatesCustom = null;
     }
     const templates =
-      templatesParsed && typeof templatesParsed === 'object' && !Array.isArray(templatesParsed)
-        ? templatesParsed
-        : JSON.parse(DEFAULT_ADMIN_NOTIFICATION_TEMPLATES);
+      templatesCustom && typeof templatesCustom === 'object' && !Array.isArray(templatesCustom)
+        ? { ...templatesDefault, ...templatesCustom }
+        : templatesDefault;
+
+    let enabledEventsParsed: any = null;
+    try {
+      enabledEventsParsed = config?.adminNotificationEnabledEvents ? JSON.parse(config.adminNotificationEnabledEvents) : null;
+    } catch {
+      enabledEventsParsed = null;
+    }
+    const allEvents = Object.keys(templates);
+    const enabledEvents =
+      Array.isArray(enabledEventsParsed) && enabledEventsParsed.length > 0
+        ? enabledEventsParsed.map((v: any) => String(v)).filter(Boolean)
+        : allEvents;
+
+    let detailLevelsParsed: any = null;
+    try {
+      detailLevelsParsed = config?.adminNotificationDetailLevelsByEvent ? JSON.parse(config.adminNotificationDetailLevelsByEvent) : null;
+    } catch {
+      detailLevelsParsed = null;
+    }
+    const detailLevelsByEvent =
+      detailLevelsParsed && typeof detailLevelsParsed === 'object' && !Array.isArray(detailLevelsParsed)
+        ? detailLevelsParsed
+        : {};
 
     return {
       detailLevel: config?.adminNotificationDetailLevel || DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL,
-      templates
+      templates,
+      enabledEvents,
+      detailLevelsByEvent
     };
   });
 
@@ -542,7 +654,12 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const body = request.body as { detailLevel?: string | null; templates?: any };
+    const body = request.body as {
+      detailLevel?: string | null;
+      templates?: any;
+      enabledEvents?: string[] | null;
+      detailLevelsByEvent?: any;
+    };
     const allowedLevels = new Set(['SHORT', 'MEDIUM', 'DETAILED']);
     if (typeof body?.detailLevel === 'string') {
       const level = body.detailLevel.trim().toUpperCase();
@@ -562,6 +679,32 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       }
     }
 
+    const knownEventTypes = new Set(Object.keys(JSON.parse(DEFAULT_ADMIN_NOTIFICATION_TEMPLATES)));
+    if (typeof body?.enabledEvents !== 'undefined' && body.enabledEvents !== null) {
+      if (!Array.isArray(body.enabledEvents)) {
+        return reply.code(400).send({ error: 'enabledEvents debe ser array (o null).' });
+      }
+      for (const value of body.enabledEvents) {
+        if (typeof value !== 'string' || !knownEventTypes.has(value)) {
+          return reply.code(400).send({ error: `Evento inválido en enabledEvents: ${String(value)}` });
+        }
+      }
+    }
+
+    if (typeof body?.detailLevelsByEvent !== 'undefined' && body.detailLevelsByEvent !== null) {
+      if (!body.detailLevelsByEvent || typeof body.detailLevelsByEvent !== 'object' || Array.isArray(body.detailLevelsByEvent)) {
+        return reply.code(400).send({ error: 'detailLevelsByEvent debe ser un objeto JSON (evento -> nivel) o null.' });
+      }
+      for (const [eventType, levelRaw] of Object.entries(body.detailLevelsByEvent)) {
+        if (!knownEventTypes.has(eventType)) {
+          return reply.code(400).send({ error: `Evento inválido en detailLevelsByEvent: ${eventType}` });
+        }
+        if (typeof levelRaw !== 'string' || !allowedLevels.has(levelRaw.trim().toUpperCase())) {
+          return reply.code(400).send({ error: `Nivel inválido para ${eventType}. Usa SHORT, MEDIUM o DETAILED.` });
+        }
+      }
+    }
+
     const updated = await executeUpdate(reply, () =>
       updateAdminNotificationConfig({
         detailLevel:
@@ -574,25 +717,158 @@ export async function registerConfigRoutes(app: FastifyInstance) {
           typeof body?.templates === 'undefined'
             ? undefined
             : serializeJson(body.templates)
+        ,
+        enabledEvents:
+          typeof body?.enabledEvents === 'undefined'
+            ? undefined
+            : body.enabledEvents === null
+              ? null
+              : serializeJson(body.enabledEvents),
+        detailLevelsByEvent:
+          typeof body?.detailLevelsByEvent === 'undefined'
+            ? undefined
+            : body.detailLevelsByEvent === null
+              ? null
+              : serializeJson(body.detailLevelsByEvent)
       })
     );
     if (!updated) return;
 
     const fresh = await getSystemConfig();
-    let templatesParsed: any = null;
+    const templatesDefault = JSON.parse(DEFAULT_ADMIN_NOTIFICATION_TEMPLATES);
+    let templatesCustom: any = null;
     try {
-      templatesParsed = fresh.adminNotificationTemplates ? JSON.parse(fresh.adminNotificationTemplates) : null;
+      templatesCustom = fresh.adminNotificationTemplates ? JSON.parse(fresh.adminNotificationTemplates) : null;
     } catch {
-      templatesParsed = null;
+      templatesCustom = null;
     }
     const templates =
-      templatesParsed && typeof templatesParsed === 'object' && !Array.isArray(templatesParsed)
-        ? templatesParsed
-        : JSON.parse(DEFAULT_ADMIN_NOTIFICATION_TEMPLATES);
+      templatesCustom && typeof templatesCustom === 'object' && !Array.isArray(templatesCustom)
+        ? { ...templatesDefault, ...templatesCustom }
+        : templatesDefault;
+
+    let enabledEventsParsed: any = null;
+    try {
+      enabledEventsParsed = fresh.adminNotificationEnabledEvents ? JSON.parse(fresh.adminNotificationEnabledEvents) : null;
+    } catch {
+      enabledEventsParsed = null;
+    }
+    const allEvents = Object.keys(templates);
+    const enabledEvents =
+      Array.isArray(enabledEventsParsed) && enabledEventsParsed.length > 0
+        ? enabledEventsParsed.map((v: any) => String(v)).filter(Boolean)
+        : allEvents;
+
+    let detailLevelsParsed: any = null;
+    try {
+      detailLevelsParsed = fresh.adminNotificationDetailLevelsByEvent ? JSON.parse(fresh.adminNotificationDetailLevelsByEvent) : null;
+    } catch {
+      detailLevelsParsed = null;
+    }
+    const detailLevelsByEvent =
+      detailLevelsParsed && typeof detailLevelsParsed === 'object' && !Array.isArray(detailLevelsParsed)
+        ? detailLevelsParsed
+        : {};
 
     return {
       detailLevel: fresh.adminNotificationDetailLevel || DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL,
-      templates
+      templates,
+      enabledEvents,
+      detailLevelsByEvent
+    };
+  });
+
+  app.get('/workflow', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const config = await loadConfigSafe(request);
+    const inactivityDays =
+      typeof config?.workflowInactivityDays === 'number' ? config.workflowInactivityDays : DEFAULT_WORKFLOW_INACTIVITY_DAYS;
+    const archiveDays =
+      typeof config?.workflowArchiveDays === 'number' ? config.workflowArchiveDays : DEFAULT_WORKFLOW_ARCHIVE_DAYS;
+
+    let rules: any = null;
+    try {
+      rules = config?.workflowRules ? JSON.parse(config.workflowRules) : null;
+    } catch {
+      rules = null;
+    }
+    if (!Array.isArray(rules)) {
+      rules = DEFAULT_WORKFLOW_RULES;
+    }
+
+    return {
+      inactivityDays,
+      archiveDays,
+      rules
+    };
+  });
+
+  app.put('/workflow', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const body = request.body as { inactivityDays?: number | null; archiveDays?: number | null; rules?: any };
+
+    const validateDays = (value: any, label: string, max: number) => {
+      if (value === null) return;
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new Error(`${label} debe ser número o null.`);
+      }
+      const int = Math.floor(value);
+      if (int < 1 || int > max) throw new Error(`${label} fuera de rango (1-${max}).`);
+    };
+
+    try {
+      if (typeof body?.inactivityDays !== 'undefined') validateDays(body.inactivityDays, 'inactivityDays', 365);
+      if (typeof body?.archiveDays !== 'undefined') validateDays(body.archiveDays, 'archiveDays', 3650);
+    } catch (err: any) {
+      return reply.code(400).send({ error: err?.message || 'Valores inválidos' });
+    }
+
+    if (typeof body?.rules !== 'undefined') {
+      if (!Array.isArray(body.rules)) {
+        return reply.code(400).send({ error: 'rules debe ser un JSON array.' });
+      }
+      for (const rule of body.rules) {
+        if (!rule || typeof rule !== 'object') {
+          return reply.code(400).send({ error: 'Cada regla debe ser un objeto.' });
+        }
+        if (typeof (rule as any).id !== 'string' || !(rule as any).id.trim()) {
+          return reply.code(400).send({ error: 'Cada regla debe tener id (string).' });
+        }
+        const trigger = (rule as any).trigger;
+        if (trigger !== 'onRecruitDataUpdated' && trigger !== 'onInactivity') {
+          return reply.code(400).send({ error: `Trigger inválido: ${String(trigger)}` });
+        }
+      }
+    }
+
+    const updated = await executeUpdate(reply, () =>
+      updateWorkflowConfig({
+        inactivityDays: typeof body?.inactivityDays === 'undefined' ? undefined : body.inactivityDays,
+        archiveDays: typeof body?.archiveDays === 'undefined' ? undefined : body.archiveDays,
+        rules: typeof body?.rules === 'undefined' ? undefined : serializeJson(body.rules)
+      })
+    );
+    if (!updated) return;
+
+    const fresh = await getSystemConfig();
+    let rules: any = null;
+    try {
+      rules = fresh.workflowRules ? JSON.parse(fresh.workflowRules) : null;
+    } catch {
+      rules = null;
+    }
+    if (!Array.isArray(rules)) rules = DEFAULT_WORKFLOW_RULES;
+
+    return {
+      inactivityDays:
+        typeof fresh.workflowInactivityDays === 'number' ? fresh.workflowInactivityDays : DEFAULT_WORKFLOW_INACTIVITY_DAYS,
+      archiveDays:
+        typeof fresh.workflowArchiveDays === 'number' ? fresh.workflowArchiveDays : DEFAULT_WORKFLOW_ARCHIVE_DAYS,
+      rules
     };
   });
 
@@ -886,23 +1162,45 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       }
       const conversations = await prisma.conversation.findMany({
         where: { contactId: contact.id, isAdmin: false },
-        select: { id: true }
+        select: { id: true },
+        orderBy: { updatedAt: 'desc' }
       });
       const ids = conversations.map(c => c.id);
-      await prisma.$transaction([
-        prisma.message.deleteMany({ where: { conversationId: { in: ids } } }),
-        prisma.conversation.deleteMany({ where: { id: { in: ids } } }),
-        prisma.contact.update({
-          where: { id: contact.id },
-          data: {
-            candidateName: null,
-            name: null,
-            displayName: null,
-            updatedAt: new Date()
-          }
-        })
-      ]);
-      return { success: true, message: 'Conversación de prueba reseteada.' };
+      for (const id of ids) {
+        await archiveConversation({
+          conversationId: id,
+          reason: 'TEST_RESET',
+          tags: ['TEST'],
+          summary: 'Reset de pruebas (historial preservado).'
+        });
+      }
+      await prisma.contact.update({
+        where: { id: contact.id },
+        data: {
+          candidateName: null,
+          candidateNameManual: null,
+          name: null,
+          displayName: null,
+          noContact: false,
+          noContactAt: null,
+          noContactReason: null,
+          updatedAt: new Date()
+        }
+      });
+      const newConversation = await prisma.conversation.create({
+        data: {
+          contactId: contact.id,
+          status: 'NEW',
+          channel: 'whatsapp',
+          aiMode: 'RECRUIT'
+        }
+      });
+      return {
+        success: true,
+        message: 'Conversación de prueba archivada y reiniciada (sin borrar historial).',
+        archived: ids.length,
+        conversationId: newConversation.id
+      };
     } catch (err) {
       request.log.error({ err }, 'Reset de conversación de pruebas falló');
       return reply.code(500).send({ error: 'No se pudo resetear la conversación de prueba' });
@@ -947,7 +1245,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         orderBy: { createdAt: 'asc' }
       });
       if (contacts.length === 0) {
-        results.cleaned[label] = { contactsFound: 0, mergedContacts: 0, conversationsDeleted: 0, messagesDeleted: 0 };
+        results.cleaned[label] = { contactsFound: 0, mergedContacts: 0, conversationsArchived: 0 };
         return;
       }
       const primary =
@@ -966,8 +1264,17 @@ export async function registerConfigRoutes(app: FastifyInstance) {
             await tx.application.updateMany({ where: { contactId: secId }, data: { contactId: primary.id } });
             await tx.interviewReservation.updateMany({ where: { contactId: secId }, data: { contactId: primary.id } });
             await tx.sellerEvent.updateMany({ where: { contactId: secId }, data: { contactId: primary.id } });
-            await tx.contact.update({ where: { id: secId }, data: { waId: null, phone: null } });
-            await tx.contact.delete({ where: { id: secId } });
+            await tx.contact.update({
+              where: { id: secId },
+              data: {
+                waId: null,
+                phone: null,
+                mergedIntoContactId: primary.id,
+                mergedAt: new Date(),
+                mergedReason: 'TEST_CLEANUP_DEDUPE',
+                archivedAt: new Date()
+              }
+            });
             mergedContacts += 1;
           }
           await tx.contact.update({
@@ -982,25 +1289,26 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         }).catch(() => {});
       }
 
-      const conversationsToDelete = await prisma.conversation.findMany({
+      const conversationsToArchive = await prisma.conversation.findMany({
         where: { contactId: primary.id, isAdmin: false },
         select: { id: true }
       });
-      const convoIds = conversationsToDelete.map(c => c.id);
+      const convoIds = conversationsToArchive.map(c => c.id);
 
-      let messagesDeleted = 0;
-      let conversationsDeleted = 0;
+      for (const convoId of convoIds) {
+        await archiveConversation({
+          conversationId: convoId,
+          reason: 'TEST_CLEANUP',
+          tags: ['TEST', label.toUpperCase()],
+          summary: 'Limpieza de pruebas (historial preservado).'
+        });
+      }
+      // Make sure pending reservations don't keep blocking slots on reruns.
       if (convoIds.length > 0) {
-        const [messagesRes, reservationsRes, eventsRes, conversationsRes] = await prisma.$transaction([
-          prisma.message.deleteMany({ where: { conversationId: { in: convoIds } } }),
-          prisma.interviewReservation.deleteMany({ where: { conversationId: { in: convoIds } } }),
-          prisma.sellerEvent.deleteMany({ where: { conversationId: { in: convoIds } } }),
-          prisma.conversation.deleteMany({ where: { id: { in: convoIds } } })
-        ]);
-        messagesDeleted = messagesRes.count;
-        conversationsDeleted = conversationsRes.count;
-        void reservationsRes;
-        void eventsRes;
+        await prisma.interviewReservation.updateMany({
+          where: { conversationId: { in: convoIds }, activeKey: 'ACTIVE' },
+          data: { status: 'CANCELLED', activeKey: null }
+        }).catch(() => {});
       }
 
       if (label === 'test') {
@@ -1017,6 +1325,21 @@ export async function registerConfigRoutes(app: FastifyInstance) {
             updatedAt: new Date()
           }
         }).catch(() => {});
+        const existingActive = await prisma.conversation.findFirst({
+          where: { contactId: primary.id, isAdmin: false, conversationStage: { not: 'ARCHIVED' } },
+          orderBy: { updatedAt: 'desc' },
+          select: { id: true }
+        });
+        if (!existingActive) {
+          await prisma.conversation.create({
+            data: {
+              contactId: primary.id,
+              status: 'NEW',
+              channel: 'whatsapp',
+              aiMode: 'RECRUIT'
+            }
+          }).catch(() => {});
+        }
       }
       if (label === 'admin') {
         await prisma.contact.update({
@@ -1039,10 +1362,14 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         if (adminConversations.length > 1) {
           const keep = adminConversations[0];
           const remove = adminConversations.slice(1).map(c => c.id);
-          await prisma.$transaction([
-            prisma.message.deleteMany({ where: { conversationId: { in: remove } } }),
-            prisma.conversation.deleteMany({ where: { id: { in: remove } } })
-          ]);
+          for (const convoId of remove) {
+            await archiveConversation({
+              conversationId: convoId,
+              reason: 'ADMIN_DEDUPE',
+              tags: ['ADMIN', 'TEST'],
+              summary: 'Conversación admin duplicada (archivada).'
+            });
+          }
           await prisma.conversation.update({
             where: { id: keep.id },
             data: { aiMode: 'OFF', status: 'OPEN', updatedAt: new Date() }
@@ -1053,8 +1380,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       results.cleaned[label] = {
         contactsFound: contacts.length,
         mergedContacts,
-        conversationsDeleted,
-        messagesDeleted
+        conversationsArchived: convoIds.length
       };
     };
 
@@ -1078,20 +1404,21 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       });
       const ids = simulated.map(c => c.id);
       if (ids.length > 0) {
-        const [messagesRes, reservationsRes, eventsRes, conversationsRes] = await prisma.$transaction([
-          prisma.message.deleteMany({ where: { conversationId: { in: ids } } }),
-          prisma.interviewReservation.deleteMany({ where: { conversationId: { in: ids } } }),
-          prisma.sellerEvent.deleteMany({ where: { conversationId: { in: ids } } }),
-          prisma.conversation.deleteMany({ where: { id: { in: ids } } })
-        ]);
-        results.cleaned.simulated = {
-          conversationsDeleted: conversationsRes.count,
-          messagesDeleted: messagesRes.count
-        };
-        void reservationsRes;
-        void eventsRes;
+        for (const convoId of ids) {
+          await archiveConversation({
+            conversationId: convoId,
+            reason: 'SIMULATED_CLEANUP',
+            tags: ['TEST', 'SIMULATED'],
+            summary: 'Conversación simulada (archivada).'
+          });
+        }
+        await prisma.interviewReservation.updateMany({
+          where: { conversationId: { in: ids }, activeKey: 'ACTIVE' },
+          data: { status: 'CANCELLED', activeKey: null }
+        }).catch(() => {});
+        results.cleaned.simulated = { conversationsArchived: ids.length };
       } else {
-        results.cleaned.simulated = { conversationsDeleted: 0, messagesDeleted: 0 };
+        results.cleaned.simulated = { conversationsArchived: 0 };
       }
     } catch (err) {
       request.log.warn({ err }, 'Cleanup simulated conversations failed');
@@ -1100,17 +1427,17 @@ export async function registerConfigRoutes(app: FastifyInstance) {
 
     // Remove agenda blocks created for tests (no candidate involved).
     try {
-      const blocksRes = await prisma.interviewSlotBlock.deleteMany({
-        where: { tag: { startsWith: 'TEST' } }
+      const blocksRes = await prisma.interviewSlotBlock.updateMany({
+        where: { tag: { startsWith: 'TEST' }, archivedAt: null },
+        data: { archivedAt: new Date() }
       });
-      results.cleaned.blocks = { blocksDeleted: blocksRes.count };
+      results.cleaned.blocks = { blocksArchived: blocksRes.count };
     } catch (err) {
       request.log.warn({ err }, 'Cleanup slot blocks failed');
       results.cleaned.blocks = { error: 'failed' };
     }
 
-    // Remove orphan contacts left behind by tests (no conversations/apps/reservations/events),
-    // and remove their admin notifications from the admin conversation.
+    // Report orphan contacts, but do not delete anything (retain evidence).
     try {
       const protectedIds: string[] = [];
       if (primaryTestContactId) protectedIds.push(primaryTestContactId);
@@ -1127,35 +1454,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         select: { id: true, waId: true, phone: true }
       });
 
-      const orphanIds = orphanContacts.map(c => c.id);
-      let adminMessagesDeleted = 0;
-
-      if (orphanIds.length > 0) {
-        const adminConvos = await prisma.conversation.findMany({
-          where: { isAdmin: true },
-          select: { id: true }
-        });
-        const adminIds = adminConvos.map(c => c.id);
-        if (adminIds.length > 0) {
-          const adminRes = await prisma.message.deleteMany({
-            where: {
-              conversationId: { in: adminIds },
-              OR: orphanIds.map(id => ({
-                rawPayload: { contains: `"contactId":"${id}"` }
-              }))
-            }
-          });
-          adminMessagesDeleted = adminRes.count;
-        }
-      }
-
-      const contactsDeleted = orphanIds.length > 0
-        ? (await prisma.contact.deleteMany({ where: { id: { in: orphanIds } } })).count
-        : 0;
-
       results.cleaned.orphanContacts = {
-        contactsDeleted,
-        adminMessagesDeleted
+        contactsFound: orphanContacts.length
       };
     } catch (err) {
       request.log.warn({ err }, 'Cleanup orphan contacts failed');

@@ -4,49 +4,38 @@ import { ConversationList } from '../components/ConversationList';
 import { ConversationView } from '../components/ConversationView';
 
 interface Props {
-  onLogout: () => void;
-  showSettings?: boolean;
-  onOpenSettings?: () => void;
-  showAgenda?: boolean;
+  mode: 'INBOX' | 'INACTIVE';
   onOpenAgenda?: () => void;
-  enableSimulator?: boolean;
+  onOpenSimulator?: () => void;
+  onOpenConfig?: () => void;
+  onReplayInSimulator?: (conversationId: string) => void;
 }
 
 export const InboxPage: React.FC<Props> = ({
-  onLogout,
-  showSettings,
-  onOpenSettings,
-  showAgenda,
-  onOpenAgenda,
-  enableSimulator
+  mode,
+  onReplayInSimulator
 }) => {
   const POLLING_INTERVAL = 7000;
-  const isLocalhost =
-    typeof window !== 'undefined' &&
-    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
   const STATUS_LABELS: Record<string, string> = {
     NEW: 'Nuevo',
     OPEN: 'En seguimiento',
     CLOSED: 'Cerrado'
   };
+  const INACTIVE_STAGES = new Set(['STALE_NO_RESPONSE', 'ARCHIVED', 'DISQUALIFIED']);
 
   const [conversations, setConversations] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedConversation, setSelectedConversation] = useState<any | null>(null);
   const [statusUpdating, setStatusUpdating] = useState(false);
-  const [simNumber, setSimNumber] = useState('56982345846');
-  const [simMessage, setSimMessage] = useState('Hola, estoy interesad@ en la vacante');
-  const [simStatus, setSimStatus] = useState<string | null>(null);
-  const [simError, setSimError] = useState<string | null>(null);
-  const [simLoading, setSimLoading] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newPhone, setNewPhone] = useState('');
-  const [newMode, setNewMode] = useState<'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF'>('RECRUIT');
+  const [newMode, setNewMode] = useState<'RECRUIT' | 'INTERVIEW' | 'OFF'>('RECRUIT');
   const [newStatus, setNewStatus] = useState<'NEW' | 'OPEN' | 'CLOSED'>('NEW');
   const [sendTemplateNow, setSendTemplateNow] = useState(true);
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [programs, setPrograms] = useState<any[]>([]);
   const selectedIdRef = useRef<string | null>(null);
   const initialSelectionDone = useRef(false);
   const lastBackendErrorRef = useRef<string | null>(null);
@@ -76,27 +65,40 @@ export const InboxPage: React.FC<Props> = ({
     try {
       const data = await apiClient.get('/api/conversations');
       clearBackendError();
-      setConversations(data);
+      const list = Array.isArray(data) ? data : [];
+      const filtered = list.filter((c: any) => {
+        const stage = String(c?.conversationStage || c?.stage || '').toUpperCase();
+        const isInactive = Boolean(c?.archivedAt) || INACTIVE_STAGES.has(stage);
+        return mode === 'INACTIVE' ? isInactive : !isInactive;
+      });
+      setConversations(filtered);
 
       const currentSelected = selectedIdRef.current;
 
-      if (!initialSelectionDone.current && data.length > 0) {
-        const firstId = data[0].id;
+      if (!initialSelectionDone.current && filtered.length > 0) {
+        const firstId = filtered[0].id;
         initialSelectionDone.current = true;
         selectedIdRef.current = firstId;
         setSelectedId(firstId);
       }
 
-      if (currentSelected && !data.some((conversation: any) => conversation.id === currentSelected)) {
-        selectedIdRef.current = null;
-        setSelectedId(null);
-        setSelectedConversation(null);
-        initialSelectionDone.current = false;
+      if (currentSelected && !filtered.some((conversation: any) => conversation.id === currentSelected)) {
+        if (filtered.length > 0) {
+          const nextId = filtered[0].id;
+          initialSelectionDone.current = true;
+          selectedIdRef.current = nextId;
+          setSelectedId(nextId);
+        } else {
+          selectedIdRef.current = null;
+          setSelectedId(null);
+          setSelectedConversation(null);
+          initialSelectionDone.current = false;
+        }
       }
     } catch (err) {
       recordBackendError(err);
     }
-  }, [clearBackendError, recordBackendError]);
+  }, [clearBackendError, recordBackendError, mode]);
 
   const loadConversation = useCallback(async (id: string) => {
     try {
@@ -132,6 +134,13 @@ export const InboxPage: React.FC<Props> = ({
     const interval = setInterval(run, POLLING_INTERVAL);
     return () => clearInterval(interval);
   }, [loadConversations, loadConversation]);
+
+  useEffect(() => {
+    apiClient
+      .get('/api/programs')
+      .then((data: any) => setPrograms(Array.isArray(data) ? data : []))
+      .catch(() => setPrograms([]));
+  }, []);
 
   useEffect(() => {
     const current = selectedId;
@@ -195,33 +204,6 @@ export const InboxPage: React.FC<Props> = ({
     }
   };
 
-  const handleSimulate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!simNumber.trim() || !simMessage.trim()) return;
-    setSimLoading(true);
-    setSimStatus(null);
-    setSimError(null);
-    try {
-      const res = await apiClient.post('/api/simulate/whatsapp', {
-        from: simNumber.trim(),
-        text: simMessage.trim()
-      });
-      setSimStatus('Mensaje simulado correctamente');
-      setSimMessage('');
-      await loadConversations();
-      if (res?.conversationId) {
-        setSelectedId(res.conversationId);
-        await loadConversation(res.conversationId);
-      } else if (selectedId) {
-        await loadConversation(selectedId);
-      }
-    } catch (err: any) {
-      setSimError(err.message || 'No se pudo simular el mensaje');
-    } finally {
-      setSimLoading(false);
-    }
-  };
-
   const handleStatusChange = async (status: string) => {
     if (!selectedConversation || selectedConversation.isAdmin || selectedConversation.status === status) return;
     setStatusUpdating(true);
@@ -237,66 +219,18 @@ export const InboxPage: React.FC<Props> = ({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minHeight: 0 }}>
-      <header style={{ padding: '8px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div style={{ padding: '8px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <strong>Hunter CRM v2.5.2</strong>
+          <strong>{mode === 'INACTIVE' ? 'Inactivos' : 'Inbox'}</strong>
           {backendError && <span style={{ fontSize: 12, color: '#b93800' }}>{backendError}</span>}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setShowAddModal(true)} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
+          <button onClick={() => setShowAddModal(true)} style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}>
             + Agregar número
           </button>
-          {showAgenda && (
-            <button onClick={onOpenAgenda} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
-              Agenda
-            </button>
-          )}
-          {showSettings && (
-            <button onClick={onOpenSettings} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
-              Configuración
-            </button>
-          )}
-          <button onClick={onLogout} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc' }}>
-            Salir
-          </button>
         </div>
-      </header>
-      {enableSimulator && isLocalhost && (
-        <section style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0', background: '#fafafa', flexShrink: 0 }}>
-          <form onSubmit={handleSimulate} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <strong>Simular mensaje de candidato (solo local)</strong>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <input
-                type="text"
-                value={simNumber}
-                onChange={e => setSimNumber(e.target.value)}
-                placeholder="Número WhatsApp (ej: 56982345846)"
-                style={{ flex: '1 1 180px', minWidth: 160, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
-              />
-              <input
-                type="text"
-                value={simMessage}
-                onChange={e => setSimMessage(e.target.value)}
-                placeholder="Mensaje del candidato"
-                style={{ flex: '2 1 240px', minWidth: 220, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
-              />
-              <button
-                type="submit"
-                disabled={simLoading}
-                style={{ padding: '8px 16px', borderRadius: 4, border: 'none', background: '#111', color: '#fff' }}
-              >
-                {simLoading ? 'Simulando...' : 'Simular mensaje'}
-              </button>
-            </div>
-            <small style={{ color: '#666' }}>
-              Usa este panel para generar conversaciones sin depender del webhook de Meta.
-            </small>
-            {simStatus && <span style={{ color: 'green' }}>{simStatus}</span>}
-            {simError && <span style={{ color: 'red' }}>{simError}</span>}
-          </form>
-        </section>
-      )}
+      </div>
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <ConversationList
           conversations={conversations}
@@ -335,7 +269,12 @@ export const InboxPage: React.FC<Props> = ({
               </div>
             </div>
           )}
-          <ConversationView conversation={selectedConversation} onMessageSent={handleMessageSent} />
+          <ConversationView
+            conversation={selectedConversation}
+            onMessageSent={handleMessageSent}
+            programs={programs}
+            onReplayInSimulator={onReplayInSimulator}
+          />
         </div>
       </div>
       {showAddModal && (
@@ -373,12 +312,11 @@ export const InboxPage: React.FC<Props> = ({
                 Modo inicial
                 <select
                   value={newMode}
-                  onChange={e => setNewMode(e.target.value as 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF')}
+                  onChange={e => setNewMode(e.target.value as 'RECRUIT' | 'INTERVIEW' | 'OFF')}
                   style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                 >
                   <option value="RECRUIT">Reclutamiento</option>
                   <option value="INTERVIEW">Entrevista</option>
-                  <option value="SELLER">Ventas</option>
                   <option value="OFF">Manual</option>
                 </select>
               </label>

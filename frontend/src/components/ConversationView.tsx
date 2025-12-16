@@ -4,6 +4,8 @@ import { apiClient } from '../api/client';
 interface ConversationViewProps {
   conversation: any | null;
   onMessageSent: () => void;
+  programs?: any[];
+  onReplayInSimulator?: (conversationId: string) => void;
 }
 
 const safeParseJson = (value: any) => {
@@ -89,7 +91,12 @@ const isSuspiciousCandidateName = (value?: string | null) => {
   return false;
 };
 
-export const ConversationView: React.FC<ConversationViewProps> = ({ conversation, onMessageSent }) => {
+export const ConversationView: React.FC<ConversationViewProps> = ({
+  conversation,
+  onMessageSent,
+  programs,
+  onReplayInSimulator
+}) => {
   const [text, setText] = useState('');
   const [loadingSend, setLoadingSend] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
@@ -116,6 +123,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
   const [nameSaving, setNameSaving] = useState(false);
   const [nameStatus, setNameStatus] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
+  const [programId, setProgramId] = useState<string>('');
+  const [programSaving, setProgramSaving] = useState(false);
+  const [programError, setProgramError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!conversation) {
@@ -136,6 +146,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setNameSaving(false);
       setNameStatus(null);
       setNameError(null);
+      setProgramId('');
+      setProgramSaving(false);
+      setProgramError(null);
       return;
     }
     setAutoScrollEnabled(true);
@@ -157,6 +170,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     setNameSaving(false);
     setNameStatus(null);
     setNameError(null);
+    setProgramId(conversation.program?.id || conversation.programId || '');
+    setProgramSaving(false);
+    setProgramError(null);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -200,6 +216,23 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
       setSendError(err.message || 'No se pudo enviar el mensaje');
     } finally {
       setLoadingSend(false);
+    }
+  };
+
+  const handleProgramUpdate = async (nextProgramId: string) => {
+    if (!conversation || programSaving) return;
+    setProgramSaving(true);
+    setProgramError(null);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/program`, {
+        programId: nextProgramId || null
+      });
+      setProgramId(nextProgramId);
+      onMessageSent();
+    } catch (err: any) {
+      setProgramError(err.message || 'No se pudo actualizar el Program');
+    } finally {
+      setProgramSaving(false);
     }
   };
 
@@ -391,6 +424,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
     { key: 'SELLER', label: 'Ventas' },
     { key: 'OFF', label: 'Manual' }
   ];
+  const programOptions = Array.isArray(programs) ? programs : [];
 
   useEffect(() => {
     if (!conversation) {
@@ -521,6 +555,51 @@ export const ConversationView: React.FC<ConversationViewProps> = ({ conversation
               )}
             </div>
             {secondaryLabel && <div style={{ fontSize: 12, color: '#666' }}>{secondaryLabel}</div>}
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: '#555' }}>
+                Estado: <strong>{conversation?.status || 'NEW'}</strong>
+              </span>
+              <span style={{ fontSize: 12, color: '#555' }}>
+                Stage: <strong>{conversation?.conversationStage || conversation?.stage || '—'}</strong>
+              </span>
+              <span style={{ fontSize: 12, color: '#555' }}>
+                PhoneLine: <strong>{conversation?.phoneLine?.alias || conversation?.phoneLineId || '—'}</strong>
+              </span>
+              <span style={{ fontSize: 12, color: '#555' }}>
+                Ventana WhatsApp:{' '}
+                <strong>{conversation?.within24h === false ? 'OUTSIDE_24H' : 'IN_24H'}</strong>
+              </span>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+                Program:
+                <select
+                  value={programId}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setProgramId(next);
+                    handleProgramUpdate(next);
+                  }}
+                  disabled={programSaving}
+                  style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                >
+                  <option value="">—</option>
+                  {programOptions.map((p: any) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {onReplayInSimulator && !isAdmin ? (
+                <button
+                  type="button"
+                  onClick={() => onReplayInSimulator(conversation.id)}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
+                >
+                  Abrir en Simulador (Replay)
+                </button>
+              ) : null}
+              {programError ? <span style={{ fontSize: 12, color: '#b93800' }}>{programError}</span> : null}
+            </div>
             {!isAdmin && namePanelOpen && (
               <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa', maxWidth: 520 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Nombre visible (manual)</div>

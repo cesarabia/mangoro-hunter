@@ -11,6 +11,13 @@ import { registerSimulationRoutes } from './routes/simulate';
 import { registerHealthRoutes } from './routes/health';
 import { registerMessageRoutes } from './routes/messages';
 import { registerAgendaRoutes } from './routes/agenda';
+import { startWorkflowSchedulers } from './services/workflowSchedulerService';
+import { registerWorkspaceRoutes } from './routes/workspaces';
+import { registerPhoneLineRoutes } from './routes/phoneLines';
+import { registerProgramRoutes } from './routes/programs';
+import { registerAutomationRoutes } from './routes/automations';
+import { registerLogRoutes } from './routes/logs';
+import { registerUserRoutes } from './routes/users';
 
 export async function buildServer() {
   const app = Fastify({ logger: true });
@@ -29,12 +36,19 @@ export async function buildServer() {
 
   await ensureAdminUser();
   app.log.info('Admin bootstrap ok');
+  startWorkflowSchedulers(app);
 
   app.register(registerAuthRoutes, { prefix: '/api/auth' });
   app.register(registerHealthRoutes, { prefix: '/api' });
+  app.register(registerWorkspaceRoutes, { prefix: '/api/workspaces' });
+  app.register(registerUserRoutes, { prefix: '/api/users' });
   app.register(registerConversationRoutes, { prefix: '/api/conversations' });
   app.register(registerAiRoutes, { prefix: '/api/conversations' });
   app.register(registerConfigRoutes, { prefix: '/api/config' });
+  app.register(registerPhoneLineRoutes, { prefix: '/api/phone-lines' });
+  app.register(registerProgramRoutes, { prefix: '/api/programs' });
+  app.register(registerAutomationRoutes, { prefix: '/api/automations' });
+  app.register(registerLogRoutes, { prefix: '/api/logs' });
   app.register(registerAgendaRoutes, { prefix: '/api/agenda' });
   app.register(registerSimulationRoutes, { prefix: '/api/simulate' });
   app.register(registerMessageRoutes, { prefix: '/api/messages' });

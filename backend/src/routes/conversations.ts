@@ -13,6 +13,7 @@ import {
 } from '../services/interviewSchedulerService';
 import { sendAdminNotification } from '../services/adminNotificationService';
 import { getContactDisplayName } from '../utils/contactDisplay';
+import { resolveWorkspaceAccess } from '../services/workspaceAuthService';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -24,6 +25,12 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       'hola quiero postular',
       'quiero postular',
       'postular',
+      'mas informacion',
+      'más información',
+      'más info',
+      'info',
+      'informacion',
+      'información',
       'hola',
       'buenas',
       'confirmo',
@@ -95,9 +102,13 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   }
 
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
     const conversations = await prisma.conversation.findMany({
+      where: { workspaceId: access.workspaceId },
       include: {
         contact: true,
+        program: { select: { id: true, name: true } },
+        phoneLine: { select: { id: true, alias: true } },
         messages: {
           orderBy: { timestamp: 'desc' },
           take: 1
@@ -186,12 +197,15 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.get('/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
 
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId },
       include: {
         contact: true,
+        program: { select: { id: true, name: true } },
+        phoneLine: { select: { id: true, alias: true } },
         messages: {
           orderBy: { timestamp: 'asc' }
         }
@@ -225,6 +239,36 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       within24h,
       templates
     };
+  });
+
+  app.patch('/:id/program', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const access = await resolveWorkspaceAccess(request);
+    const { id } = request.params as { id: string };
+    const body = request.body as { programId?: string | null };
+
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId }
+    });
+    if (!conversation) return reply.code(404).send({ error: 'Conversation not found' });
+
+    const programId =
+      typeof body.programId === 'string' && body.programId.trim() ? body.programId.trim() : null;
+    if (programId) {
+      const program = await prisma.program.findFirst({
+        where: { id: programId, workspaceId: access.workspaceId, archivedAt: null },
+        select: { id: true }
+      });
+      if (!program) return reply.code(400).send({ error: 'Program inválido' });
+    }
+
+    await prisma.conversation.update({
+      where: { id },
+      data: { programId, updatedAt: new Date() }
+    });
+    return { ok: true };
   });
 
   app.patch('/:id/contact-name', { preValidation: [app.authenticate] }, async (request, reply) => {

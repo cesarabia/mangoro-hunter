@@ -1,0 +1,429 @@
+import OpenAI from 'openai';
+import { prisma } from '../../db/client';
+import { getEffectiveOpenAiKey } from '../aiService';
+import { getSystemConfig, DEFAULT_AI_MODEL, normalizeModelId } from '../configService';
+import { serializeJson } from '../../utils/json';
+import { AgentResponse, AgentResponseSchema } from './commandSchema';
+import { normalizeText, piiSanitizeText, resolveLocation, stableHash, validateRut } from './tools';
+
+type WhatsAppWindowStatus = 'IN_24H' | 'OUTSIDE_24H';
+
+export type AgentEvent = {
+  workspaceId: string;
+  conversationId: string;
+  eventType: string;
+  inboundMessageId?: string | null;
+};
+
+type ToolResult =
+  | { ok: true; result: unknown }
+  | { ok: false; error: string };
+
+function buildSystemPrompt(params: {
+  programPrompt: string;
+  windowStatus: WhatsAppWindowStatus;
+}): string {
+  const policy = `
+Eres un agente de Hunter CRM. NO respondas con texto suelto.
+Debes responder SOLO con un JSON válido que cumpla el schema:
+{
+  "agent": string,
+  "version": 1,
+  "commands": [ ... ],
+  "notes"?: string
+}
+
+Reglas de seguridad y guardrails:
+- No inventes datos. Si falta info, pregunta 1 cosa clara.
+- No actives NO_CONTACTAR salvo opt-out explícito en el mensaje del usuario (no por contenido de adjuntos).
+- Respeta ventana WhatsApp:
+  - IN_24H: puedes usar SEND_MESSAGE type=SESSION_TEXT.
+  - OUTSIDE_24H: solo SEND_MESSAGE type=TEMPLATE (nunca SESSION_TEXT).
+- Nunca sobrescribas candidateName si existe candidateNameManual.
+- Evita loops: no repitas la misma pregunta 2+ veces; si necesitas confirmar, pide confirmación en formato 1/2.
+`.trim();
+
+  return `${policy}\n\nEstado ventana WhatsApp: ${params.windowStatus}\n\n${params.programPrompt}`.trim();
+}
+
+async function computeWhatsAppWindowStatus(conversationId: string): Promise<WhatsAppWindowStatus> {
+  const WINDOW_MS = 24 * 60 * 60 * 1000;
+  const lastInbound = await prisma.message.findFirst({
+    where: { conversationId, direction: 'INBOUND' },
+    orderBy: { timestamp: 'desc' },
+    select: { timestamp: true },
+  });
+  if (!lastInbound?.timestamp) return 'IN_24H';
+  const delta = Date.now() - new Date(lastInbound.timestamp).getTime();
+  return delta <= WINDOW_MS ? 'IN_24H' : 'OUTSIDE_24H';
+}
+
+function toolDefinitions() {
+  return [
+    {
+      type: 'function',
+      function: {
+        name: 'normalize_text',
+        description: 'Normaliza texto: lower, sin tildes, sin emojis, trim y espacios compactos.',
+        parameters: {
+          type: 'object',
+          properties: { text: { type: 'string' } },
+          required: ['text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'resolve_location',
+        description:
+          'Resuelve comuna/ciudad/región desde texto (Chile). Devuelve confidence y normalized.',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string' },
+            country: { type: 'string', default: 'CL' },
+          },
+          required: ['text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'validate_rut',
+        description: 'Valida RUT chileno y retorna normalized (12345678-9) si aplica.',
+        parameters: {
+          type: 'object',
+          properties: { rutText: { type: 'string' } },
+          required: ['rutText'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'pii_sanitize',
+        description: 'Sanitiza PII en texto (emails, teléfonos, RUT).',
+        parameters: {
+          type: 'object',
+          properties: { text: { type: 'string' } },
+          required: ['text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_whatsapp_window_status',
+        description: 'Retorna IN_24H u OUTSIDE_24H para una conversación.',
+        parameters: {
+          type: 'object',
+          properties: { conversationId: { type: 'string' } },
+          required: ['conversationId'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_available_programs',
+        description: 'Lista programs activos por workspace (opcionalmente filtrado por phoneLine).',
+        parameters: {
+          type: 'object',
+          properties: {
+            workspaceId: { type: 'string' },
+            phoneLineId: { type: 'string' },
+          },
+          required: ['workspaceId'],
+          additionalProperties: false,
+        },
+      },
+    },
+  ] as const;
+}
+
+async function runTool(toolName: string, args: any): Promise<ToolResult> {
+  try {
+    if (toolName === 'normalize_text') {
+      return { ok: true, result: { normalized: normalizeText(String(args?.text || '')) } };
+    }
+    if (toolName === 'resolve_location') {
+      const text = String(args?.text || '');
+      const country = typeof args?.country === 'string' ? args.country : 'CL';
+      return { ok: true, result: resolveLocation(text, country) };
+    }
+    if (toolName === 'validate_rut') {
+      const rutText = String(args?.rutText || '');
+      return { ok: true, result: validateRut(rutText) };
+    }
+    if (toolName === 'pii_sanitize') {
+      const text = String(args?.text || '');
+      return { ok: true, result: { text: piiSanitizeText(text) } };
+    }
+    if (toolName === 'get_whatsapp_window_status') {
+      const conversationId = String(args?.conversationId || '');
+      if (!conversationId) return { ok: false, error: 'conversationId requerido' };
+      return { ok: true, result: { status: await computeWhatsAppWindowStatus(conversationId) } };
+    }
+    if (toolName === 'get_available_programs') {
+      const workspaceId = String(args?.workspaceId || '');
+      if (!workspaceId) return { ok: false, error: 'workspaceId requerido' };
+      const programs = await prisma.program.findMany({
+        where: { workspaceId, isActive: true, archivedAt: null },
+        select: { id: true, name: true, slug: true },
+        orderBy: { name: 'asc' },
+      });
+      return { ok: true, result: { programs } };
+    }
+    return { ok: false, error: `toolName desconocido: ${toolName}` };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'tool error' };
+  }
+}
+
+function parseJsonLoose(value: string | null | undefined): any {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+export async function runAgent(event: AgentEvent): Promise<{
+  runId: string;
+  windowStatus: WhatsAppWindowStatus;
+  response: AgentResponse;
+}> {
+  const config = await getSystemConfig();
+  const apiKey = getEffectiveOpenAiKey(config);
+  if (!apiKey) {
+    const run = await prisma.agentRunLog.create({
+      data: {
+        workspaceId: event.workspaceId,
+        conversationId: event.conversationId,
+        eventType: event.eventType,
+        status: 'ERROR',
+        inputContextJson: serializeJson({ error: 'missing_openai_key' }),
+        error: 'OpenAI key no configurada',
+      },
+    });
+    throw new Error('OpenAI key no configurada');
+  }
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: event.conversationId },
+    include: { contact: true },
+  });
+  if (!conversation) {
+    throw new Error('Conversation no encontrada');
+  }
+
+  const windowStatus = await computeWhatsAppWindowStatus(event.conversationId);
+  const asked = await prisma.conversationAskedField.findMany({
+    where: { conversationId: event.conversationId },
+    select: { field: true, askCount: true, lastAskedAt: true, lastAskedHash: true },
+  });
+  const askedFieldsHistory: Record<
+    string,
+    { count: number; lastAskedAt: string | null; lastAskedHash: string | null }
+  > = {};
+  for (const row of asked) {
+    askedFieldsHistory[row.field] = {
+      count: row.askCount,
+      lastAskedAt: row.lastAskedAt ? row.lastAskedAt.toISOString() : null,
+      lastAskedHash: row.lastAskedHash || null,
+    };
+  }
+
+  const lastOutbound = await prisma.outboundMessageLog.findFirst({
+    where: { conversationId: event.conversationId },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true, textHash: true, dedupeKey: true },
+  });
+
+  const lastMessages = await prisma.message.findMany({
+    where: { conversationId: event.conversationId },
+    orderBy: { timestamp: 'desc' },
+    take: 25,
+    select: {
+      id: true,
+      direction: true,
+      text: true,
+      transcriptText: true,
+      mediaType: true,
+      timestamp: true,
+      waMessageId: true,
+    },
+  });
+
+  const contextJson = {
+    workspaceId: event.workspaceId,
+    event: { type: event.eventType, inboundMessageId: event.inboundMessageId || null },
+    conversation: {
+      id: conversation.id,
+      status: conversation.status,
+      stage: conversation.conversationStage,
+      programId: conversation.programId,
+      phoneLineId: conversation.phoneLineId,
+      isAdmin: conversation.isAdmin,
+    },
+    contact: {
+      id: conversation.contactId,
+      waId: conversation.contact.waId,
+      phone: conversation.contact.phone,
+      displayName: conversation.contact.displayName || conversation.contact.name,
+      candidateName: conversation.contact.candidateName,
+      candidateNameManual: (conversation.contact as any).candidateNameManual,
+      email: (conversation.contact as any).email,
+      rut: (conversation.contact as any).rut,
+      comuna: (conversation.contact as any).comuna,
+      ciudad: (conversation.contact as any).ciudad,
+      region: (conversation.contact as any).region,
+      experienceYears: (conversation.contact as any).experienceYears,
+      terrainExperience: (conversation.contact as any).terrainExperience,
+      availabilityText: (conversation.contact as any).availabilityText,
+      flags: { NO_CONTACTAR: conversation.contact.noContact },
+    },
+    askedFieldsHistory,
+    lastOutbound: lastOutbound
+      ? {
+          lastOutboundHash: lastOutbound.textHash,
+          lastOutboundAt: lastOutbound.createdAt.toISOString(),
+          lastDedupeKey: lastOutbound.dedupeKey,
+        }
+      : null,
+    whatsappWindowStatus: windowStatus,
+    lastMessages: lastMessages
+      .slice()
+      .reverse()
+      .map((m) => ({
+        id: m.id,
+        waMessageId: m.waMessageId,
+        direction: m.direction,
+        text: m.transcriptText || m.text,
+        mediaType: m.mediaType || null,
+        timestamp: m.timestamp.toISOString(),
+      })),
+    config: {
+      botAutoReply: config.botAutoReply,
+    },
+  };
+
+  const programPrompt = await (async () => {
+    if (conversation.programId) {
+      const program = await prisma.program.findUnique({
+        where: { id: conversation.programId },
+        select: { agentSystemPrompt: true },
+      });
+      if (program?.agentSystemPrompt) return program.agentSystemPrompt;
+    }
+    return (
+      config.aiPrompt?.trim() ||
+      'Programa default: coordina reclutamiento/entrevista/ventas según contexto. Responde corto y humano.'
+    );
+  })();
+
+  const runLog = await prisma.agentRunLog.create({
+    data: {
+      workspaceId: event.workspaceId,
+      conversationId: conversation.id,
+      programId: conversation.programId,
+      phoneLineId: conversation.phoneLineId,
+      eventType: event.eventType,
+      status: 'RUNNING',
+      inputContextJson: serializeJson(contextJson),
+    },
+  });
+
+  const client = new OpenAI({ apiKey });
+  const model = normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+
+  const tools = toolDefinitions();
+
+  const messages: any[] = [
+    { role: 'system', content: buildSystemPrompt({ programPrompt, windowStatus }) },
+    {
+      role: 'user',
+      content: serializeJson(contextJson),
+    },
+  ];
+
+  try {
+    let safetyIterations = 0;
+    while (safetyIterations < 6) {
+      safetyIterations += 1;
+      const completion = await client.chat.completions.create({
+        model,
+        messages,
+        tools: tools as any,
+        tool_choice: 'auto',
+        temperature: 0.2,
+        max_tokens: 900,
+        response_format: { type: 'json_object' } as any,
+      });
+
+      const message = completion.choices[0]?.message;
+      if (!message) throw new Error('Respuesta vacía del modelo');
+
+      const toolCalls = (message as any).tool_calls as
+        | Array<{ id: string; function: { name: string; arguments: string } }>
+        | undefined;
+
+      if (toolCalls && toolCalls.length > 0) {
+        messages.push(message);
+        for (const call of toolCalls) {
+          const toolName = call.function?.name;
+          const argsRaw = call.function?.arguments || '{}';
+          const args = parseJsonLoose(argsRaw) || {};
+          const result = await runTool(toolName, args);
+          await prisma.toolCallLog.create({
+            data: {
+              agentRunId: runLog.id,
+              toolName,
+              argsJson: serializeJson(args),
+              resultJson: result.ok ? serializeJson(result.result) : null,
+              error: result.ok ? null : result.error,
+            },
+          });
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: serializeJson(result.ok ? result.result : { error: result.error }),
+          });
+        }
+        continue;
+      }
+
+      const raw = String((message as any).content || '').trim();
+      const parsed = parseJsonLoose(raw);
+      const validated = AgentResponseSchema.safeParse(parsed);
+      if (!validated.success) {
+        throw new Error(`Respuesta del agente inválida: ${validated.error.message}`);
+      }
+
+      await prisma.agentRunLog.update({
+        where: { id: runLog.id },
+        data: { status: 'PLANNED', commandsJson: serializeJson(validated.data) },
+      });
+
+      return { runId: runLog.id, windowStatus, response: validated.data };
+    }
+
+    throw new Error('Loop de tools excedido');
+  } catch (err) {
+    const errorText = err instanceof Error ? err.message : 'unknown';
+    await prisma.agentRunLog.update({
+      where: { id: runLog.id },
+      data: { status: 'ERROR', error: errorText },
+    });
+    throw err;
+  }
+}
+

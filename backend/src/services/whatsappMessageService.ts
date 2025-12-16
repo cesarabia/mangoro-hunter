@@ -3,9 +3,12 @@ import {
   DEFAULT_TEMPLATE_INTERVIEW_INVITE,
   DEFAULT_TEMPLATE_LANGUAGE_CODE,
   DEFAULT_WHATSAPP_BASE_URL,
+  getEffectiveOutboundAllowlist,
+  getOutboundPolicy,
   getSystemConfig
 } from './configService';
 import { normalizeEscapedWhitespace } from '../utils/text';
+import { normalizeWhatsAppId } from '../utils/whatsapp';
 
 export interface SendResult {
   success: boolean;
@@ -13,16 +16,43 @@ export interface SendResult {
   error?: string;
 }
 
-export async function sendWhatsAppText(toWaId: string, text: string): Promise<SendResult> {
+function checkSafeOutbound(toWaId: string, config: any): { allowed: boolean; reason?: string } {
+  if (toWaId === 'sandbox') return { allowed: true };
+  const policy = getOutboundPolicy(config);
+  if (policy === 'ALLOW_ALL') return { allowed: true };
+  if (policy === 'BLOCK_ALL') return { allowed: false, reason: 'BLOCK_ALL' };
+
+  const normalizedTo = normalizeWhatsAppId(toWaId);
+  if (!normalizedTo) return { allowed: false, reason: 'INVALID_TO' };
+  const allowlist = getEffectiveOutboundAllowlist(config);
+  if (allowlist.includes(normalizedTo)) return { allowed: true };
+  return { allowed: false, reason: 'NOT_IN_ALLOWLIST' };
+}
+
+export async function sendWhatsAppText(
+  toWaId: string,
+  text: string,
+  options?: { phoneNumberId?: string | null }
+): Promise<SendResult> {
   const config = await getSystemConfig();
   const normalizedText = normalizeEscapedWhitespace(text);
 
-  if (!config?.whatsappToken || !config.whatsappPhoneId) {
+  const safe = checkSafeOutbound(toWaId, config);
+  if (!safe.allowed) {
+    const policy = getOutboundPolicy(config);
+    return {
+      success: false,
+      error: `SAFE_OUTBOUND_BLOCKED:${policy}:${safe.reason || 'BLOCKED'}`,
+    };
+  }
+
+  const phoneNumberId = options?.phoneNumberId || config.whatsappPhoneId;
+  if (!config?.whatsappToken || !phoneNumberId) {
     return { success: false, error: 'WhatsApp Cloud API no está configurado (phone_number_id / token faltan)' };
   }
 
   const baseUrl = (config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL).replace(/\/$/, '');
-  const url = `${baseUrl}/${config.whatsappPhoneId}/messages`;
+  const url = `${baseUrl}/${phoneNumberId}/messages`;
 
   const body = {
     messaging_product: 'whatsapp',
@@ -63,16 +93,27 @@ export async function sendWhatsAppText(toWaId: string, text: string): Promise<Se
 export async function sendWhatsAppTemplate(
   toWaId: string,
   templateName: string,
-  variables?: string[]
+  variables?: string[],
+  options?: { phoneNumberId?: string | null }
 ): Promise<SendResult> {
   const config = await getSystemConfig();
 
-  if (!config?.whatsappToken || !config.whatsappPhoneId) {
+  const safe = checkSafeOutbound(toWaId, config);
+  if (!safe.allowed) {
+    const policy = getOutboundPolicy(config);
+    return {
+      success: false,
+      error: `SAFE_OUTBOUND_BLOCKED:${policy}:${safe.reason || 'BLOCKED'}`,
+    };
+  }
+
+  const phoneNumberId = options?.phoneNumberId || config.whatsappPhoneId;
+  if (!config?.whatsappToken || !phoneNumberId) {
     return { success: false, error: 'WhatsApp Cloud API no está configurado (phone_number_id / token faltan)' };
   }
 
   const baseUrl = (config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL).replace(/\/$/, '');
-  const url = `${baseUrl}/${config.whatsappPhoneId}/messages`;
+  const url = `${baseUrl}/${phoneNumberId}/messages`;
   const components =
     variables && variables.length > 0
       ? [

@@ -3,6 +3,7 @@ import { SystemConfig } from '@prisma/client';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
 
 const SINGLETON_ID = 1;
+export type OutboundPolicy = 'ALLOW_ALL' | 'ALLOWLIST_ONLY' | 'BLOCK_ALL';
 export const DEFAULT_WHATSAPP_BASE_URL = 'https://graph.facebook.com/v20.0';
 export const DEFAULT_WHATSAPP_PHONE_ID = '1511895116748404';
 export const DEFAULT_TEMPLATE_INTERVIEW_INVITE = 'entrevista_confirmacion_1';
@@ -92,6 +93,23 @@ export const DEFAULT_ADMIN_NOTIFICATION_TEMPLATES = JSON.stringify({
   SELLER_WEEKLY_SUMMARY: '📈 Resumen semanal ventas: {{name}}\\nTel: {{phone}}\\n{{summary}}'
 });
 
+export function getDefaultOutboundPolicy(): OutboundPolicy {
+  // NOTE: NODE_ENV is often set to "production" even in non-prod deployments (for performance),
+  // so we only use APP_ENV to decide outbound safety defaults.
+  const raw = String(process.env.APP_ENV || '').toLowerCase().trim();
+  if (raw === 'production' || raw === 'prod') return 'ALLOW_ALL';
+  return 'ALLOWLIST_ONLY';
+}
+
+function normalizeOutboundPolicy(value?: string | null): OutboundPolicy | null {
+  if (!value) return null;
+  const upper = value.trim().toUpperCase();
+  if (upper === 'ALLOW_ALL') return 'ALLOW_ALL';
+  if (upper === 'ALLOWLIST_ONLY') return 'ALLOWLIST_ONLY';
+  if (upper === 'BLOCK_ALL') return 'BLOCK_ALL';
+  return null;
+}
+
 function safeJsonParse<T>(value: string | null | undefined): T | null {
   if (!value || typeof value !== 'string') return null;
   try {
@@ -133,6 +151,60 @@ export function getTestWaIdAllowlist(config: SystemConfig): string[] {
     return [legacy, ...list];
   }
   return list;
+}
+
+export function getOutboundPolicy(config: SystemConfig): OutboundPolicy {
+  const stored = normalizeOutboundPolicy((config as any).outboundPolicy);
+  const defaultPolicy = getDefaultOutboundPolicy();
+  // Guardrail: non-prod must never default to ALLOW_ALL, even if someone stored it in DB.
+  if (defaultPolicy !== 'ALLOW_ALL' && stored === 'ALLOW_ALL') return 'ALLOWLIST_ONLY';
+  return stored || defaultPolicy;
+}
+
+export function getOutboundAllowlist(config: SystemConfig): string[] {
+  return parseWaIdList((config as any).outboundAllowlist);
+}
+
+export function getEffectiveOutboundAllowlist(config: SystemConfig): string[] {
+  const union = [
+    ...getAdminWaIdAllowlist(config),
+    ...getTestWaIdAllowlist(config),
+    ...getOutboundAllowlist(config),
+  ];
+  const out: string[] = [];
+  for (const item of union) {
+    const waId = normalizeWhatsAppId(item);
+    if (!waId) continue;
+    if (!out.includes(waId)) out.push(waId);
+  }
+  return out;
+}
+
+export async function updateOutboundSafetyConfig(input: {
+  outboundPolicy?: OutboundPolicy | null;
+  outboundAllowlist?: string[] | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: Record<string, any> = {};
+
+  if (typeof input.outboundPolicy !== 'undefined') {
+    data.outboundPolicy = input.outboundPolicy ? normalizeOutboundPolicy(input.outboundPolicy) : null;
+  }
+
+  if (typeof input.outboundAllowlist !== 'undefined') {
+    const normalized = Array.isArray(input.outboundAllowlist)
+      ? input.outboundAllowlist.map((v) => normalizeWhatsAppId(v)).filter(Boolean) as string[]
+      : [];
+    const unique: string[] = [];
+    for (const id of normalized) if (!unique.includes(id)) unique.push(id);
+    data.outboundAllowlist = unique.length > 0 ? JSON.stringify(unique) : null;
+  }
+
+  if (Object.keys(data).length === 0) return config;
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data,
+  });
 }
 
 export async function updateAuthorizedNumbersConfig(input: {
@@ -278,6 +350,8 @@ export async function updateRecruitmentContent(input: {
 export async function updateAdminNotificationConfig(input: {
   detailLevel?: string | null;
   templates?: string | null;
+  enabledEvents?: string | null;
+  detailLevelsByEvent?: string | null;
 }): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
   const data: any = {};
@@ -287,9 +361,48 @@ export async function updateAdminNotificationConfig(input: {
   if (typeof input.templates !== 'undefined') {
     data.adminNotificationTemplates = normalizeValue(input.templates);
   }
+  if (typeof input.enabledEvents !== 'undefined') {
+    data.adminNotificationEnabledEvents = normalizeValue(input.enabledEvents);
+  }
+  if (typeof input.detailLevelsByEvent !== 'undefined') {
+    data.adminNotificationDetailLevelsByEvent = normalizeValue(input.detailLevelsByEvent);
+  }
   if (Object.keys(data).length === 0) {
     return config;
   }
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data
+  });
+}
+
+export async function updateWorkflowConfig(input: {
+  rules?: string | null;
+  inactivityDays?: number | null;
+  archiveDays?: number | null;
+}): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: any = {};
+  if (typeof input.rules !== 'undefined') {
+    data.workflowRules = normalizeValue(input.rules);
+  }
+  if (typeof input.inactivityDays !== 'undefined') {
+    data.workflowInactivityDays =
+      typeof input.inactivityDays === 'number' && Number.isFinite(input.inactivityDays)
+        ? Math.floor(input.inactivityDays)
+        : input.inactivityDays === null
+          ? null
+          : undefined;
+  }
+  if (typeof input.archiveDays !== 'undefined') {
+    data.workflowArchiveDays =
+      typeof input.archiveDays === 'number' && Number.isFinite(input.archiveDays)
+        ? Math.floor(input.archiveDays)
+        : input.archiveDays === null
+          ? null
+          : undefined;
+  }
+  if (Object.keys(data).length === 0) return config;
   return prisma.systemConfig.update({
     where: { id: config.id },
     data
@@ -480,12 +593,15 @@ export async function updateInterviewScheduleConfig(input: {
 async function ensureConfigRecord(): Promise<SystemConfig> {
   let existing = await prisma.systemConfig.findUnique({ where: { id: SINGLETON_ID } });
   if (!existing) {
+    const outboundPolicy = getDefaultOutboundPolicy();
     existing = await prisma.systemConfig.create({
       data: {
         id: SINGLETON_ID,
         whatsappBaseUrl: DEFAULT_WHATSAPP_BASE_URL,
         whatsappPhoneId: DEFAULT_WHATSAPP_PHONE_ID,
         botAutoReply: true,
+        outboundPolicy,
+        outboundAllowlist: null,
         interviewAiPrompt: DEFAULT_INTERVIEW_AI_PROMPT,
         interviewAiModel: DEFAULT_INTERVIEW_AI_MODEL,
         aiModel: DEFAULT_AI_MODEL,
@@ -599,6 +715,17 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
     updates.adminNotificationTemplates = DEFAULT_ADMIN_NOTIFICATION_TEMPLATES;
   } else if (!existing.adminNotificationTemplates) {
     updates.adminNotificationTemplates = DEFAULT_ADMIN_NOTIFICATION_TEMPLATES;
+  }
+  if (typeof (existing as any).outboundPolicy === 'undefined') {
+    updates.outboundPolicy = getDefaultOutboundPolicy();
+  } else if ((existing as any).outboundPolicy) {
+    const normalizedPolicy = normalizeOutboundPolicy((existing as any).outboundPolicy);
+    if (normalizedPolicy && normalizedPolicy !== (existing as any).outboundPolicy) {
+      updates.outboundPolicy = normalizedPolicy;
+    }
+  }
+  if (typeof (existing as any).outboundAllowlist === 'undefined') {
+    updates.outboundAllowlist = null;
   }
   if (!existing.interviewAiPrompt) {
     updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;

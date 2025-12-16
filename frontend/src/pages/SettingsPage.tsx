@@ -83,6 +83,14 @@ interface SalesAiConfigResponse {
 interface AdminNotificationsConfigResponse {
   detailLevel: string;
   templates: Record<string, string>;
+  enabledEvents?: string[];
+  detailLevelsByEvent?: Record<string, string>;
+}
+
+interface WorkflowConfigResponse {
+  inactivityDays: number;
+  archiveDays: number;
+  rules: any[];
 }
 
 type WeekdayKey = 'lunes' | 'martes' | 'miercoles' | 'jueves' | 'viernes' | 'sabado' | 'domingo';
@@ -274,6 +282,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [salesAiError, setSalesAiError] = useState<string | null>(null);
 
   const [adminNotifDetailLevel, setAdminNotifDetailLevel] = useState('MEDIUM');
+  const [adminNotifEnabledEvents, setAdminNotifEnabledEvents] = useState<string[]>([]);
+  const [adminNotifDetailLevelsByEvent, setAdminNotifDetailLevelsByEvent] = useState<Record<string, string>>({});
   const [notifRecruitReady, setNotifRecruitReady] = useState('');
   const [notifInterviewScheduled, setNotifInterviewScheduled] = useState('');
   const [notifInterviewConfirmed, setNotifInterviewConfirmed] = useState('');
@@ -282,6 +292,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [savingAdminNotifs, setSavingAdminNotifs] = useState(false);
   const [adminNotifsStatus, setAdminNotifsStatus] = useState<string | null>(null);
   const [adminNotifsError, setAdminNotifsError] = useState<string | null>(null);
+
+  const [workflowInactivityDays, setWorkflowInactivityDays] = useState(7);
+  const [workflowArchiveDays, setWorkflowArchiveDays] = useState(30);
+  const [workflowEnableStale, setWorkflowEnableStale] = useState(true);
+  const [workflowEnableArchive, setWorkflowEnableArchive] = useState(false);
+  const [workflowRules, setWorkflowRules] = useState<any[]>([]);
+  const [savingWorkflow, setSavingWorkflow] = useState(false);
+  const [workflowStatus, setWorkflowStatus] = useState<string | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
 
   const [cleanupPanelOpen, setCleanupPanelOpen] = useState(false);
   const [cleanupConfirmText, setCleanupConfirmText] = useState('');
@@ -298,7 +317,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     const loadAll = async () => {
       setLoading(true);
       try {
-        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, salesAi, adminNotifs, schedule, templates, numbers] = await Promise.all([
+        const [wa, ai, admin, aiPromptRes, adminAi, interviewAi, salesAi, adminNotifs, workflow, schedule, templates, numbers] = await Promise.all([
           apiClient.get('/api/config/whatsapp') as Promise<WhatsappConfigResponse>,
           apiClient.get('/api/config/ai') as Promise<AiConfigResponse>,
           apiClient.get('/api/config/admin-account') as Promise<AdminAccountResponse>,
@@ -307,6 +326,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
           apiClient.get('/api/config/interview-ai') as Promise<InterviewAiConfigResponse>,
           apiClient.get('/api/config/sales-ai') as Promise<SalesAiConfigResponse>,
           apiClient.get('/api/config/admin-notifications') as Promise<AdminNotificationsConfigResponse>,
+          apiClient.get('/api/config/workflow') as Promise<WorkflowConfigResponse>,
           apiClient.get('/api/config/interview-schedule') as Promise<InterviewScheduleConfigResponse>,
           apiClient.get('/api/config/templates') as Promise<TemplatesConfigResponse>,
           apiClient.get('/api/config/authorized-numbers') as Promise<AuthorizedNumbersConfigResponse>
@@ -341,6 +361,18 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setNotifInterviewConfirmed(adminNotifs.templates?.INTERVIEW_CONFIRMED || '');
         setNotifInterviewOnHold(adminNotifs.templates?.INTERVIEW_ON_HOLD || '');
         setNotifSellerDailySummary(adminNotifs.templates?.SELLER_DAILY_SUMMARY || '');
+        setAdminNotifEnabledEvents(Array.isArray(adminNotifs.enabledEvents) ? adminNotifs.enabledEvents : []);
+        setAdminNotifDetailLevelsByEvent(
+          adminNotifs.detailLevelsByEvent && typeof adminNotifs.detailLevelsByEvent === 'object' ? adminNotifs.detailLevelsByEvent : {}
+        );
+        setWorkflowInactivityDays(typeof workflow.inactivityDays === 'number' ? workflow.inactivityDays : 7);
+        setWorkflowArchiveDays(typeof workflow.archiveDays === 'number' ? workflow.archiveDays : 30);
+        const rules = Array.isArray(workflow.rules) ? workflow.rules : [];
+        setWorkflowRules(rules);
+        const findEnabled = (id: string, fallback: boolean) =>
+          rules.find(r => String((r as any)?.id || '') === id)?.enabled ?? fallback;
+        setWorkflowEnableStale(Boolean(findEnabled('stale_no_response', true)));
+        setWorkflowEnableArchive(Boolean(findEnabled('auto_archive', false)));
         setInterviewTimezone(schedule.interviewTimezone || 'America/Santiago');
         setInterviewSlotMinutes(schedule.interviewSlotMinutes || 30);
         setInterviewLocationsList(parseLocationForms(schedule.interviewLocations || ''));
@@ -505,7 +537,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       setResetError('Configura primero el Número de pruebas.');
       return;
     }
-    if (!window.confirm('¿Seguro que quieres borrar la conversación del número de pruebas?')) {
+    if (!window.confirm('¿Seguro que quieres archivar y reiniciar la conversación del número de pruebas (sin borrar historial)?')) {
       return;
     }
     setResetting(true);
@@ -513,7 +545,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     setResetError(null);
     try {
       const res = (await apiClient.post('/api/config/reset-test-conversation', {})) as any;
-      setResetStatus(res?.message || 'Conversación de prueba reseteada.');
+      setResetStatus(res?.message || 'Conversación de prueba archivada y reiniciada.');
     } catch (err: any) {
       setResetError(err.message || 'No se pudo resetear la conversación de prueba');
     } finally {
@@ -548,6 +580,94 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     }
   };
 
+  const handleSaveWorkflow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingWorkflow(true);
+    setWorkflowStatus(null);
+    setWorkflowError(null);
+
+    const nextRules = Array.isArray(workflowRules) ? workflowRules.map(rule => ({ ...(rule || {}) })) : [];
+    const ensureRule = (id: string, fallback: any) => {
+      if (nextRules.some(r => String((r as any)?.id || '') === id)) return;
+      nextRules.push(fallback);
+    };
+    ensureRule('stale_no_response', {
+      id: 'stale_no_response',
+      enabled: true,
+      trigger: 'onInactivity',
+      conditions: { inactivityDaysGte: 7, stagesIn: ['NEW_INTAKE', 'WAITING_CANDIDATE'] },
+      actions: { setStage: 'STALE_NO_RESPONSE' }
+    });
+    ensureRule('auto_archive', {
+      id: 'auto_archive',
+      enabled: false,
+      trigger: 'onInactivity',
+      conditions: { inactivityDaysGte: 30, stagesIn: ['STALE_NO_RESPONSE'] },
+      actions: { setStage: 'ARCHIVED', setStatus: 'CLOSED' }
+    });
+
+    for (const rule of nextRules) {
+      if (String((rule as any)?.id || '') === 'stale_no_response') {
+        (rule as any).enabled = Boolean(workflowEnableStale);
+        (rule as any).conditions = {
+          ...((rule as any).conditions || {}),
+          inactivityDaysGte: Number(workflowInactivityDays) || 7
+        };
+      }
+      if (String((rule as any)?.id || '') === 'auto_archive') {
+        (rule as any).enabled = Boolean(workflowEnableArchive);
+        (rule as any).conditions = {
+          ...((rule as any).conditions || {}),
+          inactivityDaysGte: Number(workflowArchiveDays) || 30
+        };
+      }
+    }
+
+    try {
+      const res = (await apiClient.put('/api/config/workflow', {
+        inactivityDays: workflowInactivityDays,
+        archiveDays: workflowArchiveDays,
+        rules: nextRules
+      })) as WorkflowConfigResponse;
+      setWorkflowInactivityDays(typeof res.inactivityDays === 'number' ? res.inactivityDays : 7);
+      setWorkflowArchiveDays(typeof res.archiveDays === 'number' ? res.archiveDays : 30);
+      const rules = Array.isArray(res.rules) ? res.rules : [];
+      setWorkflowRules(rules);
+      const findEnabled = (id: string, fallback: boolean) =>
+        rules.find(r => String((r as any)?.id || '') === id)?.enabled ?? fallback;
+      setWorkflowEnableStale(Boolean(findEnabled('stale_no_response', true)));
+      setWorkflowEnableArchive(Boolean(findEnabled('auto_archive', false)));
+      setWorkflowStatus('Workflow guardado');
+    } catch (err: any) {
+      setWorkflowError(err.message || 'No se pudo guardar workflow');
+    } finally {
+      setSavingWorkflow(false);
+    }
+  };
+
+  const toggleAdminNotifEvent = (eventType: string) => {
+    setAdminNotifEnabledEvents(prev => {
+      const normalized = String(eventType || '').trim();
+      if (!normalized) return prev;
+      return prev.includes(normalized) ? prev.filter(e => e !== normalized) : [...prev, normalized];
+    });
+  };
+
+  const setAdminNotifEventDetail = (eventType: string, level: string) => {
+    const normalizedEvent = String(eventType || '').trim();
+    const normalizedLevel = String(level || '').trim().toUpperCase();
+    setAdminNotifDetailLevelsByEvent(prev => {
+      const next = { ...(prev || {}) };
+      if (!normalizedEvent) return next;
+      if (!normalizedLevel) {
+        delete next[normalizedEvent];
+        return next;
+      }
+      next[normalizedEvent] = normalizedLevel;
+      return next;
+    });
+  };
+
   const handleSaveAdminNotifications = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingAdminNotifs(true);
@@ -556,6 +676,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     try {
       const res = (await apiClient.put('/api/config/admin-notifications', {
         detailLevel: adminNotifDetailLevel,
+        enabledEvents: adminNotifEnabledEvents,
+        detailLevelsByEvent: adminNotifDetailLevelsByEvent,
         templates: {
           RECRUIT_READY: notifRecruitReady,
           INTERVIEW_SCHEDULED: notifInterviewScheduled,
@@ -570,6 +692,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       setNotifInterviewConfirmed(res.templates?.INTERVIEW_CONFIRMED || '');
       setNotifInterviewOnHold(res.templates?.INTERVIEW_ON_HOLD || '');
       setNotifSellerDailySummary(res.templates?.SELLER_DAILY_SUMMARY || '');
+      setAdminNotifEnabledEvents(Array.isArray(res.enabledEvents) ? res.enabledEvents : []);
+      setAdminNotifDetailLevelsByEvent(
+        res.detailLevelsByEvent && typeof res.detailLevelsByEvent === 'object' ? res.detailLevelsByEvent : {}
+      );
       setAdminNotifsStatus('Notificaciones guardadas');
     } catch (err: any) {
       setAdminNotifsError(err.message || 'No se pudo guardar la configuración');
@@ -1164,7 +1290,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   {'{{location}}'}, {'{{rut}}'}, {'{{rutVigente}}'}, {'{{experienceYears}}'}, {'{{experienceTerrain}}'}, {'{{experienceRubros}}'}, {'{{availability}}'}, {'{{email}}'}, {'{{cv}}'}.
                 </small>
                 <label>
-                  <div>Template RECRUIT_READY</div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Template RECRUIT_READY</span>
+                    <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={adminNotifEnabledEvents.includes('RECRUIT_READY')}
+                        onChange={() => toggleAdminNotifEvent('RECRUIT_READY')}
+                      />
+                      Activo
+                    </label>
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: '#666' }}>Detalle evento</span>
+                    <select
+                      value={adminNotifDetailLevelsByEvent.RECRUIT_READY || ''}
+                      onChange={e => setAdminNotifEventDetail('RECRUIT_READY', e.target.value)}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                    >
+                      <option value="">(usar global)</option>
+                      <option value="SHORT">Corto</option>
+                      <option value="MEDIUM">Medio</option>
+                      <option value="DETAILED">Detallado</option>
+                    </select>
+                  </div>
                   <textarea
                     value={notifRecruitReady}
                     onChange={e => setNotifRecruitReady(e.target.value)}
@@ -1172,7 +1321,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   />
                 </label>
                 <label>
-                  <div>Template INTERVIEW_SCHEDULED</div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Template INTERVIEW_SCHEDULED</span>
+                    <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={adminNotifEnabledEvents.includes('INTERVIEW_SCHEDULED')}
+                        onChange={() => toggleAdminNotifEvent('INTERVIEW_SCHEDULED')}
+                      />
+                      Activo
+                    </label>
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: '#666' }}>Detalle evento</span>
+                    <select
+                      value={adminNotifDetailLevelsByEvent.INTERVIEW_SCHEDULED || ''}
+                      onChange={e => setAdminNotifEventDetail('INTERVIEW_SCHEDULED', e.target.value)}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                    >
+                      <option value="">(usar global)</option>
+                      <option value="SHORT">Corto</option>
+                      <option value="MEDIUM">Medio</option>
+                      <option value="DETAILED">Detallado</option>
+                    </select>
+                  </div>
                   <textarea
                     value={notifInterviewScheduled}
                     onChange={e => setNotifInterviewScheduled(e.target.value)}
@@ -1180,7 +1352,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   />
                 </label>
                 <label>
-                  <div>Template INTERVIEW_CONFIRMED</div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Template INTERVIEW_CONFIRMED</span>
+                    <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={adminNotifEnabledEvents.includes('INTERVIEW_CONFIRMED')}
+                        onChange={() => toggleAdminNotifEvent('INTERVIEW_CONFIRMED')}
+                      />
+                      Activo
+                    </label>
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: '#666' }}>Detalle evento</span>
+                    <select
+                      value={adminNotifDetailLevelsByEvent.INTERVIEW_CONFIRMED || ''}
+                      onChange={e => setAdminNotifEventDetail('INTERVIEW_CONFIRMED', e.target.value)}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                    >
+                      <option value="">(usar global)</option>
+                      <option value="SHORT">Corto</option>
+                      <option value="MEDIUM">Medio</option>
+                      <option value="DETAILED">Detallado</option>
+                    </select>
+                  </div>
                   <textarea
                     value={notifInterviewConfirmed}
                     onChange={e => setNotifInterviewConfirmed(e.target.value)}
@@ -1188,7 +1383,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   />
                 </label>
                 <label>
-                  <div>Template INTERVIEW_ON_HOLD</div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Template INTERVIEW_ON_HOLD</span>
+                    <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={adminNotifEnabledEvents.includes('INTERVIEW_ON_HOLD')}
+                        onChange={() => toggleAdminNotifEvent('INTERVIEW_ON_HOLD')}
+                      />
+                      Activo
+                    </label>
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: '#666' }}>Detalle evento</span>
+                    <select
+                      value={adminNotifDetailLevelsByEvent.INTERVIEW_ON_HOLD || ''}
+                      onChange={e => setAdminNotifEventDetail('INTERVIEW_ON_HOLD', e.target.value)}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                    >
+                      <option value="">(usar global)</option>
+                      <option value="SHORT">Corto</option>
+                      <option value="MEDIUM">Medio</option>
+                      <option value="DETAILED">Detallado</option>
+                    </select>
+                  </div>
                   <textarea
                     value={notifInterviewOnHold}
                     onChange={e => setNotifInterviewOnHold(e.target.value)}
@@ -1196,7 +1414,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   />
                 </label>
                 <label>
-                  <div>Template SELLER_DAILY_SUMMARY</div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Template SELLER_DAILY_SUMMARY</span>
+                    <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={adminNotifEnabledEvents.includes('SELLER_DAILY_SUMMARY')}
+                        onChange={() => toggleAdminNotifEvent('SELLER_DAILY_SUMMARY')}
+                      />
+                      Activo
+                    </label>
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: '#666' }}>Detalle evento</span>
+                    <select
+                      value={adminNotifDetailLevelsByEvent.SELLER_DAILY_SUMMARY || ''}
+                      onChange={e => setAdminNotifEventDetail('SELLER_DAILY_SUMMARY', e.target.value)}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                    >
+                      <option value="">(usar global)</option>
+                      <option value="SHORT">Corto</option>
+                      <option value="MEDIUM">Medio</option>
+                      <option value="DETAILED">Detallado</option>
+                    </select>
+                  </div>
                   <textarea
                     value={notifSellerDailySummary}
                     onChange={e => setNotifSellerDailySummary(e.target.value)}
@@ -1211,6 +1452,71 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
                 >
                   {savingAdminNotifs ? 'Guardando...' : 'Guardar notificaciones'}
+                </button>
+              </form>
+            </section>
+
+            <section style={{ background: '#fff', padding: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+              <h2>Automations / Workflow</h2>
+              <p style={{ color: '#666', marginBottom: 16 }}>
+                Define etapas automáticas (sin borrar conversaciones). Las conversaciones inactivas se marcan/archivan y quedan visibles en el inbox.
+              </p>
+              <form onSubmit={handleSaveWorkflow} style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 560 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div>Días sin respuesta → marcar “Sin respuesta”</div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={workflowInactivityDays}
+                    onChange={e => setWorkflowInactivityDays(Number(e.target.value))}
+                    style={{ width: 180, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={workflowEnableStale}
+                    onChange={e => setWorkflowEnableStale(e.target.checked)}
+                  />
+                  Habilitar regla “Sin respuesta”
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div>Días sin respuesta → archivar</div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={workflowArchiveDays}
+                    onChange={e => setWorkflowArchiveDays(Number(e.target.value))}
+                    style={{ width: 180, padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={workflowEnableArchive}
+                    onChange={e => setWorkflowEnableArchive(e.target.checked)}
+                  />
+                  Habilitar regla “Archivar”
+                </label>
+
+                <details style={{ marginTop: 6 }}>
+                  <summary style={{ cursor: 'pointer' }}>Ver reglas (avanzado)</summary>
+                  <pre style={{ fontSize: 11, whiteSpace: 'pre-wrap', background: '#fafafa', border: '1px solid #eee', borderRadius: 8, padding: 10 }}>
+                    {JSON.stringify(workflowRules, null, 2)}
+                  </pre>
+                </details>
+
+                {workflowStatus && <p style={{ color: 'green' }}>{workflowStatus}</p>}
+                {workflowError && <p style={{ color: 'red' }}>{workflowError}</p>}
+                <button
+                  type="submit"
+                  disabled={savingWorkflow}
+                  style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#111', color: '#fff' }}
+                >
+                  {savingWorkflow ? 'Guardando...' : 'Guardar workflow'}
                 </button>
               </form>
             </section>
@@ -1632,7 +1938,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   disabled={resetting}
                   style={{ alignSelf: 'flex-start', padding: '8px 12px', borderRadius: 6, border: '1px solid #111', background: '#fff' }}
                 >
-                  {resetting ? 'Reseteando...' : 'Reset conversación de prueba'}
+                  {resetting ? 'Reiniciando...' : 'Reiniciar conversación de prueba (archivar)'}
                 </button>
                 <button
                   type="button"
@@ -1650,9 +1956,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                 </button>
                 {cleanupPanelOpen && (
                   <div style={{ border: '1px solid #ffe58f', borderRadius: 8, padding: 10, background: '#fffbe6', maxWidth: 520 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Acción destructiva (solo pruebas)</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Acción de limpieza (solo pruebas)</div>
                     <div style={{ fontSize: 12, color: '#664d03', marginBottom: 8 }}>
-                      Esto elimina conversaciones/mensajes de <strong>testPhoneNumber</strong> y corrige duplicados del <strong>adminWaId</strong>. No toca números reales.
+                      Esto archiva conversaciones de <strong>testPhoneNumber</strong> y corrige duplicados del <strong>adminWaId</strong>. No toca números reales ni borra historial.
                     </div>
                     <div style={{ fontSize: 12, color: '#333', marginBottom: 6 }}>
                       Para confirmar, escribe <strong>LIMPIAR</strong> o el número de pruebas.
