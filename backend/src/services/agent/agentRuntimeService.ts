@@ -246,6 +246,58 @@ function normalizeAgentResponseShape(value: any): any {
   return out;
 }
 
+function applyCommandDefaults(
+  value: any,
+  defaults: {
+    workspaceId: string;
+    conversationId: string;
+    contactId: string;
+    windowStatus: WhatsAppWindowStatus;
+    inboundMessageId?: string | null;
+    eventType: string;
+  },
+): any {
+  if (!value || typeof value !== 'object' || !Array.isArray((value as any).commands)) return value;
+  const out: any = { ...(value as any) };
+  out.commands = (value as any).commands.map((cmd: any) => {
+    if (!cmd || typeof cmd !== 'object') return cmd;
+    const next: any = { ...cmd };
+    const command = String(next.command || '').trim();
+
+    const needsConversationId = new Set([
+      'SET_CONVERSATION_STATUS',
+      'SET_CONVERSATION_STAGE',
+      'SET_CONVERSATION_PROGRAM',
+      'ADD_CONVERSATION_NOTE',
+      'SCHEDULE_INTERVIEW',
+      'SEND_MESSAGE',
+    ]);
+    const needsContactId = new Set(['UPSERT_PROFILE_FIELDS', 'SET_NO_CONTACTAR']);
+
+    if (needsConversationId.has(command) && !next.conversationId) {
+      next.conversationId = defaults.conversationId;
+    }
+    if (needsContactId.has(command) && !next.contactId) {
+      next.contactId = defaults.contactId;
+    }
+    if (command === 'NOTIFY_ADMIN' && !next.workspaceId) {
+      next.workspaceId = defaults.workspaceId;
+    }
+    if (command === 'SEND_MESSAGE') {
+      next.channel = 'WHATSAPP';
+      if (!next.type) {
+        next.type = defaults.windowStatus === 'OUTSIDE_24H' ? 'TEMPLATE' : 'SESSION_TEXT';
+      }
+      if (!next.dedupeKey) {
+        const seed = `${defaults.conversationId}:${defaults.eventType}:${defaults.inboundMessageId || ''}:${next.type}:${next.text || ''}:${next.templateName || ''}`;
+        next.dedupeKey = `auto:${stableHash(seed).slice(0, 16)}`;
+      }
+    }
+    return next;
+  });
+  return out;
+}
+
 export async function runAgent(event: AgentEvent): Promise<{
   runId: string;
   windowStatus: WhatsAppWindowStatus;
@@ -456,7 +508,14 @@ export async function runAgent(event: AgentEvent): Promise<{
       }
 
       const raw = String((message as any).content || '').trim();
-      const parsed = normalizeAgentResponseShape(parseJsonLoose(raw));
+      const parsed = applyCommandDefaults(normalizeAgentResponseShape(parseJsonLoose(raw)), {
+        workspaceId: event.workspaceId,
+        conversationId: conversation.id,
+        contactId: conversation.contactId,
+        windowStatus,
+        inboundMessageId: event.inboundMessageId || null,
+        eventType: event.eventType,
+      });
       const validated = AgentResponseSchema.safeParse(parsed);
       if (!validated.success) {
         invalidAttempts += 1;
@@ -471,7 +530,8 @@ export async function runAgent(event: AgentEvent): Promise<{
               issues: validated.error.issues,
               instruction:
                 'Tu JSON anterior NO cumple el schema. Devuelve SOLO un JSON válido con "commands[].command" usando EXACTAMENTE uno de los valores permitidos (en mayúsculas): ' +
-                'UPSERT_PROFILE_FIELDS, SET_CONVERSATION_STATUS, SET_CONVERSATION_STAGE, SET_CONVERSATION_PROGRAM, ADD_CONVERSATION_NOTE, SET_NO_CONTACTAR, SCHEDULE_INTERVIEW, SEND_MESSAGE, NOTIFY_ADMIN, RUN_TOOL.',
+                'UPSERT_PROFILE_FIELDS, SET_CONVERSATION_STATUS, SET_CONVERSATION_STAGE, SET_CONVERSATION_PROGRAM, ADD_CONVERSATION_NOTE, SET_NO_CONTACTAR, SCHEDULE_INTERVIEW, SEND_MESSAGE, NOTIFY_ADMIN, RUN_TOOL. ' +
+                'Si usas SEND_MESSAGE, incluye: conversationId, channel=\"WHATSAPP\", type=\"SESSION_TEXT\"|\"TEMPLATE\", text (o templateName+templateVars), dedupeKey.',
             }),
           });
           continue;
