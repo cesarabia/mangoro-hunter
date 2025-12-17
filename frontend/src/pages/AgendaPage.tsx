@@ -71,6 +71,17 @@ export const AgendaPage: React.FC<AgendaPageProps> = ({ onBack }) => {
   const [error, setError] = useState<string | null>(null);
   const [includeInactive, setIncludeInactive] = useState(false);
   const [data, setData] = useState<ReservationsResponse | null>(null);
+  const [isNarrow, setIsNarrow] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 820;
+  });
+
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 820);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -173,59 +184,77 @@ export const AgendaPage: React.FC<AgendaPageProps> = ({ onBack }) => {
                   <div style={{ padding: '10px 14px', background: '#fafafa', borderBottom: '1px solid #eee' }}>
                     <strong style={{ textTransform: 'capitalize' }}>{group.label}</strong>
                   </div>
-                  <div style={{ width: '100%', overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-                      <thead>
-                        <tr style={{ textAlign: 'left', background: '#fff' }}>
-                          <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee' }}>Hora</th>
-                          <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee' }}>Candidato</th>
-                          <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee' }}>Lugar</th>
-                          <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee' }}>Estado</th>
-                          <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee' }}>Activo</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {group.items.map((item: any) => {
-                          const startDate = item.startDate as Date | null;
-                          const endDate = item.endDate as Date | null;
-                          const timeText = startDate ? formatTimeLabel(startDate, tz) : '--:--';
-                          const endText = endDate ? formatTimeLabel(endDate, tz) : '';
-                          const tooltip = startDate
-                            ? `${startDate.toISOString()} (${item.timezone})`
-                            : '';
-                          const name =
-                            item.contactName ||
-                            (item.contactWaId ? `+${item.contactWaId}` : 'Sin nombre');
-                          return (
-                            <tr key={item.id}>
-                              <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1' }} title={tooltip}>
+                  {isNarrow ? (
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      {group.items.map((item: any) => {
+                        const startDate = item.startDate as Date | null;
+                        const endDate = item.endDate as Date | null;
+                        const timeText = startDate ? formatTimeLabel(startDate, tz) : '--:--';
+                        const endText = endDate ? formatTimeLabel(endDate, tz) : '';
+                        const tooltip = startDate ? `${startDate.toISOString()} (${item.timezone})` : '';
+                        const name = item.contactName || (item.contactWaId ? `+${item.contactWaId}` : 'Sin nombre');
+                        return (
+                          <div key={item.id} style={{ padding: 12, borderBottom: '1px solid #f1f1f1' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                              <div style={{ fontWeight: 800 }} title={tooltip}>
                                 {timeText}
                                 {endText ? `–${endText}` : ''}
-                              </td>
-                              <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1' }}>
-                                <div style={{ fontWeight: 600 }}>{name}</div>
-                                {item.contactWaId && (
-                                  <div style={{ fontSize: 12, color: '#666' }}>+{item.contactWaId}</div>
-                                )}
-                              </td>
-                              <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1' }}>
-                                {item.location}
-                              </td>
-                              <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1' }}>
-                                <div>{item.status}</div>
-                                {item.interviewStatus && (
-                                  <div style={{ fontSize: 12, color: '#666' }}>Convo: {item.interviewStatus}</div>
-                                )}
-                              </td>
-                              <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1' }}>
-                                {item.active ? 'Sí' : 'No'}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                              </div>
+                              <div style={{ fontSize: 12, color: '#666' }}>{item.active ? 'Activo' : 'Inactivo'}</div>
+                            </div>
+                            <div style={{ marginTop: 6, fontWeight: 700 }}>{name}</div>
+                            {item.location ? <div style={{ marginTop: 4, fontSize: 13, color: '#333' }}>{item.location}</div> : null}
+                            <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
+                              Estado: <strong>{item.status}</strong>
+                              {item.interviewStatus ? ` · Convo: ${item.interviewStatus}` : ''}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ width: '100%', overflowX: 'hidden' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, tableLayout: 'fixed' }}>
+                        <thead>
+                          <tr style={{ textAlign: 'left', background: '#fff' }}>
+                            <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee', width: 120 }}>Hora</th>
+                            <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee' }}>Candidato</th>
+                            <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee' }}>Lugar</th>
+                            <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee', width: 160 }}>Estado</th>
+                            <th style={{ padding: '10px 14px', borderBottom: '1px solid #eee', width: 80 }}>Activo</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.items.map((item: any) => {
+                            const startDate = item.startDate as Date | null;
+                            const endDate = item.endDate as Date | null;
+                            const timeText = startDate ? formatTimeLabel(startDate, tz) : '--:--';
+                            const endText = endDate ? formatTimeLabel(endDate, tz) : '';
+                            const tooltip = startDate ? `${startDate.toISOString()} (${item.timezone})` : '';
+                            const name = item.contactName || (item.contactWaId ? `+${item.contactWaId}` : 'Sin nombre');
+                            return (
+                              <tr key={item.id}>
+                                <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1', overflowWrap: 'anywhere' }} title={tooltip}>
+                                  {timeText}
+                                  {endText ? `–${endText}` : ''}
+                                </td>
+                                <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1', overflowWrap: 'anywhere' }}>
+                                  <div style={{ fontWeight: 600 }}>{name}</div>
+                                  {item.contactWaId && <div style={{ fontSize: 12, color: '#666' }}>+{item.contactWaId}</div>}
+                                </td>
+                                <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1', overflowWrap: 'anywhere' }}>{item.location}</td>
+                                <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1', overflowWrap: 'anywhere' }}>
+                                  <div>{item.status}</div>
+                                  {item.interviewStatus && <div style={{ fontSize: 12, color: '#666' }}>Convo: {item.interviewStatus}</div>}
+                                </td>
+                                <td style={{ padding: '10px 14px', borderBottom: '1px solid #f1f1f1' }}>{item.active ? 'Sí' : 'No'}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </section>
               ))
             )}
@@ -235,4 +264,3 @@ export const AgendaPage: React.FC<AgendaPageProps> = ({ onBack }) => {
     </div>
   );
 };
-

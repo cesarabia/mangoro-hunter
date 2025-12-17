@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 
 type PageTab = 'help' | 'qa';
-type LogTab = 'agentRuns' | 'outbound' | 'automationRuns';
+type LogTab = 'agentRuns' | 'outbound' | 'automationRuns' | 'copilotRuns';
 
 type ScenarioResult = {
   id: string;
@@ -67,6 +67,7 @@ export const ReviewPage: React.FC<{
   const [agentRuns, setAgentRuns] = useState<any[]>([]);
   const [automationRuns, setAutomationRuns] = useState<any[]>([]);
   const [outboundLogs, setOutboundLogs] = useState<any[]>([]);
+  const [copilotRuns, setCopilotRuns] = useState<any[]>([]);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
 
@@ -161,11 +162,16 @@ export const ReviewPage: React.FC<{
       setAgentRuns(Array.isArray(ar) ? ar : []);
       setOutboundLogs(Array.isArray(or) ? or : []);
       setAutomationRuns(Array.isArray(au) ? au : []);
+      apiClient
+        .get('/api/logs/copilot-runs?limit=20')
+        .then((cr) => setCopilotRuns(Array.isArray(cr) ? cr : []))
+        .catch(() => setCopilotRuns([]));
     } catch (err: any) {
       setLogsError(err.message || 'No se pudieron cargar logs');
       setAgentRuns([]);
       setOutboundLogs([]);
       setAutomationRuns([]);
+      setCopilotRuns([]);
     } finally {
       setLogsLoading(false);
     }
@@ -199,7 +205,7 @@ export const ReviewPage: React.FC<{
         setActiveTab(storedTab);
       }
       const storedLogTab = localStorage.getItem('reviewLogTab');
-      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns') {
+      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns' || storedLogTab === 'copilotRuns') {
         setLogTab(storedLogTab);
         setActiveTab('qa');
       }
@@ -334,10 +340,15 @@ export const ReviewPage: React.FC<{
       return <div style={{ padding: 10, color: '#b93800' }}>{logsError}</div>;
     }
 
-    const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 12 };
+    const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 12, tableLayout: 'fixed' };
     const thStyle: React.CSSProperties = { textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #eee', color: '#555' };
-    const tdStyle: React.CSSProperties = { padding: '8px 6px', borderBottom: '1px solid #f2f2f2', verticalAlign: 'top' };
-
+    const tdStyle: React.CSSProperties = {
+      padding: '8px 6px',
+      borderBottom: '1px solid #f2f2f2',
+      verticalAlign: 'top',
+      overflowWrap: 'anywhere',
+      wordBreak: 'break-word'
+    };
     if (logTab === 'agentRuns') {
       return (
         <table style={tableStyle}>
@@ -358,6 +369,35 @@ export const ReviewPage: React.FC<{
                 <td style={tdStyle} title={r.conversationId}>
                   {r.conversationId}
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+
+    if (logTab === 'copilotRuns') {
+      return (
+        <table style={tableStyle}>
+          <thead>
+            <tr>
+              <th style={thStyle}>createdAt</th>
+              <th style={thStyle}>status</th>
+              <th style={thStyle}>view</th>
+              <th style={thStyle}>threadId</th>
+              <th style={thStyle}>error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(copilotRuns || []).slice(0, 20).map((r: any) => (
+              <tr key={r.id}>
+                <td style={tdStyle}>{r.createdAt}</td>
+                <td style={tdStyle}>{r.status}</td>
+                <td style={tdStyle}>{r.view || '—'}</td>
+                <td style={tdStyle} title={r.threadId || ''}>
+                  {r.threadId || '—'}
+                </td>
+                <td style={{ ...tdStyle, color: r.status === 'ERROR' ? '#b93800' : '#555' }}>{r.error || '—'}</td>
               </tr>
             ))}
           </tbody>
@@ -894,11 +934,14 @@ export const ReviewPage: React.FC<{
               <button onClick={() => setLogTab('automationRuns')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'automationRuns' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'automationRuns' ? '#111' : '#fff', color: logTab === 'automationRuns' ? '#fff' : '#333', fontSize: 12 }}>
                 Automation Runs
               </button>
+              <button onClick={() => setLogTab('copilotRuns')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'copilotRuns' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'copilotRuns' ? '#111' : '#fff', color: logTab === 'copilotRuns' ? '#fff' : '#333', fontSize: 12 }}>
+                Copilot Runs
+              </button>
               <button onClick={() => openConfigTab('logs')} style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
                 Ver en Config → Logs
               </button>
             </div>
-            <div style={{ marginTop: 10, overflowX: 'auto' }}>{renderLogTable()}</div>
+            <div style={{ marginTop: 10, overflowX: 'hidden' }}>{renderLogTable()}</div>
           </div>
 
           <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>

@@ -4,6 +4,7 @@ interface ConversationListProps {
   conversations: any[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  fullWidth?: boolean;
 }
 
 const statusLabels: Record<string, string> = {
@@ -42,7 +43,8 @@ const isSuspiciousCandidateName = (value?: string | null) => {
 export const ConversationList: React.FC<ConversationListProps> = ({
   conversations,
   selectedId,
-  onSelect
+  onSelect,
+  fullWidth = false,
 }) => {
   const [filter, setFilter] = useState<'ALL' | 'NEW' | 'OPEN' | 'CLOSED'>('ALL');
   const filteredConversations = useMemo(() => {
@@ -60,8 +62,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   return (
     <div
       style={{
-        borderRight: '1px solid #eee',
-        width: 320,
+        borderRight: fullWidth ? 'none' : '1px solid #eee',
+        width: fullWidth ? '100%' : 320,
         flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',

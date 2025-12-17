@@ -53,6 +53,7 @@ Reglas de seguridad y guardrails:
 - Respeta ventana WhatsApp:
   - IN_24H: puedes usar SEND_MESSAGE type=SESSION_TEXT.
   - OUTSIDE_24H: solo SEND_MESSAGE type=TEMPLATE (nunca SESSION_TEXT).
+- Para RESPONDER al humano debes usar SEND_MESSAGE. "notes" es SOLO para debug interno (no es un mensaje).
 - Nunca sobrescribas candidateName si existe candidateNameManual.
 - Evita loops: no repitas la misma pregunta 2+ veces; si necesitas confirmar, pide confirmación en formato 1/2.
 `.trim();
@@ -556,6 +557,27 @@ export async function runAgent(event: AgentEvent): Promise<{
       }
 
       const semanticIssues = validateAgentResponseSemantics(validated.data);
+      const hasSendMessage = validated.data.commands.some((c: any) => c && typeof c === 'object' && c.command === 'SEND_MESSAGE');
+      if (event.eventType === 'INBOUND_MESSAGE' && !hasSendMessage) {
+        const notesText = typeof validated.data.notes === 'string' ? validated.data.notes.trim() : '';
+        if (notesText && windowStatus === 'IN_24H') {
+          const seed = `${conversation.id}:${event.eventType}:${event.inboundMessageId || ''}:AUTO_NOTES_SEND:${notesText}`;
+          const dedupeKey = `auto:${stableHash(seed).slice(0, 16)}`;
+          (validated.data.commands as any[]).push({
+            command: 'SEND_MESSAGE',
+            conversationId: conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_TEXT',
+            text: notesText,
+            dedupeKey,
+          });
+        } else {
+          semanticIssues.push({
+            path: ['commands'],
+            message: 'INBOUND_MESSAGE requiere al menos 1 SEND_MESSAGE (para no dejar al humano sin respuesta).',
+          });
+        }
+      }
       if (semanticIssues.length > 0) {
         invalidAttempts += 1;
         lastInvalidRaw = raw || null;

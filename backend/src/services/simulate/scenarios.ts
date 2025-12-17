@@ -1,0 +1,128 @@
+export type ScenarioStep = {
+  inboundText: string;
+  inboundOffsetHours?: number;
+  expect?: {
+    contactFields?: Array<
+      'candidateName' | 'comuna' | 'ciudad' | 'region' | 'rut' | 'email' | 'availabilityText'
+    >;
+    stage?: string;
+    programIdSet?: boolean;
+    outbound?: {
+      sentDelta?: number;
+      blockedDelta?: number;
+      lastBlockedReasonContains?: string;
+    };
+  };
+};
+
+export type ScenarioDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  programSlug?: string;
+  contactWaId?: string | null;
+  contactNoContact?: boolean;
+  steps: ScenarioStep[];
+};
+
+export const SCENARIOS: ScenarioDefinition[] = [
+  {
+    id: 'admin_hola_responde',
+    name: 'Admin: Hola responde',
+    description: 'Valida que el número admin (allowlist) recibe respuesta ante "Hola" (sin bloqueo).',
+    contactWaId: '56982345846',
+    steps: [
+      { inboundText: 'Hola', expect: { outbound: { sentDelta: 1 } } },
+    ],
+  },
+  {
+    id: 'test_hola_responde',
+    name: 'Test: Hola responde',
+    description: 'Valida que el número de prueba (allowlist) recibe respuesta ante "Hola" (sin bloqueo).',
+    contactWaId: '56994830202',
+    steps: [
+      { inboundText: 'Hola', expect: { outbound: { sentDelta: 1 } } },
+    ],
+  },
+  {
+    id: 'location_loop_rm',
+    name: 'Loop comuna/ciudad (RM)',
+    description:
+      'Reproduce el caso donde el candidato envía comuna/ciudad en formatos mixtos para evitar loops.',
+    programSlug: 'recruitment',
+    steps: [
+      {
+        inboundText: '✅ PUENTE ALTO / REGION METROPOLITANA / RUT 12.345.678-9',
+        expect: { contactFields: ['comuna', 'ciudad'] },
+      },
+      {
+        inboundText: 'Tengo disponibilidad inmediata',
+      },
+    ],
+  },
+  {
+    id: 'displayname_garbage',
+    name: 'DisplayName basura ≠ candidateName',
+    description: 'Valida que frases tipo "Más información" no se usen como candidateName.',
+    programSlug: 'recruitment',
+    steps: [
+      { inboundText: 'Más información', expect: { contactFields: [] } },
+      { inboundText: 'Me llamo Pablo Urrutia Rivas', expect: { contactFields: ['candidateName'] } },
+    ],
+  },
+  {
+    id: 'program_menu_dedupe',
+    name: 'Anti-loop: dedupeKey evita duplicados',
+    description: 'Dispara el menú de selección de Program dos veces y verifica que el segundo envío queda bloqueado.',
+    steps: [
+      { inboundText: 'Hola', expect: { stage: 'PROGRAM_SELECTION', outbound: { sentDelta: 1 } } },
+      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'ANTI_LOOP' } } },
+    ],
+  },
+  {
+    id: 'window_24h_template',
+    name: 'Guardrail 24h: bloquea SESSION_TEXT',
+    description: 'Si la conversación está fuera de 24h, se bloquea SESSION_TEXT (requiere TEMPLATE).',
+    steps: [
+      {
+        inboundText: 'Hola',
+        inboundOffsetHours: -26,
+        expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'OUTSIDE_24H' }, stage: 'PROGRAM_SELECTION' },
+      },
+    ],
+  },
+  {
+    id: 'safe_mode_block',
+    name: 'SAFE MODE: bloquea fuera allowlist',
+    description: 'En ALLOWLIST_ONLY, bloquear envíos a waId fuera de allowlist y dejar blockedReason.',
+    // Nota: esto corre en workspace sandbox y NO envía WhatsApp real.
+    // Evita usar números reales: este waId solo existe en sandbox y sirve para validar SAFE MODE.
+    contactWaId: '56900000001',
+    steps: [
+      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'SAFE_OUTBOUND' }, stage: 'PROGRAM_SELECTION' } },
+    ],
+  },
+  {
+    id: 'no_contactar_block',
+    name: 'NO_CONTACTAR: bloquea outbound',
+    description: 'Si el contacto está NO_CONTACTAR, el sistema bloquea cualquier envío.',
+    contactNoContact: true,
+    steps: [
+      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'NO_CONTACTAR' }, stage: 'PROGRAM_SELECTION' } },
+    ],
+  },
+  {
+    id: 'program_select_assign',
+    name: 'Programs: menú y asignación por opción',
+    description: 'Si una conversación no tiene Program y hay varios activos, muestra menú y asigna al elegir 1/2/3.',
+    steps: [
+      { inboundText: 'Hola', expect: { stage: 'PROGRAM_SELECTION', outbound: { sentDelta: 1 } } },
+      { inboundText: '1', expect: { programIdSet: true } },
+    ],
+  },
+];
+
+export function getScenario(id: string): ScenarioDefinition | null {
+  const key = String(id || '').trim();
+  return SCENARIOS.find((s) => s.id === key) || null;
+}

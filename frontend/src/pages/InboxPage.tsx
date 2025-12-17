@@ -40,6 +40,17 @@ export const InboxPage: React.FC<Props> = ({
   const initialSelectionDone = useRef(false);
   const lastBackendErrorRef = useRef<string | null>(null);
   const lastBackendLogAtRef = useRef(0);
+  const [isNarrow, setIsNarrow] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 900;
+  });
+
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 900);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const recordBackendError = useCallback((err: unknown) => {
     const message = err instanceof Error ? err.message : 'Backend no disponible';
@@ -86,16 +97,36 @@ export const InboxPage: React.FC<Props> = ({
       setConversations(filtered);
 
       const currentSelected = selectedIdRef.current;
+      const storedSelected = (() => {
+        try {
+          return localStorage.getItem('selectedConversationId');
+        } catch {
+          return null;
+        }
+      })();
 
       if (!initialSelectionDone.current && filtered.length > 0) {
-        const firstId = filtered[0].id;
-        initialSelectionDone.current = true;
-        selectedIdRef.current = firstId;
-        setSelectedId(firstId);
+        const preferred =
+          storedSelected && filtered.some((c: any) => String(c.id) === String(storedSelected)) ? String(storedSelected) : null;
+        if (preferred) {
+          initialSelectionDone.current = true;
+          selectedIdRef.current = preferred;
+          setSelectedId(preferred);
+        } else if (!isNarrow) {
+          const firstId = filtered[0].id;
+          initialSelectionDone.current = true;
+          selectedIdRef.current = firstId;
+          setSelectedId(firstId);
+        } else {
+          // Mobile: start on list view; user taps a conversation.
+          initialSelectionDone.current = true;
+          selectedIdRef.current = null;
+          setSelectedId(null);
+        }
       }
 
       if (currentSelected && !filtered.some((conversation: any) => conversation.id === currentSelected)) {
-        if (filtered.length > 0) {
+        if (filtered.length > 0 && !isNarrow) {
           const nextId = filtered[0].id;
           initialSelectionDone.current = true;
           selectedIdRef.current = nextId;
@@ -110,7 +141,7 @@ export const InboxPage: React.FC<Props> = ({
     } catch (err) {
       recordBackendError(err);
     }
-  }, [clearBackendError, recordBackendError, mode]);
+  }, [clearBackendError, recordBackendError, mode, isNarrow]);
 
   const loadConversation = useCallback(async (id: string) => {
     try {
@@ -249,50 +280,118 @@ export const InboxPage: React.FC<Props> = ({
         </div>
       </div>
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <ConversationList
-          conversations={conversations}
-          selectedId={selectedId}
-          onSelect={handleSelect}
-        />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          {selectedConversation && !selectedConversation.isAdmin && (
-            <div style={{ padding: '10px 16px', borderBottom: '1px solid #eee', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <strong>Estado:</strong>{' '}
-                <span>{STATUS_LABELS[selectedConversation.status] || selectedConversation.status || 'Sin estado'}</span>
+        {isNarrow ? (
+          selectedId && selectedConversation ? (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div style={{ padding: '10px 12px', borderBottom: '1px solid #eee', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  onClick={() => {
+                    selectedIdRef.current = null;
+                    setSelectedId(null);
+                    setSelectedConversation(null);
+                  }}
+                  style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff' }}
+                >
+                  Volver
+                </button>
+                <div style={{ fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {selectedConversation?.isAdmin ? 'Administrador' : (selectedConversation?.contact?.candidateNameManual || selectedConversation?.contact?.candidateName || selectedConversation?.contact?.displayName || selectedConversation?.contact?.waId || 'Conversación')}
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#fff' }}
-                  disabled={statusUpdating || selectedConversation.status === 'OPEN'}
-                  onClick={() => handleStatusChange('OPEN')}
-                >
-                  Marcar como en seguimiento
-                </button>
-                <button
-                  style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#fff' }}
-                  disabled={statusUpdating || selectedConversation.status === 'CLOSED'}
-                  onClick={() => handleStatusChange('CLOSED')}
-                >
-                  Marcar como cerrado
-                </button>
-                <button
-                  style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#fff' }}
-                  disabled={statusUpdating || selectedConversation.status === 'NEW'}
-                  onClick={() => handleStatusChange('NEW')}
-                >
-                  Marcar como nuevo
-                </button>
-              </div>
+              {selectedConversation && !selectedConversation.isAdmin ? (
+                <div style={{ padding: '10px 12px', borderBottom: '1px solid #eee', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <strong>Estado:</strong>{' '}
+                    <span>{STATUS_LABELS[selectedConversation.status] || selectedConversation.status || 'Sin estado'}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                      disabled={statusUpdating || selectedConversation.status === 'OPEN'}
+                      onClick={() => handleStatusChange('OPEN')}
+                    >
+                      Seguimiento
+                    </button>
+                    <button
+                      style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                      disabled={statusUpdating || selectedConversation.status === 'CLOSED'}
+                      onClick={() => handleStatusChange('CLOSED')}
+                    >
+                      Cerrado
+                    </button>
+                    <button
+                      style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                      disabled={statusUpdating || selectedConversation.status === 'NEW'}
+                      onClick={() => handleStatusChange('NEW')}
+                    >
+                      Nuevo
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              <ConversationView
+                conversation={selectedConversation}
+                onMessageSent={handleMessageSent}
+                programs={programs}
+                onReplayInSimulator={onReplayInSimulator}
+              />
             </div>
-          )}
-          <ConversationView
-            conversation={selectedConversation}
-            onMessageSent={handleMessageSent}
-            programs={programs}
-            onReplayInSimulator={onReplayInSimulator}
-          />
-        </div>
+          ) : (
+            <ConversationList
+              conversations={conversations}
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              fullWidth
+            />
+          )
+        ) : (
+          <>
+            <ConversationList
+              conversations={conversations}
+              selectedId={selectedId}
+              onSelect={handleSelect}
+            />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              {selectedConversation && !selectedConversation.isAdmin && (
+                <div style={{ padding: '10px 16px', borderBottom: '1px solid #eee', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <strong>Estado:</strong>{' '}
+                    <span>{STATUS_LABELS[selectedConversation.status] || selectedConversation.status || 'Sin estado'}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#fff' }}
+                      disabled={statusUpdating || selectedConversation.status === 'OPEN'}
+                      onClick={() => handleStatusChange('OPEN')}
+                    >
+                      Marcar como en seguimiento
+                    </button>
+                    <button
+                      style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#fff' }}
+                      disabled={statusUpdating || selectedConversation.status === 'CLOSED'}
+                      onClick={() => handleStatusChange('CLOSED')}
+                    >
+                      Marcar como cerrado
+                    </button>
+                    <button
+                      style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#fff' }}
+                      disabled={statusUpdating || selectedConversation.status === 'NEW'}
+                      onClick={() => handleStatusChange('NEW')}
+                    >
+                      Marcar como nuevo
+                    </button>
+                  </div>
+                </div>
+              )}
+              <ConversationView
+                conversation={selectedConversation}
+                onMessageSent={handleMessageSent}
+                programs={programs}
+                onReplayInSimulator={onReplayInSimulator}
+              />
+            </div>
+          </>
+        )}
       </div>
       {showAddModal && (
         <div

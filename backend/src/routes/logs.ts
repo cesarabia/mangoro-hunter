@@ -153,4 +153,44 @@ export async function registerLogRoutes(app: FastifyInstance) {
       waMessageId: o.waMessageId,
     }));
   });
+
+  app.get('/copilot-runs', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+
+    const limitRaw = (request.query as any)?.limit;
+    const limit = typeof limitRaw === 'string' ? parseInt(limitRaw, 10) : 50;
+    const take = Number.isFinite(limit) && limit > 0 && limit <= 200 ? limit : 50;
+
+    const runs = await prisma.copilotRunLog.findMany({
+      where: { workspaceId: access.workspaceId },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        createdAt: true,
+        userId: true,
+        threadId: true as any,
+        conversationId: true,
+        view: true,
+        status: true,
+        error: true,
+        inputText: true,
+        responseText: true,
+      } as any,
+    });
+
+    return runs.map((r: any) => ({
+      id: r.id,
+      createdAt: r.createdAt.toISOString(),
+      userId: r.userId,
+      threadId: r.threadId || null,
+      conversationId: r.conversationId,
+      view: r.view,
+      status: r.status,
+      error: r.error,
+      inputText: r.inputText,
+      responseText: r.responseText,
+    }));
+  });
 }

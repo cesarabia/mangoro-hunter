@@ -5,6 +5,7 @@ import path from 'path';
 import { prisma } from '../db/client';
 import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceAuthService';
 import { getEffectiveOutboundAllowlist, getOutboundPolicy, getSystemConfig } from '../services/configService';
+import { SCENARIOS } from '../services/simulate/scenarios';
 
 function safeReadFile(filePath: string): Buffer | null {
   try {
@@ -71,6 +72,21 @@ export async function registerReviewPackRoutes(app: FastifyInstance) {
       releaseNotes: safeJsonParse((cfg as any).devReleaseNotes),
     };
     archive.append(JSON.stringify(meta, null, 2), { name: 'meta.json' });
+
+    // Scenarios (definitions) + latest results.
+    archive.append(
+      JSON.stringify(
+        SCENARIOS.map((s) => ({
+          id: s.id,
+          name: s.name,
+          description: s.description,
+          stepsCount: s.steps.length,
+        })),
+        null,
+        2,
+      ),
+      { name: 'scenarios/available.json' },
+    );
 
     // Logs snapshot (best effort).
     const [agentRuns, automationRuns, outboundLogs, copilotRuns, scenarioRuns] = await Promise.all([
@@ -190,7 +206,10 @@ export async function registerReviewPackRoutes(app: FastifyInstance) {
       { name: 'logs/scenario-runs.json' },
     );
 
-    reply.send(archive);
+    // Stream zip reliably (manual stream).
+    reply.hijack();
+    archive.pipe(reply.raw);
     archive.finalize();
+    return;
   });
 }

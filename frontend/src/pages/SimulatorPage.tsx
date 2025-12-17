@@ -27,6 +27,17 @@ export const SimulatorPage: React.FC<{ onOpenConversation?: (conversationId: str
 
   const [agentRuns, setAgentRuns] = useState<any[]>([]);
   const [agentRunDetail, setAgentRunDetail] = useState<any | null>(null);
+  const [isNarrow, setIsNarrow] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 1200;
+  });
+
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 1200);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const loadSessions = async () => {
     const data = await apiClient.get('/api/simulate/sessions');
@@ -182,7 +193,16 @@ export const SimulatorPage: React.FC<{ onOpenConversation?: (conversationId: str
   ];
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr 420px', gap: 12, padding: 12, height: '100%', minHeight: 0 }}>
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: isNarrow ? '1fr' : '320px 1fr 420px',
+        gap: 12,
+        padding: 12,
+        height: '100%',
+        minHeight: 0,
+      }}
+    >
       <div style={{ border: '1px solid #eee', borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div style={{ padding: 10, borderBottom: '1px solid #eee', background: '#fafafa', fontWeight: 700 }}>Sesiones sandbox</div>
         <div style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>

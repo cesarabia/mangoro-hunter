@@ -46,20 +46,21 @@ function inferNavigation(text: string): z.infer<typeof CopilotActionSchema> | nu
   const go = (view: z.infer<typeof ViewSchema>, configTab?: z.infer<typeof ConfigTabSchema>, label?: string) =>
     ({ type: 'NAVIGATE', view, ...(configTab ? { configTab } : {}), ...(label ? { label } : {}) }) as const;
 
-  const wantsNav = /(ll[eé]vame|lleva(me)?|ir|abre|abrir|vamos)/i.test(text);
+  const wantsNav = /(ll[eé]vame|lleva(me)?|ir|abre|abrir|vamos|ve a|entra a|mostrar?)/i.test(text);
   if (wantsNav) {
     if (/\b(inbox|bandeja)\b/i.test(text) || t === 'inbox') return go('inbox', undefined, 'Abrir Inbox');
     if (/\b(inactivos|archivados)\b/i.test(text) || t === 'inactivos') return go('inactive', undefined, 'Abrir Inactivos');
     if (/\b(simulador|simulator)\b/i.test(text) || t === 'simulador') return go('simulator', undefined, 'Abrir Simulador');
     if (/\b(agenda|calendario)\b/i.test(text) || t === 'agenda') return go('agenda', undefined, 'Abrir Agenda');
-    if (/\b(config|configuracion|settings)\b/i.test(text)) return go('config', undefined, 'Abrir Configuración');
+    // Config tabs (más específicos primero para evitar caer en "config" genérico).
     if (/\b(integraciones|integracion)\b/i.test(text)) return go('config', 'integrations', 'Ir a Integraciones');
     if (/\b(program|programa|programs)\b/i.test(text)) return go('config', 'programs', 'Ir a Programs');
     if (/\b(automation|automat|regla)\b/i.test(text)) return go('config', 'automations', 'Ir a Automations');
     if (/\b(numeros|numero|whatsapp|phoneline|linea)\b/i.test(text)) return go('config', 'phoneLines', 'Ir a Números WhatsApp');
-    if (/\b(usuarios|users)\b/i.test(text)) return go('config', 'users', 'Ir a Usuarios');
+    if (/\b(usuario|usuarios|users)\b/i.test(text)) return go('config', 'users', 'Ir a Usuarios');
     if (/\b(logs?|bitacora)\b/i.test(text)) return go('config', 'logs', 'Ir a Logs');
     if (/\b(uso|costos|consumo)\b/i.test(text)) return go('config', 'usage', 'Ir a Uso & Costos');
+    if (/\b(config|configuracion|settings)\b/i.test(text)) return go('config', undefined, 'Abrir Configuración');
   }
   if (/\b(ayuda|qa|owner review)\b/i.test(text)) return go('review', undefined, 'Abrir Ayuda / QA');
   return null;
@@ -165,6 +166,36 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
         status: r.status,
         error: r.error,
       })),
+    };
+  });
+
+  app.patch('/threads/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    const userId = request.user?.userId || null;
+    const { id } = request.params as { id: string };
+    if (!userId) return reply.code(400).send({ error: 'Usuario inválido.' });
+
+    const body = request.body as { archived?: boolean | null };
+    const archived = typeof body?.archived === 'boolean' ? body.archived : null;
+    if (archived === null) {
+      return reply.code(400).send({ error: '"archived" es obligatorio (true/false).' });
+    }
+
+    const existing = await prisma.copilotThread.findFirst({
+      where: { id, workspaceId: access.workspaceId, userId },
+      select: { id: true },
+    });
+    if (!existing) return reply.code(404).send({ error: 'Thread no encontrado.' });
+
+    const updated = await prisma.copilotThread.update({
+      where: { id },
+      data: { archivedAt: archived ? new Date() : null, updatedAt: new Date() } as any,
+      select: { id: true, archivedAt: true, updatedAt: true },
+    });
+    return {
+      id: updated.id,
+      archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null,
+      updatedAt: updated.updatedAt.toISOString(),
     };
   });
 
@@ -303,8 +334,13 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
     if (!apiKey) {
       const replyText =
         defaultDiagnosis ||
-        'Puedo ayudarte a navegar y diagnosticar. Si necesitas IA avanzada, configura la API Key de OpenAI en Configuración → IA.';
-      const actions = isAdmin ? [{ type: 'NAVIGATE' as const, view: 'review' as const, label: 'Abrir Ayuda / QA' }] : [];
+        'Puedo ayudarte a navegar y diagnosticar. Para respuestas con IA, configura la API Key de OpenAI en Configuración → Integraciones.';
+      const actions = isAdmin
+        ? [
+            { type: 'NAVIGATE' as const, view: 'config' as const, configTab: 'integrations' as const, label: 'Ir a Integraciones' },
+            { type: 'NAVIGATE' as const, view: 'review' as const, label: 'Abrir Ayuda / QA' },
+          ]
+        : [];
       if (run?.id) {
         await prisma.copilotRunLog.update({
           where: { id: run.id },
@@ -395,11 +431,24 @@ Tu salida debe ser SOLO un JSON válido con el shape:
       });
     } catch (err) {
       const errorText = err instanceof Error ? err.message : 'Error';
+      const actionable =
+        /api key|apikey|unauthorized|401/i.test(errorText)
+          ? 'No pude usar OpenAI: la API Key parece inválida o no autorizada.'
+          : /model/i.test(errorText) && /not found|invalid/i.test(errorText)
+            ? 'No pude usar OpenAI: el modelo configurado parece inválido.'
+            : /timeout|timed out|504/i.test(errorText)
+              ? 'No pude usar OpenAI: timeout al consultar el proveedor.'
+              : null;
       const fallback = defaultDiagnosis
         ? `${defaultDiagnosis}\n\nSi quieres, dime “ver logs” y te llevo a Ayuda / QA.`
-        : 'Tuve un error al responder. Intenta de nuevo o revisa Ayuda / QA para ver logs.';
+        : `${actionable ? `${actionable} ` : ''}Puedes intentar de nuevo o abrir Ayuda / QA para ver el motivo exacto en Logs.`;
       responseText = fallback;
-      actionsJson = isAdmin ? [{ type: 'NAVIGATE', view: 'review', label: 'Abrir Ayuda / QA' }] : [];
+      actionsJson = isAdmin
+        ? [
+            { type: 'NAVIGATE', view: 'config', configTab: 'integrations', label: 'Ir a Integraciones' },
+            { type: 'NAVIGATE', view: 'review', label: 'Abrir Ayuda / QA' },
+          ]
+        : [];
 
       if (run?.id) {
         await prisma.copilotRunLog.update({

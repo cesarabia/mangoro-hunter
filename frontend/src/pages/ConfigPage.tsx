@@ -48,6 +48,10 @@ const downloadJson = (filename: string, data: any) => {
 export const ConfigPage: React.FC = () => {
   const [tab, setTab] = useState<TabKey>('workspace');
   const [logsTab, setLogsTab] = useState<LogsTabKey>('agentRuns');
+  const [isNarrow, setIsNarrow] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 900;
+  });
 
   const workspaceId = useMemo(() => localStorage.getItem('workspaceId') || 'default', []);
   const isDev = typeof import.meta !== 'undefined' ? import.meta.env.MODE !== 'production' : true;
@@ -133,6 +137,13 @@ export const ConfigPage: React.FC = () => {
     } catch {
       // ignore
     }
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 900);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   const loadWorkspaces = async () => {
@@ -613,24 +624,42 @@ export const ConfigPage: React.FC = () => {
 
   return (
     <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0 }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            style={{
-              padding: '6px 10px',
-              borderRadius: 8,
-              border: tab === t.key ? '1px solid #111' : '1px solid #ccc',
-              background: tab === t.key ? '#111' : '#fff',
-              color: tab === t.key ? '#fff' : '#111',
-              cursor: 'pointer'
-            }}
+      {isNarrow ? (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 12, color: '#666', fontWeight: 700 }}>Sección</div>
+          <select
+            value={tab}
+            onChange={(e) => setTab(e.target.value as TabKey)}
+            style={{ padding: '8px 10px', borderRadius: 10, border: '1px solid #ccc', minWidth: 240, maxWidth: '100%' }}
+            aria-label="Seleccionar sección"
           >
-            {t.label}
-          </button>
-        ))}
-      </div>
+            {TABS.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 8,
+                border: tab === t.key ? '1px solid #111' : '1px solid #ccc',
+                background: tab === t.key ? '#111' : '#fff',
+                color: tab === t.key ? '#fff' : '#111',
+                cursor: 'pointer'
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {tab === 'workspace' ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 720 }}>

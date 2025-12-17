@@ -279,6 +279,19 @@ const Layout: React.FC<{
   versionInfo?: any | null;
   children: React.ReactNode;
 }> = ({ view, setView, onLogout, isAdmin, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, children }) => {
+  const [isNarrow, setIsNarrow] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 980;
+  });
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 980);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   const workspaceOptions = useMemo(() => {
     if (workspaces.length > 0) return workspaces;
     return [{ id: 'default', name: 'Hunter Internal' }];
@@ -304,6 +317,19 @@ const Layout: React.FC<{
       {label}
     </button>
   );
+
+  const navItems = useMemo(() => {
+    const items: Array<{ view?: View; label: string; adminOnly?: boolean; action?: () => void }> = [
+      { view: 'inbox', label: 'Inbox' },
+      { view: 'inactive', label: 'Inactivos' },
+      { view: 'review', label: 'Ayuda / QA', adminOnly: true },
+      { view: 'simulator', label: 'Simulador', adminOnly: true },
+      { view: 'agenda', label: 'Agenda', adminOnly: true },
+      { view: 'config', label: 'Configuración', adminOnly: true },
+      { label: 'Salir', action: onLogout },
+    ];
+    return items.filter((i) => !i.adminOnly || isAdmin);
+  }, [isAdmin, onLogout]);
 
   const versionStamp = useMemo(() => {
     const sha = typeof versionInfo?.gitSha === 'string' ? versionInfo.gitSha : null;
@@ -383,24 +409,107 @@ const Layout: React.FC<{
           ) : null}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          {navButton('inbox', 'Inbox')}
-          {navButton('inactive', 'Inactivos')}
-          {isAdmin && navButton('review', 'Ayuda / QA')}
-          {isAdmin && navButton('simulator', 'Simulador')}
-          {isAdmin && navButton('agenda', 'Agenda')}
-          {isAdmin && navButton('config', 'Configuración')}
-          <button
-            onClick={onLogout}
-            style={{
-              padding: '4px 10px',
-              borderRadius: 6,
-              border: '1px solid #ccc',
-              background: '#fff',
-              cursor: 'pointer'
-            }}
-          >
-            Salir
-          </button>
+          {!isNarrow ? (
+            <>
+              {navButton('inbox', 'Inbox')}
+              {navButton('inactive', 'Inactivos')}
+              {isAdmin && navButton('review', 'Ayuda / QA')}
+              {isAdmin && navButton('simulator', 'Simulador')}
+              {isAdmin && navButton('agenda', 'Agenda')}
+              {isAdmin && navButton('config', 'Configuración')}
+              <button
+                onClick={onLogout}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: 6,
+                  border: '1px solid #ccc',
+                  background: '#fff',
+                  cursor: 'pointer'
+                }}
+              >
+                Salir
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => setMenuOpen(true)}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: '1px solid #111',
+                  background: '#111',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  fontWeight: 800
+                }}
+                aria-label="Abrir menú"
+              >
+                Menú
+              </button>
+              {menuOpen ? (
+                <div
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(0,0,0,0.25)',
+                    zIndex: 80,
+                    display: 'flex',
+                    justifyContent: 'flex-end'
+                  }}
+                  onClick={() => setMenuOpen(false)}
+                >
+                  <div
+                    style={{
+                      width: 'min(320px, 92vw)',
+                      background: '#fff',
+                      borderLeft: '1px solid #eee',
+                      padding: 12,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                      <div style={{ fontWeight: 900 }}>Navegación</div>
+                      <button
+                        onClick={() => setMenuOpen(false)}
+                        style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                      >
+                        Cerrar
+                      </button>
+                    </div>
+                    {navItems.map((i) => (
+                      <button
+                        key={i.label}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          if (i.action) return i.action();
+                          if (i.view) return setView(i.view);
+                        }}
+                        style={{
+                          textAlign: 'left',
+                          padding: '10px 12px',
+                          borderRadius: 10,
+                          border: '1px solid #eee',
+                          background: i.view && view === i.view ? '#111' : '#fff',
+                          color: i.view && view === i.view ? '#fff' : '#111',
+                          fontWeight: i.view && view === i.view ? 800 : 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {i.label}
+                      </button>
+                    ))}
+                    <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
+                      Workspace: <strong>{workspaceOptions.find((w) => w.id === workspaceId)?.name || workspaceId}</strong>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
       </header>
       <div style={{ flex: 1, minHeight: 0 }}>
