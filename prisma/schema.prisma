@@ -32,6 +32,9 @@ model Workspace {
   memberships Membership[]
   phoneLines  PhoneLine[]
   programs    Program[]
+  connectors  WorkspaceConnector[]
+  programKnowledgeAssets ProgramKnowledgeAsset[]
+  programConnectorPermissions ProgramConnectorPermission[]
   automations AutomationRule[]
   automationRuns AutomationRunLog[]
   conversations Conversation[]
@@ -109,6 +112,10 @@ model Program {
   name            String
   slug            String
   description     String?
+  goal            String?
+  audience        String?
+  tone            String?
+  language        String?
   isActive        Boolean   @default(true)
   agentSystemPrompt String
   archivedAt      DateTime?
@@ -117,11 +124,71 @@ model Program {
   automations     AutomationRule[]
   agentRuns       AgentRunLog[]
   aiUsageLogs     AiUsageLog[]
+  knowledgeAssets ProgramKnowledgeAsset[]
+  connectorPermissions ProgramConnectorPermission[]
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   @@unique([workspaceId, slug])
   @@index([workspaceId])
+}
+
+model ProgramKnowledgeAsset {
+  id          String    @id @default(cuid())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  workspaceId String    @default("default")
+  program     Program   @relation(fields: [programId], references: [id])
+  programId   String
+  type        String
+  title       String
+  url         String?
+  contentText String?
+  filePath    String?
+  mime        String?
+  tags        String?
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([workspaceId])
+  @@index([programId])
+  @@index([createdAt])
+}
+
+model WorkspaceConnector {
+  id          String    @id @default(cuid())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  workspaceId String
+  name        String
+  slug        String
+  description String?
+  actionsJson String?
+  isActive    Boolean   @default(true)
+  archivedAt  DateTime?
+  programPermissions ProgramConnectorPermission[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+}
+
+model ProgramConnectorPermission {
+  id          String    @id @default(cuid())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  workspaceId String    @default("default")
+  program     Program   @relation(fields: [programId], references: [id])
+  programId   String
+  connector   WorkspaceConnector @relation(fields: [connectorId], references: [id])
+  connectorId String
+  allowedActionsJson String?
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([programId, connectorId])
+  @@index([workspaceId])
+  @@index([programId])
 }
 
 model Contact {

@@ -52,6 +52,7 @@ export const ConfigPage: React.FC = () => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 900;
   });
+  const [focusedProgramId, setFocusedProgramId] = useState<string | null>(null);
 
   const workspaceId = useMemo(() => localStorage.getItem('workspaceId') || 'default', []);
   const isDev = typeof import.meta !== 'undefined' ? import.meta.env.MODE !== 'production' : true;
@@ -106,6 +107,24 @@ export const ConfigPage: React.FC = () => {
   const [programEditor, setProgramEditor] = useState<any | null>(null);
   const [programStatus, setProgramStatus] = useState<string | null>(null);
   const [programError, setProgramError] = useState<string | null>(null);
+  const [programKnowledge, setProgramKnowledge] = useState<any[]>([]);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [newAssetType, setNewAssetType] = useState<'LINK' | 'TEXT'>('LINK');
+  const [newAssetTitle, setNewAssetTitle] = useState('');
+  const [newAssetUrl, setNewAssetUrl] = useState('');
+  const [newAssetContent, setNewAssetContent] = useState('');
+  const [newAssetTags, setNewAssetTags] = useState('');
+
+  const [programConnectors, setProgramConnectors] = useState<any[]>([]);
+  const [programToolSelections, setProgramToolSelections] = useState<Record<string, { enabled: boolean; allowed: Record<string, boolean> }>>({});
+  const [toolsSaving, setToolsSaving] = useState(false);
+  const [toolsStatus, setToolsStatus] = useState<string | null>(null);
+  const [toolsError, setToolsError] = useState<string | null>(null);
+
+  const [promptGenerating, setPromptGenerating] = useState(false);
+  const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
+  const [promptGenError, setPromptGenError] = useState<string | null>(null);
 
   const [automations, setAutomations] = useState<any[]>([]);
   const [automationEditor, setAutomationEditor] = useState<any | null>(null);
@@ -164,6 +183,59 @@ export const ConfigPage: React.FC = () => {
   const loadPrograms = async () => {
     const data = await apiClient.get('/api/programs');
     setPrograms(Array.isArray(data) ? data : []);
+  };
+
+  const loadProgramKnowledge = async (programId: string) => {
+    setKnowledgeLoading(true);
+    setKnowledgeError(null);
+    try {
+      const data = await apiClient.get(`/api/programs/${programId}/knowledge`);
+      setProgramKnowledge(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setProgramKnowledge([]);
+      setKnowledgeError(err.message || 'No se pudo cargar Knowledge Pack');
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  };
+
+  const loadProgramTools = async (programId: string) => {
+    setToolsStatus(null);
+    setToolsError(null);
+    try {
+      const data: any = await apiClient.get(`/api/programs/${programId}/tools`);
+      const connectors = Array.isArray(data?.connectors) ? data.connectors : [];
+      const permissions = Array.isArray(data?.permissions) ? data.permissions : [];
+      setProgramConnectors(connectors);
+      const next: Record<string, { enabled: boolean; allowed: Record<string, boolean> }> = {};
+      for (const c of connectors) {
+        next[String(c.id)] = { enabled: false, allowed: {} };
+        const actions = Array.isArray(c.actions) ? c.actions : [];
+        actions.forEach((a: any) => {
+          next[String(c.id)].allowed[String(a)] = false;
+        });
+      }
+      for (const p of permissions) {
+        const cid = String(p.connectorId || '').trim();
+        if (!cid || !next[cid]) continue;
+        next[cid].enabled = true;
+        const allowed = Array.isArray(p.allowedActions) ? p.allowedActions : [];
+        if (allowed.length === 0) continue; // empty => allow all
+        // Reset and then enable explicit ones
+        Object.keys(next[cid].allowed).forEach((k) => {
+          next[cid].allowed[k] = false;
+        });
+        allowed.forEach((a: any) => {
+          const key = String(a);
+          if (key in next[cid].allowed) next[cid].allowed[key] = true;
+        });
+      }
+      setProgramToolSelections(next);
+    } catch (err: any) {
+      setProgramConnectors([]);
+      setProgramToolSelections({});
+      setToolsError(err.message || 'No se pudo cargar Tools del Program');
+    }
   };
   const loadAutomations = async () => {
     const data = await apiClient.get('/api/automations');
@@ -441,6 +513,44 @@ export const ConfigPage: React.FC = () => {
     if (tab === 'usage') loadUsage().catch(() => {});
   }, [tab]);
 
+  useEffect(() => {
+    if (tab !== 'programs') return;
+    let id: string | null = null;
+    try {
+      id = localStorage.getItem('configFocusProgramId');
+      if (id) localStorage.removeItem('configFocusProgramId');
+    } catch {
+      id = null;
+    }
+    if (!id) return;
+    setFocusedProgramId(id);
+    setTimeout(() => setFocusedProgramId(null), 8000);
+    setTimeout(() => {
+      try {
+        document.getElementById(`program-row-${id}`)?.scrollIntoView({ block: 'center' });
+      } catch {
+        // ignore
+      }
+    }, 250);
+  }, [tab, programs.length]);
+
+  useEffect(() => {
+    const id = programEditor?.id ? String(programEditor.id) : null;
+    setPromptSuggestion(null);
+    setPromptGenError(null);
+    setKnowledgeError(null);
+    setToolsError(null);
+    setToolsStatus(null);
+    if (!id) {
+      setProgramKnowledge([]);
+      setProgramConnectors([]);
+      setProgramToolSelections({});
+      return;
+    }
+    loadProgramKnowledge(id).catch(() => {});
+    loadProgramTools(id).catch(() => {});
+  }, [programEditor?.id]);
+
   const usedAsDefaultCountByProgramId = useMemo(() => {
     const map: Record<string, number> = {};
     for (const line of phoneLines) {
@@ -515,6 +625,10 @@ export const ConfigPage: React.FC = () => {
         name: programEditor.name,
         slug: programEditor.slug,
         description: programEditor.description || null,
+        goal: programEditor.goal || null,
+        audience: programEditor.audience || null,
+        tone: programEditor.tone || null,
+        language: programEditor.language || null,
         isActive: Boolean(programEditor.isActive),
         agentSystemPrompt: programEditor.agentSystemPrompt
       };
@@ -554,10 +668,105 @@ export const ConfigPage: React.FC = () => {
       name,
       slug,
       description: programEditor.description || null,
+      goal: programEditor.goal || null,
+      audience: programEditor.audience || null,
+      tone: programEditor.tone || null,
+      language: programEditor.language || null,
       isActive: true,
       agentSystemPrompt: programEditor.agentSystemPrompt
     });
     await loadPrograms();
+  };
+
+  const addProgramAsset = async () => {
+    if (!programEditor?.id) return;
+    setKnowledgeError(null);
+    try {
+      const payload: any = {
+        type: newAssetType,
+        title: newAssetTitle.trim(),
+        tags: newAssetTags.trim() ? newAssetTags.trim() : null,
+      };
+      if (newAssetType === 'LINK') payload.url = newAssetUrl.trim();
+      if (newAssetType === 'TEXT') payload.contentText = newAssetContent.trim();
+      await apiClient.post(`/api/programs/${programEditor.id}/knowledge`, payload);
+      setNewAssetTitle('');
+      setNewAssetUrl('');
+      setNewAssetContent('');
+      setNewAssetTags('');
+      await loadProgramKnowledge(String(programEditor.id));
+    } catch (err: any) {
+      setKnowledgeError(err.message || 'No se pudo agregar el asset');
+    }
+  };
+
+  const setAssetArchived = async (assetId: string, archived: boolean) => {
+    if (!programEditor?.id) return;
+    setKnowledgeError(null);
+    try {
+      await apiClient.patch(`/api/programs/${programEditor.id}/knowledge/${assetId}`, { archived });
+      await loadProgramKnowledge(String(programEditor.id));
+    } catch (err: any) {
+      setKnowledgeError(err.message || 'No se pudo actualizar el asset');
+    }
+  };
+
+  const saveProgramTools = async () => {
+    if (!programEditor?.id) return;
+    setToolsSaving(true);
+    setToolsStatus(null);
+    setToolsError(null);
+    try {
+      const permissions: Array<{ connectorId: string; allowedActions: string[] }> = [];
+      for (const [connectorId, sel] of Object.entries(programToolSelections)) {
+        if (!sel?.enabled) continue;
+        const allowed = Object.entries(sel.allowed || {})
+          .filter(([, v]) => Boolean(v))
+          .map(([k]) => k);
+        permissions.push({ connectorId, allowedActions: allowed });
+      }
+      await apiClient.put(`/api/programs/${programEditor.id}/tools`, { permissions });
+      setToolsStatus('Guardado.');
+      await loadProgramTools(String(programEditor.id));
+    } catch (err: any) {
+      setToolsError(err.message || 'No se pudo guardar Tools');
+    } finally {
+      setToolsSaving(false);
+    }
+  };
+
+  const generateProgramPrompt = async () => {
+    if (!programEditor?.id || promptGenerating) return;
+    setPromptGenerating(true);
+    setPromptGenError(null);
+    setPromptSuggestion(null);
+    try {
+      const res: any = await apiClient.post(`/api/programs/${programEditor.id}/generate-prompt`, {});
+      const suggestion = typeof res?.suggestion === 'string' ? res.suggestion.trim() : '';
+      if (!suggestion) throw new Error('La IA devolvió un prompt vacío.');
+      setPromptSuggestion(suggestion);
+    } catch (err: any) {
+      setPromptGenError(err.message || 'No se pudo generar el prompt');
+    } finally {
+      setPromptGenerating(false);
+    }
+  };
+
+  const applyProgramPrompt = async () => {
+    if (!programEditor?.id || !promptSuggestion) return;
+    const ok = window.confirm('¿Aplicar estas instrucciones al Program? (se audita, no se borra nada)');
+    if (!ok) return;
+    setProgramStatus(null);
+    setProgramError(null);
+    try {
+      await apiClient.patch(`/api/programs/${programEditor.id}`, { agentSystemPrompt: promptSuggestion });
+      setProgramEditor({ ...programEditor, agentSystemPrompt: promptSuggestion });
+      setPromptSuggestion(null);
+      setProgramStatus('Prompt aplicado.');
+      await loadPrograms();
+    } catch (err: any) {
+      setProgramError(err.message || 'No se pudo aplicar el prompt');
+    }
   };
 
   const saveAutomation = async () => {
@@ -1228,7 +1437,7 @@ export const ConfigPage: React.FC = () => {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ fontSize: 18, fontWeight: 700 }}>Programs</div>
             <button
-              onClick={() => setProgramEditor({ name: '', slug: '', description: '', isActive: true, agentSystemPrompt: '' })}
+              onClick={() => setProgramEditor({ name: '', slug: '', description: '', goal: '', audience: '', tone: '', language: 'ES', isActive: true, agentSystemPrompt: '' })}
               style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
             >
               + Crear Program
@@ -1249,7 +1458,15 @@ export const ConfigPage: React.FC = () => {
               </thead>
               <tbody>
                 {programs.map((p) => (
-                  <tr key={p.id} style={{ borderTop: '1px solid #f0f0f0' }}>
+                  <tr
+                    key={p.id}
+                    id={`program-row-${p.id}`}
+                    style={{
+                      borderTop: '1px solid #f0f0f0',
+                      background: focusedProgramId === p.id ? '#fff7cc' : '#fff',
+                      transition: 'background 220ms ease'
+                    }}
+                  >
                     <td style={{ padding: 10, fontSize: 13 }}>{p.name}</td>
                     <td style={{ padding: 10, fontSize: 13, fontFamily: 'monospace' }}>{p.slug}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>
@@ -1279,20 +1496,245 @@ export const ConfigPage: React.FC = () => {
                 <input value={programEditor.name} onChange={(e) => setProgramEditor({ ...programEditor, name: e.target.value })} placeholder="name (required)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
                 <input value={programEditor.slug} onChange={(e) => setProgramEditor({ ...programEditor, slug: e.target.value })} placeholder="slug (unique)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
                 <input value={programEditor.description || ''} onChange={(e) => setProgramEditor({ ...programEditor, description: e.target.value })} placeholder="description" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                <select
+                  value={programEditor.language || 'ES'}
+                  onChange={(e) => setProgramEditor({ ...programEditor, language: e.target.value })}
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                  aria-label="Idioma"
+                >
+                  <option value="ES">Idioma: ES</option>
+                  <option value="EN">Idioma: EN</option>
+                </select>
+                <input value={programEditor.audience || ''} onChange={(e) => setProgramEditor({ ...programEditor, audience: e.target.value })} placeholder="Público (opcional)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                <input value={programEditor.tone || ''} onChange={(e) => setProgramEditor({ ...programEditor, tone: e.target.value })} placeholder="Tono (opcional)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={Boolean(programEditor.isActive)} onChange={(e) => setProgramEditor({ ...programEditor, isActive: e.target.checked })} />
                   Active
                 </label>
               </div>
+
+              <textarea
+                value={programEditor.goal || ''}
+                onChange={(e) => setProgramEditor({ ...programEditor, goal: e.target.value })}
+                rows={3}
+                placeholder="Objetivo del Program (opcional). Ej: informar, calificar y agendar."
+                style={{ width: '100%', marginTop: 10, padding: 10, borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }}
+              />
+
               <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>
                 Hint: Define objetivo, datos a recolectar, tono, y cómo decidir SET_STAGE/SET_STATUS/SEND_MESSAGE.
               </div>
+
+              <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 800, fontSize: 13 }}>Instrucciones del Agente</div>
+                <button
+                  onClick={() => generateProgramPrompt().catch(() => {})}
+                  disabled={!programEditor.id || promptGenerating}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+                  title={!programEditor.id ? 'Guarda el Program primero' : 'Genera una propuesta de prompt usando IA'}
+                >
+                  {promptGenerating ? 'Generando…' : 'Generar / Mejorar con IA'}
+                </button>
+              </div>
+              {promptGenError ? <div style={{ marginTop: 6, fontSize: 12, color: '#b93800' }}>{promptGenError}</div> : null}
               <textarea
                 value={programEditor.agentSystemPrompt || ''}
                 onChange={(e) => setProgramEditor({ ...programEditor, agentSystemPrompt: e.target.value })}
                 rows={12}
                 style={{ width: '100%', marginTop: 8, padding: 10, borderRadius: 10, border: '1px solid #ddd', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12 }}
               />
+              {promptSuggestion ? (
+                <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 10, padding: 10, background: '#fafafa' }}>
+                  <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Propuesta (preview)</div>
+                  <textarea value={promptSuggestion} readOnly rows={10} style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12 }} />
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button onClick={() => applyProgramPrompt().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}>
+                      Aplicar
+                    </button>
+                    <button onClick={() => setPromptSuggestion(null)} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                      Cerrar
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <div style={{ marginTop: 12, border: '1px solid #eee', borderRadius: 10, padding: 10 }}>
+                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Knowledge Pack (archive-only)</div>
+                {!programEditor.id ? (
+                  <div style={{ fontSize: 12, color: '#666' }}>Guarda el Program para poder agregar assets.</div>
+                ) : (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: 8, alignItems: 'center' }}>
+                      <select value={newAssetType} onChange={(e) => setNewAssetType(e.target.value as any)} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
+                        <option value="LINK">Link</option>
+                        <option value="TEXT">Texto</option>
+                      </select>
+                      <input value={newAssetTitle} onChange={(e) => setNewAssetTitle(e.target.value)} placeholder="Título (required)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                      {newAssetType === 'LINK' ? (
+                        <>
+                          <div style={{ fontSize: 12, color: '#666' }}>URL</div>
+                          <input value={newAssetUrl} onChange={(e) => setNewAssetUrl(e.target.value)} placeholder="https://..." style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 12, color: '#666' }}>Texto</div>
+                          <textarea value={newAssetContent} onChange={(e) => setNewAssetContent(e.target.value)} rows={4} placeholder="Pega aquí texto/FAQ/políticas..." style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                        </>
+                      )}
+                      <div style={{ fontSize: 12, color: '#666' }}>Tags</div>
+                      <input value={newAssetTags} onChange={(e) => setNewAssetTags(e.target.value)} placeholder="tags (opcional, separados por coma)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                    </div>
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => addProgramAsset().catch(() => {})}
+                        disabled={knowledgeLoading || !newAssetTitle.trim() || (newAssetType === 'LINK' ? !newAssetUrl.trim() : !newAssetContent.trim())}
+                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+                      >
+                        Agregar asset
+                      </button>
+                      <button onClick={() => loadProgramKnowledge(String(programEditor.id)).catch(() => {})} disabled={knowledgeLoading} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                        {knowledgeLoading ? 'Cargando…' : 'Recargar'}
+                      </button>
+                    </div>
+                    {knowledgeError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{knowledgeError}</div> : null}
+                    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {programKnowledge.length === 0 ? (
+                        <div style={{ fontSize: 12, color: '#666' }}>— Sin assets aún.</div>
+                      ) : (
+                        programKnowledge.slice(0, 30).map((a: any) => (
+                          <details key={a.id} style={{ border: '1px solid #eee', borderRadius: 10, padding: 10, background: '#fff' }}>
+                            <summary style={{ cursor: 'pointer', fontWeight: 800 }}>
+                              [{a.type}] {a.title} {a.archivedAt ? '(ARCHIVADO)' : ''}
+                            </summary>
+                            {a.url ? <div style={{ marginTop: 6, fontSize: 12 }}><a href={a.url} target="_blank" rel="noreferrer">{a.url}</a></div> : null}
+                            {a.contentText ? <pre style={{ marginTop: 8, whiteSpace: 'pre-wrap', fontSize: 12 }}>{a.contentText}</pre> : null}
+                            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setAssetArchived(a.id, !a.archivedAt).catch(() => {});
+                                }}
+                                style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                              >
+                                {a.archivedAt ? 'Reactivar' : 'Archivar'}
+                              </button>
+                              <span style={{ fontSize: 12, color: '#666' }}>{a.createdAt ? `creado: ${a.createdAt}` : ''}</span>
+                            </div>
+                          </details>
+                        ))
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div style={{ marginTop: 12, border: '1px solid #eee', borderRadius: 10, padding: 10 }}>
+                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Integraciones / Tools del Program</div>
+                {!programEditor.id ? (
+                  <div style={{ fontSize: 12, color: '#666' }}>Guarda el Program para configurar Tools.</div>
+                ) : (
+                  <>
+                    {toolsError ? <div style={{ marginBottom: 8, fontSize: 12, color: '#b93800' }}>{toolsError}</div> : null}
+                    {programConnectors.length === 0 ? (
+                      <div style={{ fontSize: 12, color: '#666' }}>
+                        — No hay conectores en el workspace. Puedes crear uno en Integraciones (o espera el bootstrap).
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {programConnectors.map((c: any) => {
+                          const sel = programToolSelections[String(c.id)] || { enabled: false, allowed: {} };
+                          const actions = Array.isArray(c.actions) ? c.actions : [];
+                          const enabled = Boolean(sel.enabled);
+                          const allowAll = enabled && actions.length > 0 && Object.values(sel.allowed || {}).every((v) => !v);
+                          return (
+                            <div key={c.id} style={{ border: '1px solid #eee', borderRadius: 10, padding: 10, background: '#fff' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                                <div>
+                                  <div style={{ fontWeight: 800 }}>{c.name} <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#666' }}>({c.slug})</span></div>
+                                  {c.description ? <div style={{ fontSize: 12, color: '#666' }}>{c.description}</div> : null}
+                                </div>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={enabled}
+                                    onChange={(e) => {
+                                      const nextEnabled = e.target.checked;
+                                      setProgramToolSelections((prev) => ({
+                                        ...prev,
+                                        [String(c.id)]: { ...(prev[String(c.id)] || { enabled: false, allowed: {} }), enabled: nextEnabled },
+                                      }));
+                                    }}
+                                  />
+                                  Habilitar
+                                </label>
+                              </div>
+                              {enabled ? (
+                                <div style={{ marginTop: 8 }}>
+                                  {actions.length === 0 ? (
+                                    <div style={{ fontSize: 12, color: '#666' }}>Este conector no declara acciones (se permite todo).</div>
+                                  ) : (
+                                    <>
+                                      <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>
+                                        Acciones permitidas (si no marcas ninguna, se interpreta como “todas”).
+                                      </div>
+                                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                        {actions.map((a: any) => {
+                                          const key = String(a);
+                                          const checked = Boolean(sel.allowed?.[key]);
+                                          return (
+                                            <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, border: '1px solid #eee', borderRadius: 999, padding: '4px 10px', fontSize: 12 }}>
+                                              <input
+                                                type="checkbox"
+                                                checked={checked}
+                                                onChange={(e) => {
+                                                  const nextChecked = e.target.checked;
+                                                  setProgramToolSelections((prev) => ({
+                                                    ...prev,
+                                                    [String(c.id)]: {
+                                                      ...(prev[String(c.id)] || { enabled: true, allowed: {} }),
+                                                      enabled: true,
+                                                      allowed: { ...(prev[String(c.id)]?.allowed || {}), [key]: nextChecked },
+                                                    },
+                                                  }));
+                                                }}
+                                              />
+                                              {key}
+                                            </label>
+                                          );
+                                        })}
+                                      </div>
+                                      {allowAll ? <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>Modo: permitir todas las acciones.</div> : null}
+                                    </>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => saveProgramTools().catch(() => {})}
+                        disabled={toolsSaving}
+                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+                      >
+                        {toolsSaving ? 'Guardando…' : 'Guardar Tools'}
+                      </button>
+                      <button
+                        onClick={() => loadProgramTools(String(programEditor.id)).catch(() => {})}
+                        disabled={toolsSaving}
+                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                      >
+                        Recargar
+                      </button>
+                      {toolsStatus ? <span style={{ fontSize: 12, color: '#1a7f37' }}>{toolsStatus}</span> : null}
+                    </div>
+                  </>
+                )}
+              </div>
+
               <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button onClick={() => saveProgram().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}>
                   Guardar
@@ -1889,7 +2331,9 @@ export const ConfigPage: React.FC = () => {
                     >
                       <div style={{ fontSize: 12, color: '#666' }}>{r.createdAt}</div>
                       <div style={{ fontSize: 13, fontWeight: 600 }}>{r.eventType} · {r.status}</div>
-                      <div style={{ fontSize: 12, color: '#666' }}>{r.conversationId || '—'}</div>
+                      <div style={{ fontSize: 12, color: '#666' }}>
+                        {(r.program?.name ? `${r.program.name}${r.program.slug ? ` (${r.program.slug})` : ''}` : 'Program: —')} · {r.conversationId || '—'}
+                      </div>
                     </button>
                   ))}
                 </div>

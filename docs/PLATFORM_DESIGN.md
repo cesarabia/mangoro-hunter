@@ -130,11 +130,25 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
 ### 5.5 Copilot
 - **CopilotThread**: hilo por workspace+user (persistente)  
 - **CopilotRunLog**: auditoría por corrida (diagnóstico/navegación) y fuente del historial (inputText/responseText)  
+  - Estados: `RUNNING` → `SUCCESS` / `PENDING_CONFIRMATION` → (`EXECUTING` → `EXECUTED`) / `CANCELLED` / `ERROR`  
+  - Confirmar/Cancelar es **idempotente** (doble click no duplica ejecución; devuelve “ya ejecutado”).  
 
 ### 5.6 Uso & costos
 - **AiUsageLog**: tokens por AgentRuntime/Copilot  
 - **OutboundMessageLog**: conteos WA (SESSION_TEXT/TEMPLATE) + bloqueos  
 - **PricingConfig** (hoy: SystemConfig global): precios configurables (OpenAI por modelo, WA estimación)  
+
+### 5.7 Programs PRO (Knowledge Pack + Tools)
+- **Program**: además del prompt (`agentSystemPrompt`), incluye campos de “producto”:
+  - `goal`, `audience`, `tone`, `language` (para construir prompts consistentes y UX explicable).
+- **ProgramKnowledgeAsset** (archive-only):
+  - Tipos mínimos: `LINK` | `TEXT` (extensible a archivos).
+  - Campos: `title`, `url?`, `contentText?`, `tags?`, `archivedAt?`.
+- **WorkspaceConnector** (archive-only):
+  - Conectores declarativos disponibles por workspace (ej: “Medilink”), con `actionsJson` (acciones posibles).
+- **ProgramConnectorPermission** (archive-only):
+  - Whitelist por Program de qué acciones del connector están permitidas (`allowedActionsJson`).
+- Auditoría: cambios en Programs/Knowledge/Tools se registran en `ConfigChangeLog`.
 
 ---
 
@@ -277,6 +291,13 @@ Tabs (v1):
 7) Uso & Costos
 8) Logs
 
+#### 8.5.1 Programs (PRO)
+En v1 “profesional”, Programs incluye (además de `name/slug/isActive/agentSystemPrompt`):
+- **Resumen del Program**: `goal`, `audience`, `tone`, `language`.
+- **Knowledge Pack** (archive-only): assets `LINK`/`TEXT` (extensible a archivos) con archivar/reactivar.
+- **Tools / Integraciones por Program**: seleccionar connectors del workspace y hacer whitelist de acciones permitidas.
+- **Prompt Builder**: “Generar/Mejorar instrucciones con IA” con preview + aplicar, y auditoría en `ConfigChangeLog`.
+
 ### 8.6 Ayuda / QA
 Tabs:
 - **Ayuda** (no técnica): conceptos + primeros pasos + guías por módulo + troubleshooting.
@@ -315,6 +336,8 @@ Tabs:
 - `window_24h_template`: fuera de 24h bloquea SESSION_TEXT.
 - `no_contactar`: bloquea cualquier SEND_MESSAGE.
 - `program_menu_select`: si no hay program y hay >1, pedir menú y set program.
+- `program_switch_inbound`: al cambiar Program, el siguiente inbound corre con el Program nuevo (assert por `programSlug`).
+- `program_switch_suggest`: al cambiar Program, “Sugerir” usa el Program nuevo (assert por `programSlug`).
 
 ### 10.3 Unit/integration
 - Tools: normalizeText/resolveLocation/validateRut/pii sanitize
@@ -327,6 +350,7 @@ Tabs:
 - **SAFE OUTBOUND MODE (DEV)**:
   - Policies: `ALLOWLIST_ONLY` (default), `BLOCK_ALL`, `ALLOW_ALL` (solo si se habilita explícitamente).
   - **TEMP_OFF**: permite `ALLOW_ALL` por X minutos (campo `SystemConfig.outboundAllowAllUntil`) y vuelve a `ALLOWLIST_ONLY` al expirar.
+  - El servidor limpia `outboundAllowAllUntil` cuando expira y deja auditoría `ConfigChangeLog` tipo `OUTBOUND_SAFETY_TEMP_OFF_EXPIRED`.
   - Cualquier bloqueo queda registrado como `blockedReason` (ej: `SAFE_OUTBOUND_BLOCKED:*`) y se muestra en QA → Logs.
   - Cambios de policy/allowlist/TEMP_OFF quedan auditados en `ConfigChangeLog` (visible en QA → Logs → Config Changes).
 - **NO_CONTACTAR**: bloquea cualquier outbound (respeto opt-out).  
@@ -355,7 +379,7 @@ Tabs:
 ---
 
 ## 13) Roadmap “infinito” (backlog)
-- Copilot Nivel 2: ejecutar acciones con confirmación + auditoría.
+- Copilot Nivel 3: acciones sensibles adicionales + rollback/preview (siempre con confirmación).
 - Builder Automations avanzado (OR/branching, templates de reglas, preview).
 - Multi-idioma ES/EN + locale por workspace.
 - Monetización: planes, límites, billing (Stripe).

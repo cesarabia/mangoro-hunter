@@ -449,6 +449,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const templateInterviewInvite = templateConfig.templateInterviewInvite || null;
   const templateGeneralFollowup = templateConfig.templateGeneralFollowup || null;
   const programSlug = conversation?.program?.slug || '';
+  const programName = conversation?.program?.name || '';
   const isInterviewContext = programSlug === 'interview' || aiMode === 'INTERVIEW';
   const requiredTemplate =
     isInterviewContext ? templateInterviewInvite : templateGeneralFollowup;
@@ -646,6 +647,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
               )}
             </div>
             {secondaryLabel && <div style={{ fontSize: 12, color: '#666', ...textWrapStyle }}>{secondaryLabel}</div>}
+            {!isAdmin && programName ? (
+              <div style={{ fontSize: 12, color: '#666', ...textWrapStyle }}>
+                Program: <strong>{programName}</strong>
+              </div>
+            ) : null}
             {detailsOpen && (
               <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                 <span style={{ fontSize: 12, color: '#555' }}>

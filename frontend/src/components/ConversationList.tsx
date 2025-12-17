@@ -117,6 +117,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const preview = previewSource ? previewSource.slice(0, 70) : 'Sin mensajes';
           const showStatus = !isAdmin;
           const noContact = Boolean(c.contact?.noContact);
+          const programName = c.program?.name ? String(c.program.name) : '';
           return (
             <div
               key={c.id}
@@ -164,6 +165,11 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                       NO CONTACTAR
                     </span>
                   )}
+                  {programName ? (
+                    <span style={{ background: '#f0f5ff', border: '1px solid #adc6ff', color: '#10239e', borderRadius: 999, fontSize: 11, padding: '2px 8px', marginRight: 6, whiteSpace: 'nowrap' }}>
+                      {programName}
+                    </span>
+                  ) : null}
                   <span
                     style={{
                       background: statusStyle.background,

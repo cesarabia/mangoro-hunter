@@ -2,7 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiClient } from '../api/client';
 
 type CopilotAction =
-  | { type: 'NAVIGATE'; view: 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review'; configTab?: string; label?: string };
+  | {
+      type: 'NAVIGATE';
+      view: 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review';
+      configTab?: string;
+      label?: string;
+      focusKind?: 'program' | 'automation' | 'phoneLine';
+      focusId?: string;
+    };
 
 type CopilotCommand =
   | { type: 'CREATE_PROGRAM'; name: string; description?: string | null; agentSystemPrompt: string; ref?: string | null; slug?: string | null }
@@ -173,14 +180,15 @@ export const CopilotWidget: React.FC<{
           createdAt,
         });
         if (r.responseText) {
+          const status = typeof r.status === 'string' ? r.status : null;
           nextMessages.push({
             id: `run-${r.id}-a`,
             role: 'assistant',
             text: String(r.responseText || ''),
             actions: Array.isArray(r.actions) ? r.actions : undefined,
-            proposals: Array.isArray(r.proposals) ? r.proposals : undefined,
+            proposals: status === 'PENDING_CONFIRMATION' && Array.isArray(r.proposals) ? r.proposals : undefined,
             runId: typeof r.id === 'string' ? r.id : null,
-            status: typeof r.status === 'string' ? r.status : null,
+            status,
             createdAt: createdAt + 1,
           });
         }

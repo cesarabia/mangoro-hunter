@@ -8,6 +8,7 @@ type ReleaseNotes = {
   changed: string[];
   todo: string[];
   risks: string[];
+  dod?: Record<string, boolean>;
 };
 
 function safeJsonParse(value: string | null | undefined): any {
@@ -31,12 +32,25 @@ function normalizeStringList(value: any): string[] {
   return out;
 }
 
+function normalizeDod(value: any): Record<string, boolean> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v !== 'boolean') continue;
+    const key = String(k).trim();
+    if (!key) continue;
+    out[key] = v;
+  }
+  return out;
+}
+
 function normalizeReleaseNotes(value: any): ReleaseNotes | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const changed = normalizeStringList((value as any).changed);
   const todo = normalizeStringList((value as any).todo);
   const risks = normalizeStringList((value as any).risks);
-  return { changed, todo, risks };
+  const dod = normalizeDod((value as any).dod);
+  return { changed, todo, risks, ...(Object.keys(dod).length > 0 ? { dod } : {}) };
 }
 
 export async function registerReleaseNotesRoutes(app: FastifyInstance) {
@@ -101,4 +115,3 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
     return { notes: normalizeReleaseNotes(safeJsonParse((updated as any).devReleaseNotes)), updatedAt: updated.updatedAt.toISOString() };
   });
 }
-

@@ -24,6 +24,8 @@ const CopilotActionSchema = z.discriminatedUnion('type', [
     view: ViewSchema,
     configTab: ConfigTabSchema.optional(),
     label: z.string().optional(),
+    focusKind: z.enum(['program', 'automation', 'phoneLine']).optional(),
+    focusId: z.string().min(1).optional(),
   }),
 ]);
 
@@ -147,7 +149,7 @@ function inferNavigation(text: string): z.infer<typeof CopilotActionSchema> | nu
   const go = (view: z.infer<typeof ViewSchema>, configTab?: z.infer<typeof ConfigTabSchema>, label?: string) =>
     ({ type: 'NAVIGATE', view, ...(configTab ? { configTab } : {}), ...(label ? { label } : {}) }) as const;
 
-  const wantsNav = /(ll[eé]vame|lleva(me)?|ir|abre|abrir|vamos|ve a|entra a|mostrar?)/i.test(text);
+  const wantsNav = /(ll[eé]vame|lleva(me)?|ir|abre|abrir|vamos|ve a|entra a|mostrar?|ver)/i.test(text);
   if (wantsNav) {
     if (/\b(inbox|bandeja)\b/i.test(text) || t === 'inbox') return go('inbox', undefined, 'Abrir Inbox');
     if (/\b(inactivos|archivados)\b/i.test(text) || t === 'inactivos') return go('inactive', undefined, 'Abrir Inactivos');
@@ -699,13 +701,16 @@ Tu salida debe ser SOLO un JSON válido con el shape:
         .catch(() => {});
     }
 
+    const userWantsNav = /(ll[eé]vame|lleva(me)?|ir|abre|abrir|vamos|ve a|entra a|mostrar?|ver)/i.test(text);
+    const autoNavigate = userWantsNav && actionsJson.length > 0 && proposalsJson.length === 0;
+
     return {
       reply: responseText,
       actions: actionsJson,
       proposals: proposalsJson.length > 0 ? proposalsJson : undefined,
       threadId,
       runId: run?.id || null,
-      autoNavigate: false,
+      autoNavigate,
     };
   });
 
@@ -717,16 +722,26 @@ Tu salida debe ser SOLO un JSON válido con el shape:
 
     const existing = await prisma.copilotRunLog.findFirst({
       where: { id, workspaceId: access.workspaceId },
-      select: { id: true, status: true, threadId: true, responseText: true },
+      select: { id: true, status: true, threadId: true, responseText: true, actionsJson: true as any, resultsJson: true as any, error: true },
     });
     if (!existing) return reply.code(404).send({ error: 'Run no encontrado.' });
+
     if (existing.status !== 'PENDING_CONFIRMATION') {
-      return reply.code(409).send({ error: 'Este run no está pendiente de confirmación.' });
+      // Idempotente: si ya se canceló/ejecutó/falló, devolvemos el estado actual sin error.
+      return {
+        reply: String(existing.responseText || '').trim() || (existing.status === 'ERROR' ? `La ejecución falló: ${existing.error || 'error'}` : 'Acción ya procesada.'),
+        actions: safeJsonParse(String((existing as any).actionsJson || '').trim()) || [],
+        threadId: existing.threadId || null,
+        runId: existing.id,
+        autoNavigate: false,
+        results: safeJsonParse(String((existing as any).resultsJson || '').trim()) || null,
+        status: existing.status,
+      };
     }
 
     const updatedText = `${String(existing.responseText || '').trim()}\n\n(Acción cancelada.)`.trim();
-    await prisma.copilotRunLog.update({
-      where: { id: existing.id },
+    const update = await prisma.copilotRunLog.updateMany({
+      where: { id: existing.id, status: 'PENDING_CONFIRMATION' },
       data: {
         status: 'CANCELLED',
         responseText: updatedText,
@@ -736,12 +751,30 @@ Tu salida debe ser SOLO un JSON válido con el shape:
       } as any,
     });
 
+    if (update.count === 0) {
+      const fresh = await prisma.copilotRunLog.findFirst({
+        where: { id: existing.id, workspaceId: access.workspaceId },
+        select: { id: true, status: true, threadId: true, responseText: true, actionsJson: true as any, resultsJson: true as any, error: true },
+      });
+      if (!fresh) return reply.code(404).send({ error: 'Run no encontrado.' });
+      return {
+        reply: String(fresh.responseText || '').trim() || (fresh.status === 'ERROR' ? `La ejecución falló: ${fresh.error || 'error'}` : 'Acción ya procesada.'),
+        actions: safeJsonParse(String((fresh as any).actionsJson || '').trim()) || [],
+        threadId: fresh.threadId || null,
+        runId: fresh.id,
+        autoNavigate: false,
+        results: safeJsonParse(String((fresh as any).resultsJson || '').trim()) || null,
+        status: fresh.status,
+      };
+    }
+
     return {
       reply: updatedText,
       actions: [],
       threadId: existing.threadId || null,
       runId: existing.id,
       autoNavigate: false,
+      status: 'CANCELLED',
     };
   });
 
@@ -752,6 +785,34 @@ Tu salida debe ser SOLO un JSON válido con el shape:
     const { id } = request.params as { id: string };
     const body = request.body as { proposalId?: string | null };
     const proposalId = typeof body?.proposalId === 'string' && body.proposalId.trim() ? body.proposalId.trim() : null;
+
+    // Transición atómica: PENDING_CONFIRMATION -> EXECUTING (evita doble ejecución).
+    const claimed = await prisma.copilotRunLog.updateMany({
+      where: { id, workspaceId: access.workspaceId, status: 'PENDING_CONFIRMATION' },
+      data: {
+        status: 'EXECUTING',
+        confirmedAt: new Date(),
+        confirmedByUserId: userId,
+      } as any,
+    });
+
+    if (claimed.count === 0) {
+      // Idempotente: ya fue ejecutado/cancelado/falló o se está ejecutando.
+      const existing = await prisma.copilotRunLog.findFirst({
+        where: { id, workspaceId: access.workspaceId },
+        select: { id: true, status: true, threadId: true as any, responseText: true, actionsJson: true as any, resultsJson: true as any, error: true },
+      });
+      if (!existing) return reply.code(404).send({ error: 'Run no encontrado.' });
+      return {
+        reply: String(existing.responseText || '').trim() || (existing.status === 'ERROR' ? `La ejecución falló: ${existing.error || 'error'}` : 'Acción ya procesada.'),
+        actions: safeJsonParse(String((existing as any).actionsJson || '').trim()) || [],
+        threadId: (existing as any).threadId || null,
+        runId: existing.id,
+        autoNavigate: false,
+        results: safeJsonParse(String((existing as any).resultsJson || '').trim()) || null,
+        status: existing.status,
+      };
+    }
 
     const run = await prisma.copilotRunLog.findFirst({
       where: { id, workspaceId: access.workspaceId },
@@ -766,20 +827,45 @@ Tu salida debe ser SOLO un JSON válido con el shape:
     });
     if (!run) return reply.code(404).send({ error: 'Run no encontrado.' });
     const runId = String((run as any).id || id);
-    if (String((run as any).status) !== 'PENDING_CONFIRMATION') {
-      return reply.code(409).send({ error: 'Este run no está pendiente de confirmación.' });
-    }
 
     const proposalsRaw = safeJsonParse(String((run as any).proposalsJson || '').trim()) || [];
     const proposalsParsed = z.array(CopilotProposalSchema).safeParse(proposalsRaw);
     if (!proposalsParsed.success) {
-      return reply.code(500).send({ error: 'Propuesta inválida (schema).' });
+      const errText = 'Propuesta inválida (schema).';
+      const updatedText = `${String(run.responseText || '').trim()}\n\n(Acción falló: ${errText})`.trim();
+      await prisma.copilotRunLog
+        .update({
+          where: { id: runId },
+          data: {
+            status: 'ERROR',
+            error: errText,
+            responseText: updatedText,
+            resultsJson: serializeJson({ ok: false, error: errText }),
+          } as any,
+        })
+        .catch(() => {});
+      return { reply: updatedText, actions: [], threadId: (run as any).threadId || null, runId, autoNavigate: false, status: 'ERROR' };
     }
 
     const proposal = proposalId
       ? proposalsParsed.data.find((p) => p.id === proposalId) || null
       : proposalsParsed.data[0] || null;
-    if (!proposal) return reply.code(404).send({ error: 'Propuesta no encontrada.' });
+    if (!proposal) {
+      const errText = 'Propuesta no encontrada.';
+      const updatedText = `${String(run.responseText || '').trim()}\n\n(Acción falló: ${errText})`.trim();
+      await prisma.copilotRunLog
+        .update({
+          where: { id: runId },
+          data: {
+            status: 'ERROR',
+            error: errText,
+            responseText: updatedText,
+            resultsJson: serializeJson({ ok: false, error: errText }),
+          } as any,
+        })
+        .catch(() => {});
+      return { reply: updatedText, actions: [], threadId: (run as any).threadId || null, runId, autoNavigate: false, status: 'ERROR' };
+    }
 
     const refs: Record<string, { kind: string; id: string }> = {};
     const results: any[] = [];
@@ -1015,7 +1101,14 @@ Tu salida debe ser SOLO un JSON válido con el shape:
     const actions: any[] = [];
     const createdProgram = results.find((r) => r.type === 'CREATE_PROGRAM' && r.ok && r.programId);
     if (createdProgram) {
-      actions.push({ type: 'NAVIGATE', view: 'config', configTab: 'programs', label: 'Ver Programs' });
+      actions.push({
+        type: 'NAVIGATE',
+        view: 'config',
+        configTab: 'programs',
+        label: 'Ver Programs',
+        focusKind: 'program',
+        focusId: String(createdProgram.programId),
+      });
     }
 
     await prisma.copilotRunLog.update({
@@ -1026,8 +1119,8 @@ Tu salida debe ser SOLO un JSON válido con el shape:
         responseText: updatedText,
         actionsJson: actions.length > 0 ? serializeJson(actions) : (run as any).actionsJson,
         resultsJson: serializeJson({ proposalId: proposal.id, ok, results }),
-        confirmedAt: new Date(),
-        confirmedByUserId: userId,
+        confirmedAt: (run as any).confirmedAt || new Date(),
+        confirmedByUserId: (run as any).confirmedByUserId || userId,
       } as any,
     });
 
@@ -1038,6 +1131,7 @@ Tu salida debe ser SOLO un JSON válido con el shape:
       runId,
       autoNavigate: createdProgram ? true : false,
       results: { ok, results },
+      status: ok ? 'EXECUTED' : 'ERROR',
     };
   });
 }

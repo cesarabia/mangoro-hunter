@@ -19,6 +19,7 @@ type ReleaseNotes = {
   changed: string[];
   todo: string[];
   risks: string[];
+  dod?: Record<string, boolean>;
 };
 
 const normalizeSearch = (value: string) =>
@@ -34,6 +35,16 @@ const splitLines = (text: string) =>
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean);
+
+const DOD_ITEMS: Array<{ id: string; label: string }> = [
+  { id: 'safeMode', label: 'SAFE MODE: default ALLOWLIST_ONLY + allowlist efectiva solo admin/test' },
+  { id: 'inboxUx', label: 'Inbox: chat-first + sin scroll horizontal + responsive sin perder estado' },
+  { id: 'programConsistency', label: 'Program consistency: Sugerir + RUN_AGENT + Automations usan Program correcto; sin ERROR por shape' },
+  { id: 'copilotLv2', label: 'Copilot Nivel 2: propuestas Confirmar/Cancelar sin estados inconsistentes' },
+  { id: 'programsPro', label: 'Programs PRO: Knowledge Pack + Prompt Builder + auditoría + Tools/Integraciones por Program' },
+  { id: 'smokeScenarios', label: 'Simulator/Smoke Scenarios: PASS (admin/test/loop/safe_mode/program_switch)' },
+  { id: 'reviewPack', label: 'Review Pack ZIP: descarga OK y contiene docs + logs + scenarios' }
+];
 
 export const ReviewPage: React.FC<{
   onGoInbox: () => void;
@@ -61,6 +72,7 @@ export const ReviewPage: React.FC<{
   const [releaseChanged, setReleaseChanged] = useState('');
   const [releaseTodo, setReleaseTodo] = useState('');
   const [releaseRisks, setReleaseRisks] = useState('');
+  const [releaseDod, setReleaseDod] = useState<Record<string, boolean>>({});
 
   const [logTab, setLogTab] = useState<LogTab>('agentRuns');
   const [outboundConversationId, setOutboundConversationId] = useState<string>('');
@@ -141,6 +153,7 @@ export const ReviewPage: React.FC<{
       setReleaseChanged(joinLines(notes?.changed));
       setReleaseTodo(joinLines(notes?.todo));
       setReleaseRisks(joinLines(notes?.risks));
+      setReleaseDod((notes?.dod && typeof notes.dod === 'object') ? notes.dod : {});
     } catch (err: any) {
       setRelease(null);
       setReleaseError(err.message || 'No se pudieron cargar Release Notes');
@@ -189,7 +202,8 @@ export const ReviewPage: React.FC<{
         notes: {
           changed: splitLines(releaseChanged),
           todo: splitLines(releaseTodo),
-          risks: splitLines(releaseRisks)
+          risks: splitLines(releaseRisks),
+          dod: releaseDod
         }
       };
       await apiClient.put('/api/release-notes', payload);
@@ -870,6 +884,31 @@ export const ReviewPage: React.FC<{
               <div>
                 <div style={{ fontWeight: 800, marginBottom: 6 }}>Riesgos conocidos</div>
                 <textarea value={releaseRisks} onChange={(e) => setReleaseRisks(e.target.value)} style={{ width: '100%', minHeight: 120, padding: 8, borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }} placeholder="- risk 1\n- risk 2" />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12, borderTop: '1px solid #eee', paddingTop: 12 }}>
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>v1 DoD (PASS/FAIL)</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {DOD_ITEMS.map((item) => {
+                  const ok = Boolean(releaseDod?.[item.id]);
+                  return (
+                    <label key={item.id} style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={ok}
+                        onChange={(e) => setReleaseDod((prev) => ({ ...(prev || {}), [item.id]: e.target.checked }))}
+                      />
+                      <span style={{ fontWeight: 800, color: ok ? '#1a7f37' : '#b93800', width: 44 }}>
+                        {ok ? 'PASS' : 'FAIL'}
+                      </span>
+                      <span style={{ color: '#111' }}>{item.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                Tip: SAFE MODE y resultados de escenarios se ven arriba en QA. Este DoD queda guardado en Release Notes.
               </div>
             </div>
             <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>

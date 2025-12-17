@@ -26,7 +26,7 @@ export async function registerLogRoutes(app: FastifyInstance) {
       take,
       include: {
         conversation: { select: { id: true, programId: true, phoneLineId: true } },
-        program: { select: { id: true, name: true } },
+        program: { select: { id: true, name: true, slug: true } },
         phoneLine: { select: { id: true, alias: true } },
       },
     });
@@ -36,7 +36,7 @@ export async function registerLogRoutes(app: FastifyInstance) {
       createdAt: r.createdAt.toISOString(),
       workspaceId: r.workspaceId,
       conversationId: r.conversationId,
-      program: r.program ? { id: r.program.id, name: r.program.name } : null,
+      program: r.program ? { id: r.program.id, name: r.program.name, slug: (r.program as any).slug } : null,
       phoneLine: r.phoneLine ? { id: r.phoneLine.id, alias: r.phoneLine.alias } : null,
       eventType: r.eventType,
       status: r.status,

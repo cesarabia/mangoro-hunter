@@ -1,6 +1,14 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../db/client';
-import { getSystemConfig } from './configService';
+import {
+  getAdminWaIdAllowlist,
+  getEffectiveOutboundAllowlist,
+  getOutboundAllowlist,
+  getOutboundPolicy,
+  getSystemConfig,
+  getTestWaIdAllowlist,
+  updateOutboundSafetyConfig,
+} from './configService';
 import { archiveConversation } from './conversationArchiveService';
 import { loadWorkflowRules, matchRule, WorkflowStage, getWorkflowArchiveDays, getWorkflowInactivityDays } from './workflowService';
 
@@ -25,9 +33,20 @@ export function startWorkflowSchedulers(app: FastifyInstance) {
     });
   }, intervalMs).unref();
 
+  // TEMP_OFF auto-revert: limpia outboundAllowAllUntil expirado y deja auditoría.
+  const tempOffIntervalMs = 60 * 1000; // 1 min
+  setInterval(() => {
+    runOutboundTempOffExpiry(app).catch((err) => {
+      app.log.warn({ err }, 'Outbound TEMP_OFF expiry check failed');
+    });
+  }, tempOffIntervalMs).unref();
+
   // Kick once on boot.
   runInactivityWorkflow(app).catch((err) => {
     app.log.warn({ err }, 'Inactivity workflow initial run failed');
+  });
+  runOutboundTempOffExpiry(app).catch((err) => {
+    app.log.warn({ err }, 'Outbound TEMP_OFF expiry initial run failed');
   });
 }
 
@@ -124,3 +143,59 @@ export async function runInactivityWorkflow(app: FastifyInstance): Promise<{ eva
   return { evaluated: candidates.length, updated };
 }
 
+export async function runOutboundTempOffExpiry(app: FastifyInstance): Promise<{ cleared: boolean; previousUntil: string | null }> {
+  const cfg = await getSystemConfig().catch(() => null);
+  if (!cfg) return { cleared: false, previousUntil: null };
+
+  const untilRaw = (cfg as any).outboundAllowAllUntil as Date | string | null | undefined;
+  if (!untilRaw) return { cleared: false, previousUntil: null };
+
+  const until = untilRaw instanceof Date ? untilRaw : new Date(String(untilRaw));
+  if (!Number.isFinite(until.getTime())) {
+    // Valor inválido: limpiamos para evitar quedar en estado raro.
+    await updateOutboundSafetyConfig({ outboundAllowAllUntil: null }).catch(() => {});
+    return { cleared: true, previousUntil: null };
+  }
+
+  if (until.getTime() > Date.now()) {
+    return { cleared: false, previousUntil: until.toISOString() };
+  }
+
+  const snapshot = (config: any) =>
+    config
+      ? {
+          outboundPolicyStored: (config as any).outboundPolicy || null,
+          outboundPolicyEffective: getOutboundPolicy(config),
+          outboundAllowlist: getOutboundAllowlist(config),
+          outboundAllowAllUntil: (config as any).outboundAllowAllUntil
+            ? new Date((config as any).outboundAllowAllUntil).toISOString()
+            : null,
+          effectiveAllowlist: getEffectiveOutboundAllowlist(config),
+          adminNumbers: getAdminWaIdAllowlist(config),
+          testNumbers: getTestWaIdAllowlist(config),
+        }
+      : null;
+
+  const before = snapshot(cfg);
+  const updated = await updateOutboundSafetyConfig({ outboundAllowAllUntil: null }).catch(() => null);
+  if (!updated) return { cleared: false, previousUntil: until.toISOString() };
+  const after = snapshot(updated);
+
+  // ConfigChangeLog es por workspace; usamos "default" como workspace base (sistema).
+  await prisma.configChangeLog
+    .create({
+      data: {
+        workspaceId: 'default',
+        userId: null,
+        type: 'OUTBOUND_SAFETY_TEMP_OFF_EXPIRED',
+        beforeJson: before ? JSON.stringify(before) : null,
+        afterJson: after ? JSON.stringify(after) : null,
+      },
+    })
+    .catch((err) => {
+      app.log.warn({ err }, 'Failed to log OUTBOUND_SAFETY_TEMP_OFF_EXPIRED');
+    });
+
+  app.log.info({ previousUntil: until.toISOString() }, 'Outbound TEMP_OFF expired; SAFE MODE restored');
+  return { cleared: true, previousUntil: until.toISOString() };
+}

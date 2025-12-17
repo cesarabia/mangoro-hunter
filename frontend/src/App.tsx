@@ -541,6 +541,15 @@ const Layout: React.FC<{
           try {
             if (action.type === 'NAVIGATE' && action.view === 'config' && action.configTab) {
               localStorage.setItem('configSelectedTab', action.configTab);
+              if (action.focusKind === 'program' && action.focusId) {
+                localStorage.setItem('configFocusProgramId', action.focusId);
+              }
+              if (action.focusKind === 'automation' && action.focusId) {
+                localStorage.setItem('configFocusAutomationId', action.focusId);
+              }
+              if (action.focusKind === 'phoneLine' && action.focusId) {
+                localStorage.setItem('configFocusPhoneLineId', action.focusId);
+              }
             }
             if (action.type === 'NAVIGATE' && action.view === 'review') {
               const wantsQa = Boolean(ctx?.conversationId) || /log/i.test(action.label || '');

@@ -15,6 +15,7 @@ export type AgentEvent = {
   conversationId: string;
   eventType: string;
   inboundMessageId?: string | null;
+  draftText?: string | null;
 };
 
 type ToolResult =
@@ -56,6 +57,7 @@ Reglas de seguridad y guardrails:
 - Para RESPONDER al humano debes usar SEND_MESSAGE. "notes" es SOLO para debug interno (no es un mensaje).
 - Nunca sobrescribas candidateName si existe candidateNameManual.
 - Evita loops: no repitas la misma pregunta 2+ veces; si necesitas confirmar, pide confirmación en formato 1/2.
+- Si event.type == "AI_SUGGEST": NO cambies estado/perfil (no UPSERT_PROFILE_FIELDS ni SET_CONVERSATION_*). Devuelve SOLO 1 SEND_MESSAGE con el texto sugerido. Si existe event.draftText, mejora ese borrador manteniendo el significado.
 `.trim();
 
   return `${policy}\n\nEstado ventana WhatsApp: ${params.windowStatus}\n\n${params.programPrompt}`.trim();
@@ -231,6 +233,10 @@ function normalizeAgentResponseShape(value: any): any {
         next = { ...next, ...(next.parameters as any) };
         delete next.parameters;
       }
+      if (next.payload && typeof next.payload === 'object' && !Array.isArray(next.payload)) {
+        next = { ...next, ...(next.payload as any) };
+        delete next.payload;
+      }
       if ('command' in next) next.command = canonicalizeEnum(next.command);
       if ('type' in next) next.type = canonicalizeEnum(next.type);
       if ('channel' in next) next.channel = canonicalizeEnum(next.channel);
@@ -374,7 +380,7 @@ export async function runAgent(event: AgentEvent): Promise<{
 
   const contextJson = {
     workspaceId: event.workspaceId,
-    event: { type: event.eventType, inboundMessageId: event.inboundMessageId || null },
+    event: { type: event.eventType, inboundMessageId: event.inboundMessageId || null, draftText: event.draftText || null },
     conversation: {
       id: conversation.id,
       status: conversation.status,
@@ -426,13 +432,116 @@ export async function runAgent(event: AgentEvent): Promise<{
   };
 
   const programPrompt = await (async () => {
-    if (conversation.programId) {
-      const program = await prisma.program.findUnique({
-        where: { id: conversation.programId },
-        select: { agentSystemPrompt: true },
+    const truncate = (text: string, maxChars: number) => {
+      const value = String(text || '').trim();
+      if (!value) return '';
+      if (value.length <= maxChars) return value;
+      return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+    };
+
+    const loadProgram = async (programId: string) =>
+      prisma.program.findFirst({
+        where: { id: programId, workspaceId: event.workspaceId, archivedAt: null },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          description: true,
+          goal: true as any,
+          audience: true as any,
+          tone: true as any,
+          language: true as any,
+          agentSystemPrompt: true,
+        },
       });
-      if (program?.agentSystemPrompt) return program.agentSystemPrompt;
+
+    let program = conversation.programId ? await loadProgram(conversation.programId) : null;
+    if (!program && conversation.phoneLineId) {
+      const line = await prisma.phoneLine
+        .findFirst({
+          where: { id: conversation.phoneLineId, workspaceId: event.workspaceId, archivedAt: null },
+          select: { defaultProgramId: true },
+        })
+        .catch(() => null);
+      if (line?.defaultProgramId) {
+        program = await loadProgram(line.defaultProgramId).catch(() => null);
+      }
     }
+
+    if (program?.agentSystemPrompt) {
+      const [assets, perms] = await Promise.all([
+        prisma.programKnowledgeAsset
+          .findMany({
+            where: { workspaceId: event.workspaceId, programId: program.id, archivedAt: null },
+            orderBy: { createdAt: 'desc' },
+            take: 20,
+            select: { type: true, title: true, url: true, contentText: true },
+          })
+          .catch(() => []),
+        prisma.programConnectorPermission
+          .findMany({
+            where: { workspaceId: event.workspaceId, programId: program.id, archivedAt: null },
+            include: { connector: { select: { name: true, slug: true, actionsJson: true } } },
+            take: 30,
+          })
+          .catch(() => []),
+      ]);
+
+      const knowledgeLines: string[] = [];
+      let knowledgeChars = 0;
+      for (const a of assets) {
+        const header = `- [${a.type}] ${a.title}${a.url ? ` (${a.url})` : ''}`.trim();
+        const body = a.contentText ? `\n${truncate(a.contentText, 2000)}` : '';
+        const chunk = `${header}${body}`.trim();
+        if (!chunk) continue;
+        if (knowledgeChars + chunk.length > 9000) break;
+        knowledgeLines.push(chunk);
+        knowledgeChars += chunk.length;
+      }
+
+      const toolsLines: string[] = [];
+      for (const p of perms as any[]) {
+        const connector = p.connector;
+        if (!connector) continue;
+        const available = (() => {
+          try {
+            const parsed = JSON.parse(String(connector.actionsJson || ''));
+            return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+          } catch {
+            return [];
+          }
+        })();
+        const allowed = (() => {
+          try {
+            const parsed = JSON.parse(String((p as any).allowedActionsJson || ''));
+            return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+          } catch {
+            return [];
+          }
+        })();
+        const availableLabel = available.length > 0 ? available.join(', ') : '(sin acciones declaradas)';
+        const allowedLabel = allowed.length > 0 ? allowed.join(', ') : '(todos)';
+        toolsLines.push(`- ${connector.name} (${connector.slug})\n  acciones disponibles: ${availableLabel}\n  acciones permitidas: ${allowedLabel}`);
+      }
+
+      const profileLines: string[] = [];
+      if ((program as any).language) profileLines.push(`Idioma: ${(program as any).language}`);
+      if ((program as any).goal) profileLines.push(`Objetivo: ${(program as any).goal}`);
+      if ((program as any).audience) profileLines.push(`Público: ${(program as any).audience}`);
+      if ((program as any).tone) profileLines.push(`Tono: ${(program as any).tone}`);
+      if (program.description) profileLines.push(`Descripción: ${program.description}`);
+
+      const blocks: string[] = [
+        `Program: ${program.name} (${program.slug})`,
+        profileLines.length > 0 ? profileLines.join('\n') : '',
+        toolsLines.length > 0 ? `Tools permitidos:\n${toolsLines.join('\n')}` : '',
+        knowledgeLines.length > 0 ? `Knowledge Pack:\n${knowledgeLines.join('\n\n')}` : '',
+        `Instrucciones del agente:\n${program.agentSystemPrompt}`,
+      ].filter(Boolean);
+
+      return blocks.join('\n\n').trim();
+    }
+
     return (
       config.aiPrompt?.trim() ||
       'Programa default: coordina reclutamiento/entrevista/ventas según contexto. Responde corto y humano.'
@@ -558,7 +667,7 @@ export async function runAgent(event: AgentEvent): Promise<{
 
       const semanticIssues = validateAgentResponseSemantics(validated.data);
       const hasSendMessage = validated.data.commands.some((c: any) => c && typeof c === 'object' && c.command === 'SEND_MESSAGE');
-      if (event.eventType === 'INBOUND_MESSAGE' && !hasSendMessage) {
+      if ((event.eventType === 'INBOUND_MESSAGE' || event.eventType === 'AI_SUGGEST') && !hasSendMessage) {
         const notesText = typeof validated.data.notes === 'string' ? validated.data.notes.trim() : '';
         if (notesText && windowStatus === 'IN_24H') {
           const seed = `${conversation.id}:${event.eventType}:${event.inboundMessageId || ''}:AUTO_NOTES_SEND:${notesText}`;

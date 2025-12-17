@@ -7,6 +7,7 @@ import { runAutomations } from '../services/automationRunnerService';
 import { piiSanitizeText } from '../services/agent/tools';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { SCENARIOS, getScenario, ScenarioDefinition, ScenarioStep } from '../services/simulate/scenarios';
+import { runAgent } from '../services/agent/agentRuntimeService';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
   const requireWorkspaceAdmin = async (request: any, reply: any) => {
@@ -75,6 +76,32 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
     let ok = true;
 
     for (const [idx, step] of scenario.steps.entries()) {
+      const setProgramSlug = typeof (step as any).setProgramSlug === 'string' ? String((step as any).setProgramSlug).trim() : '';
+      if (setProgramSlug) {
+        const found = await prisma.program.findFirst({
+          where: { workspaceId: 'sandbox', slug: setProgramSlug, archivedAt: null },
+          select: { id: true, slug: true },
+        });
+        if (!found) {
+          ok = false;
+          stepResults.push({
+            step: idx + 1,
+            inboundMessageId: null,
+            inboundText: String(step.inboundText || ''),
+            inboundTimestamp: new Date().toISOString(),
+            assertions: [{ ok: false, message: `setProgramSlug: program "${setProgramSlug}" no encontrado` }],
+            outbound: { sentDelta: 0, blockedDelta: 0, lastBlockedReason: null },
+            snapshot: null,
+          });
+          break;
+        }
+        await prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { programId: found.id, updatedAt: new Date() },
+        });
+      }
+
+      const action = String((step as any).action || 'INBOUND_MESSAGE').toUpperCase();
       const inboundText = String(step.inboundText || '').trim();
       const offsetHours =
         typeof (step as any).inboundOffsetHours === 'number' && Number.isFinite((step as any).inboundOffsetHours)
@@ -90,36 +117,68 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       });
       const outboundSentBefore = outboundBefore - outboundBlockedBefore;
 
-      const message = await prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          direction: 'INBOUND',
-          text: inboundText,
-          rawPayload: JSON.stringify({ simulated: true, sandbox: true, scenario: scenario.id, step: idx }),
-          timestamp,
-          read: false,
-        },
-      });
+      const message =
+        action === 'AI_SUGGEST'
+          ? null
+          : await prisma.message.create({
+              data: {
+                conversationId: conversation.id,
+                direction: 'INBOUND',
+                text: inboundText,
+                rawPayload: JSON.stringify({ simulated: true, sandbox: true, scenario: scenario.id, step: idx }),
+                timestamp,
+                read: false,
+              },
+            });
 
       await prisma.conversation.update({
         where: { id: conversation.id },
         data: { updatedAt: new Date() },
       });
 
-      await runAutomations({
-        app,
-        workspaceId: 'sandbox',
-        eventType: 'INBOUND_MESSAGE',
-        conversationId: conversation.id,
-        inboundMessageId: message.id,
-        inboundText,
-        transportMode: 'NULL',
-      });
+      if (action === 'AI_SUGGEST') {
+        try {
+          await runAgent({
+            workspaceId: 'sandbox',
+            conversationId: conversation.id,
+            eventType: 'AI_SUGGEST',
+            inboundMessageId: null,
+            draftText: inboundText,
+          });
+        } catch (err: any) {
+          // swallow; assertion below will detect error via AgentRunLog
+          app.log.warn({ err, scenario: scenario.id, step: idx }, 'Scenario AI_SUGGEST failed');
+        }
+      } else {
+        await runAutomations({
+          app,
+          workspaceId: 'sandbox',
+          eventType: 'INBOUND_MESSAGE',
+          conversationId: conversation.id,
+          inboundMessageId: message?.id,
+          inboundText,
+          transportMode: 'NULL',
+        });
+      }
 
       const snap = await prisma.conversation.findUnique({
         where: { id: conversation.id },
         include: { contact: true },
       });
+      const lastAgentRun = await prisma.agentRunLog
+        .findFirst({
+          where: { workspaceId: 'sandbox', conversationId: conversation.id },
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            status: true,
+            eventType: true,
+            error: true,
+            createdAt: true,
+            program: { select: { slug: true } },
+          },
+        })
+        .catch(() => null);
 
       const outboundAfter = await prisma.outboundMessageLog.count({
         where: { conversationId: conversation.id },
@@ -151,6 +210,29 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         const pass = step.expect.programIdSet ? has : !has;
         assertions.push({ ok: pass, message: pass ? `programIdSet OK (${has})` : `programIdSet mismatch (got ${has})` });
       }
+      if (step.expect?.agentRun) {
+        const exp = step.expect.agentRun;
+        const gotEvent = String(lastAgentRun?.eventType || '');
+        const gotStatus = String(lastAgentRun?.status || '');
+        const gotSlug = String((lastAgentRun as any)?.program?.slug || '');
+
+        if (exp.eventType) {
+          const pass = gotEvent === String(exp.eventType);
+          assertions.push({ ok: pass, message: pass ? `agentRun eventType OK (${gotEvent})` : `agentRun eventType expected ${exp.eventType}, got ${gotEvent || '—'}` });
+        }
+        if (exp.programSlug) {
+          const pass = gotSlug === String(exp.programSlug);
+          assertions.push({ ok: pass, message: pass ? `agentRun programSlug OK (${gotSlug})` : `agentRun programSlug expected ${exp.programSlug}, got ${gotSlug || '—'}` });
+        }
+        if (exp.status) {
+          const pass = gotStatus === String(exp.status);
+          assertions.push({ ok: pass, message: pass ? `agentRun status OK (${gotStatus})` : `agentRun status expected ${exp.status}, got ${gotStatus || '—'}` });
+        }
+        if (!exp.status) {
+          const pass = gotStatus !== 'ERROR';
+          assertions.push({ ok: pass, message: pass ? `agentRun status OK (${gotStatus || '—'})` : `agentRun status ERROR: ${String((lastAgentRun as any)?.error || 'error')}` });
+        }
+      }
       const outboundExp = step.expect?.outbound;
       if (outboundExp) {
         if (typeof outboundExp.sentDelta === 'number') {
@@ -175,9 +257,9 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       ok = ok && stepOk;
       stepResults.push({
         step: idx + 1,
-        inboundMessageId: message.id,
+        inboundMessageId: message?.id || null,
         inboundText,
-        inboundTimestamp: message.timestamp.toISOString(),
+        inboundTimestamp: message?.timestamp ? message.timestamp.toISOString() : timestamp.toISOString(),
         assertions,
         outbound: {
           sentDelta: outboundSentAfter - outboundSentBefore,
@@ -187,6 +269,16 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           lastDedupeKey: lastOutbound?.dedupeKey || null,
           lastCreatedAt: lastOutbound?.createdAt ? lastOutbound.createdAt.toISOString() : null,
         },
+        agentRun: lastAgentRun
+          ? {
+              id: lastAgentRun.id,
+              createdAt: lastAgentRun.createdAt.toISOString(),
+              eventType: lastAgentRun.eventType,
+              status: lastAgentRun.status,
+              programSlug: (lastAgentRun as any)?.program?.slug || null,
+              error: lastAgentRun.error || null,
+            }
+          : null,
         snapshot: snap
           ? {
               status: snap.status,

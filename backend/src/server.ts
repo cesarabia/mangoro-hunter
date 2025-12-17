@@ -22,6 +22,7 @@ import { registerUsageRoutes } from './routes/usage';
 import { registerReleaseNotesRoutes } from './routes/releaseNotes';
 import { registerCopilotRoutes } from './routes/copilot';
 import { registerReviewPackRoutes } from './routes/reviewPack';
+import { registerConnectorRoutes } from './routes/connectors';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from './services/workspaceAuthService';
 
 export async function buildServer() {
@@ -64,6 +65,7 @@ export async function buildServer() {
   app.register(registerConfigRoutes, { prefix: '/api/config' });
   app.register(registerPhoneLineRoutes, { prefix: '/api/phone-lines' });
   app.register(registerProgramRoutes, { prefix: '/api/programs' });
+  app.register(registerConnectorRoutes, { prefix: '/api/connectors' });
   app.register(registerAutomationRoutes, { prefix: '/api/automations' });
   app.register(registerLogRoutes, { prefix: '/api/logs' });
   app.register(registerUsageRoutes, { prefix: '/api/usage' });

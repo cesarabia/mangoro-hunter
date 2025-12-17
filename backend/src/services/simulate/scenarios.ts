@@ -1,12 +1,19 @@
 export type ScenarioStep = {
   inboundText: string;
   inboundOffsetHours?: number;
+  action?: 'INBOUND_MESSAGE' | 'AI_SUGGEST';
+  setProgramSlug?: string;
   expect?: {
     contactFields?: Array<
       'candidateName' | 'comuna' | 'ciudad' | 'region' | 'rut' | 'email' | 'availabilityText'
     >;
     stage?: string;
     programIdSet?: boolean;
+    agentRun?: {
+      eventType?: string;
+      programSlug?: string;
+      status?: string;
+    };
     outbound?: {
       sentDelta?: number;
       blockedDelta?: number;
@@ -118,6 +125,28 @@ export const SCENARIOS: ScenarioDefinition[] = [
     steps: [
       { inboundText: 'Hola', expect: { stage: 'PROGRAM_SELECTION', outbound: { sentDelta: 1 } } },
       { inboundText: '1', expect: { programIdSet: true } },
+    ],
+  },
+  {
+    id: 'program_switch_inbound',
+    name: 'Program switch: inbound usa Program actual',
+    description: 'Al cambiar Program en la conversación, el siguiente inbound debe correr con el Program nuevo.',
+    programSlug: 'recruitment',
+    contactWaId: 'sandbox',
+    steps: [
+      { inboundText: 'Hola', expect: { agentRun: { eventType: 'INBOUND_MESSAGE', programSlug: 'recruitment' } } },
+      { setProgramSlug: 'sales', inboundText: 'Hola', expect: { agentRun: { eventType: 'INBOUND_MESSAGE', programSlug: 'sales' } } },
+    ],
+  },
+  {
+    id: 'program_switch_suggest',
+    name: 'Program switch: Sugerir respeta Program',
+    description: 'El endpoint de sugerencias debe usar el Program actual de la conversación (no legacy aiMode).',
+    programSlug: 'recruitment',
+    contactWaId: 'sandbox',
+    steps: [
+      { inboundText: 'Hola', expect: { agentRun: { eventType: 'INBOUND_MESSAGE', programSlug: 'recruitment' } } },
+      { setProgramSlug: 'sales', action: 'AI_SUGGEST', inboundText: 'Necesito un pitch corto para suero terapia', expect: { agentRun: { eventType: 'AI_SUGGEST', programSlug: 'sales' } } },
     ],
   },
 ];

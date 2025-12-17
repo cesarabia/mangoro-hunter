@@ -76,6 +76,31 @@ async function ensureProgram(params: {
   });
 }
 
+async function ensureConnector(params: {
+  workspaceId: string;
+  name: string;
+  slug: string;
+  description?: string | null;
+  actions?: string[];
+}) {
+  const existing = await prisma.workspaceConnector.findFirst({
+    where: { workspaceId: params.workspaceId, slug: params.slug, archivedAt: null },
+    select: { id: true },
+  });
+  if (existing) return existing;
+  return prisma.workspaceConnector.create({
+    data: {
+      workspaceId: params.workspaceId,
+      name: params.name,
+      slug: params.slug,
+      description: params.description ?? null,
+      isActive: true,
+      actionsJson: params.actions && params.actions.length > 0 ? JSON.stringify(params.actions) : null,
+    },
+    select: { id: true },
+  });
+}
+
 async function ensureDefaultAutomationRule(params: { workspaceId: string; enabled: boolean }) {
   const existing = await prisma.automationRule.findFirst({
     where: { workspaceId: params.workspaceId, trigger: 'INBOUND_MESSAGE', name: 'Default inbound -> RUN_AGENT', archivedAt: null }
@@ -185,6 +210,22 @@ Objetivo: apoyar a vendedores con pitch, objeciones y registro de visitas/ventas
   await ensureProgram({ workspaceId: 'sandbox', name: 'Entrevista', slug: 'interview', agentSystemPrompt: pInterview.agentSystemPrompt });
   await ensureProgram({ workspaceId: 'sandbox', name: 'Ventas', slug: 'sales', agentSystemPrompt: pSales.agentSystemPrompt });
   await ensureProgram({ workspaceId: 'sandbox', name: 'Admin', slug: 'admin', agentSystemPrompt: pAdmin.agentSystemPrompt });
+
+  // Default demo connector (base for Program Tools)
+  await ensureConnector({
+    workspaceId: 'default',
+    name: 'Medilink',
+    slug: 'medilink',
+    description: 'Conector demo (sin endpoints reales en v1).',
+    actions: ['search_patient', 'create_appointment', 'create_payment'],
+  });
+  await ensureConnector({
+    workspaceId: 'sandbox',
+    name: 'Medilink',
+    slug: 'medilink',
+    description: 'Conector demo (sandbox).',
+    actions: ['search_patient', 'create_appointment', 'create_payment'],
+  });
 
   const programByMode: Record<string, string> = {
     RECRUIT: pRecruit.id,

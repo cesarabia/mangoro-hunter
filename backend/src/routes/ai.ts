@@ -1,17 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../db/client';
-import { getSuggestedReply } from '../services/aiService';
-import {
-  getSystemConfig,
-  DEFAULT_INTERVIEW_AI_PROMPT,
-  DEFAULT_INTERVIEW_AI_MODEL,
-  INTERVIEW_AI_POLICY_ADDENDUM,
-  DEFAULT_AI_MODEL,
-  normalizeModelId,
-  DEFAULT_SALES_AI_PROMPT
-} from '../services/configService';
-import { DEFAULT_AI_PROMPT, DEFAULT_MANUAL_SUGGEST_PROMPT } from '../constants/ai';
 import OpenAI from 'openai';
+import { resolveWorkspaceAccess } from '../services/workspaceAuthService';
+import { runAgent } from '../services/agent/agentRuntimeService';
 
 function truncateText(text: string, maxLength: number): string {
   if (!text) return '';
@@ -35,13 +26,14 @@ function buildAiMessageText(m: {
 
 export async function registerAiRoutes(app: FastifyInstance) {
   app.post('/:id/ai-suggest', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
     const { draft } = request.body as { draft?: string };
 
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId },
       include: {
-        program: { select: { slug: true } },
+        program: { select: { id: true, slug: true } },
         messages: {
           orderBy: { timestamp: 'asc' }
         }
@@ -52,74 +44,35 @@ export async function registerAiRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'Conversation not found' });
     }
 
-    const paused = Boolean((conversation as any).aiPaused);
-    const programSlug = String((conversation as any)?.program?.slug || '').toLowerCase();
-    const inferredMode =
-      programSlug === 'interview'
-        ? 'INTERVIEW'
-        : programSlug === 'sales'
-        ? 'SELLER'
-        : programSlug === 'recruitment'
-        ? 'RECRUIT'
-        : null;
-    const mode = paused
-      ? 'OFF'
-      : inferredMode
-      ? inferredMode
-      : conversation.aiMode === 'INTERVIEW'
-      ? 'INTERVIEW'
-      : conversation.aiMode === 'OFF'
-      ? 'OFF'
-      : 'RECRUIT';
-
-    const recentMessages = conversation.messages.slice(-15);
-    const context = recentMessages
-      .map(m => {
-        const line = buildAiMessageText(m);
-        return m.direction === 'INBOUND' ? `Candidato: ${line}` : `Agente: ${line}`;
-      })
-      .join('\n');
-
-    const config = await getSystemConfig();
-    let prompt = config.aiPrompt?.trim() || DEFAULT_AI_PROMPT;
-    let model: string | undefined = normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
-    if (mode === 'INTERVIEW') {
-      prompt = config.interviewAiPrompt?.trim() || DEFAULT_INTERVIEW_AI_PROMPT;
-      prompt = `${prompt}\n\n${INTERVIEW_AI_POLICY_ADDENDUM}`;
-      model = normalizeModelId(config.interviewAiModel?.trim() || DEFAULT_INTERVIEW_AI_MODEL) || DEFAULT_INTERVIEW_AI_MODEL;
-    }
-    if (mode === 'SELLER') {
-      prompt = config.salesAiPrompt?.trim() || DEFAULT_SALES_AI_PROMPT;
-      model = normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
-    }
-
-    if (mode === 'OFF') {
-      prompt = DEFAULT_MANUAL_SUGGEST_PROMPT;
-      const trimmedDraft = (draft || '').trim();
-      if (!trimmedDraft) {
-        return reply
-          .code(400)
-          .send({ error: 'Escribe un borrador para que la IA lo mejore en modo Manual.' });
-      }
-      const enrichedContext = `${context}\n\nBorrador del agente:\n${trimmedDraft}\n\nMejora el borrador manteniendo el mismo significado. Responde solo con el texto final.`;
-      try {
-        const suggestion = await getSuggestedReply(enrichedContext, { prompt, model, config });
-        return { suggestion };
-      } catch (err: any) {
-        const { status, message } = formatAiError(err, model);
-        request.log.error({ err }, 'ai_suggest manual failed');
-        return reply.code(status).send({ error: message });
-      }
-    }
-
-    const enrichedContext = `${context}\n\nBorrador actual del agente: ${draft?.trim() || '(vacío)'}\nGenera una respuesta corta lista para enviar.`;
-
     try {
-      const suggestion = await getSuggestedReply(enrichedContext, { prompt, model, config });
-
+      const agent = await runAgent({
+        workspaceId: access.workspaceId,
+        conversationId: conversation.id,
+        eventType: 'AI_SUGGEST',
+        inboundMessageId: null,
+        draftText: typeof draft === 'string' ? draft.trim() : null,
+      });
+      const send = agent.response.commands.find((c: any) => c && typeof c === 'object' && c.command === 'SEND_MESSAGE') as any;
+      if (!send) {
+        return reply.code(502).send({ error: 'El agente no devolvió un SEND_MESSAGE para sugerencia.' });
+      }
+      if (send.type === 'TEMPLATE') {
+        const vars =
+          send.templateVars && typeof send.templateVars === 'object'
+            ? Object.entries(send.templateVars)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join('\n')
+            : '';
+        const suggestion = [`(Fuera de ventana 24h) Debes usar plantilla: ${send.templateName || '(sin nombre)'}`, vars].filter(Boolean).join('\n');
+        return { suggestion: suggestion.trim() };
+      }
+      const suggestion = typeof send.text === 'string' ? send.text : '';
+      if (!suggestion.trim()) {
+        return reply.code(502).send({ error: 'El agente devolvió un SEND_MESSAGE sin texto.' });
+      }
       return { suggestion };
     } catch (err: any) {
-      const { status, message } = formatAiError(err, model);
+      const { status, message } = formatAiError(err, null);
       request.log.error({ err }, 'ai_suggest failed');
       return reply.code(status).send({ error: message });
     }
