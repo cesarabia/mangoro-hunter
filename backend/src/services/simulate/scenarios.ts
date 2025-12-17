@@ -96,8 +96,8 @@ export const SCENARIOS: ScenarioDefinition[] = [
     name: 'SAFE MODE: bloquea fuera allowlist',
     description: 'En ALLOWLIST_ONLY, bloquear envíos a waId fuera de allowlist y dejar blockedReason.',
     // Nota: esto corre en workspace sandbox y NO envía WhatsApp real.
-    // Evita usar números reales: este waId solo existe en sandbox y sirve para validar SAFE MODE.
-    contactWaId: '56900000001',
+    // Evita usar teléfonos sintéticos que parezcan reales: usamos un waId no-numérico solo para sandbox.
+    contactWaId: 'sandbox-not-allowed',
     steps: [
       { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'SAFE_OUTBOUND' }, stage: 'PROGRAM_SELECTION' } },
     ],
