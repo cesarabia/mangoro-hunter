@@ -6,6 +6,7 @@ import { serializeJson } from '../../utils/json';
 import { AgentResponse, AgentResponseSchema } from './commandSchema';
 import { normalizeText, piiSanitizeText, resolveLocation, stableHash, validateRut } from './tools';
 import { validateAgentResponseSemantics } from './semanticValidation';
+import { repairAgentResponseBeforeValidation } from './agentResponseRepair';
 
 type WhatsAppWindowStatus = 'IN_24H' | 'OUTSIDE_24H';
 
@@ -522,7 +523,7 @@ export async function runAgent(event: AgentEvent): Promise<{
       }
 
       const raw = String((message as any).content || '').trim();
-      const parsed = applyCommandDefaults(normalizeAgentResponseShape(parseJsonLoose(raw)), {
+      const parsedRaw = applyCommandDefaults(normalizeAgentResponseShape(parseJsonLoose(raw)), {
         workspaceId: event.workspaceId,
         conversationId: conversation.id,
         contactId: conversation.contactId,
@@ -530,6 +531,7 @@ export async function runAgent(event: AgentEvent): Promise<{
         inboundMessageId: event.inboundMessageId || null,
         eventType: event.eventType,
       });
+      const parsed = repairAgentResponseBeforeValidation(parsedRaw);
       const validated = AgentResponseSchema.safeParse(parsed);
       if (!validated.success) {
         invalidAttempts += 1;
