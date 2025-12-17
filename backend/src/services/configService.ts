@@ -154,6 +154,13 @@ export function getTestWaIdAllowlist(config: SystemConfig): string[] {
 }
 
 export function getOutboundPolicy(config: SystemConfig): OutboundPolicy {
+  const allowAllUntilRaw = (config as any).outboundAllowAllUntil as Date | string | null | undefined;
+  if (allowAllUntilRaw) {
+    const until = allowAllUntilRaw instanceof Date ? allowAllUntilRaw : new Date(allowAllUntilRaw);
+    if (Number.isFinite(until.getTime()) && until.getTime() > Date.now()) {
+      return 'ALLOW_ALL';
+    }
+  }
   const stored = normalizeOutboundPolicy((config as any).outboundPolicy);
   const defaultPolicy = getDefaultOutboundPolicy();
   // Guardrail: non-prod must never default to ALLOW_ALL, even if someone stored it in DB.
@@ -183,6 +190,7 @@ export function getEffectiveOutboundAllowlist(config: SystemConfig): string[] {
 export async function updateOutboundSafetyConfig(input: {
   outboundPolicy?: OutboundPolicy | null;
   outboundAllowlist?: string[] | null;
+  outboundAllowAllUntil?: Date | string | null;
 }): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
   const data: Record<string, any> = {};
@@ -198,6 +206,21 @@ export async function updateOutboundSafetyConfig(input: {
     const unique: string[] = [];
     for (const id of normalized) if (!unique.includes(id)) unique.push(id);
     data.outboundAllowlist = unique.length > 0 ? JSON.stringify(unique) : null;
+  }
+
+  if (typeof input.outboundAllowAllUntil !== 'undefined') {
+    if (input.outboundAllowAllUntil === null) {
+      data.outboundAllowAllUntil = null;
+    } else {
+      const date =
+        input.outboundAllowAllUntil instanceof Date
+          ? input.outboundAllowAllUntil
+          : new Date(String(input.outboundAllowAllUntil));
+      if (!Number.isFinite(date.getTime())) {
+        throw new Error('outboundAllowAllUntil inválido');
+      }
+      data.outboundAllowAllUntil = date;
+    }
   }
 
   if (Object.keys(data).length === 0) return config;

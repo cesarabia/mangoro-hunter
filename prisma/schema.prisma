@@ -20,6 +20,7 @@ model User {
   copilotRuns    CopilotRunLog[]
   copilotThreads CopilotThread[]
   scenarioRuns   ScenarioRunLog[]
+  configChanges  ConfigChangeLog[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 }
@@ -41,8 +42,24 @@ model Workspace {
   copilotThreads CopilotThread[]
   aiUsageLogs AiUsageLog[]
   scenarioRuns ScenarioRunLog[]
+  configChanges ConfigChangeLog[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
+}
+
+model ConfigChangeLog {
+  id          String    @id @default(cuid())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  workspaceId String    @default("default")
+  user        User?     @relation(fields: [userId], references: [id])
+  userId      String?
+  type        String
+  beforeJson  String?
+  afterJson   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([workspaceId])
+  @@index([createdAt])
 }
 
 model Membership {
@@ -464,6 +481,7 @@ model SystemConfig {
   botAutoReply    Boolean  @default(true)
   outboundPolicy String?
   outboundAllowlist String?
+  outboundAllowAllUntil DateTime?
   devReleaseNotes String?
   openAiModelPricing String?
   whatsappPricing    String?

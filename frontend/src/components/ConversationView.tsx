@@ -6,6 +6,8 @@ interface ConversationViewProps {
   onMessageSent: () => void;
   programs?: any[];
   onReplayInSimulator?: (conversationId: string) => void;
+  draftText: string;
+  onDraftChange: (value: string) => void;
 }
 
 const safeParseJson = (value: any) => {
@@ -95,9 +97,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   conversation,
   onMessageSent,
   programs,
-  onReplayInSimulator
+  onReplayInSimulator,
+  draftText,
+  onDraftChange
 }) => {
-  const [text, setText] = useState('');
   const [loadingSend, setLoadingSend] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
@@ -131,6 +134,13 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [programId, setProgramId] = useState<string>('');
   const [programSaving, setProgramSaving] = useState(false);
   const [programError, setProgramError] = useState<string | null>(null);
+  const [safeModeModalOpen, setSafeModeModalOpen] = useState(false);
+  const [safeModeBlockedReason, setSafeModeBlockedReason] = useState<string | null>(null);
+  const [safeModeTargetWaId, setSafeModeTargetWaId] = useState<string | null>(null);
+  const [safeModeMinutes, setSafeModeMinutes] = useState<number>(30);
+  const [safeModeActionLoading, setSafeModeActionLoading] = useState(false);
+  const [safeModeActionStatus, setSafeModeActionStatus] = useState<string | null>(null);
+  const [safeModeActionError, setSafeModeActionError] = useState<string | null>(null);
 
   useEffect(() => {
     const handleResize = () => setIsNarrow(window.innerWidth < 900);
@@ -162,6 +172,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setProgramId('');
       setProgramSaving(false);
       setProgramError(null);
+      setSafeModeModalOpen(false);
+      setSafeModeBlockedReason(null);
+      setSafeModeTargetWaId(null);
+      setSafeModeActionLoading(false);
+      setSafeModeActionStatus(null);
+      setSafeModeActionError(null);
       return;
     }
     setDetailsOpen(false);
@@ -187,6 +203,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     setProgramId(conversation.program?.id || conversation.programId || '');
     setProgramSaving(false);
     setProgramError(null);
+    setSafeModeModalOpen(false);
+    setSafeModeBlockedReason(null);
+    setSafeModeTargetWaId(null);
+    setSafeModeActionLoading(false);
+    setSafeModeActionStatus(null);
+    setSafeModeActionError(null);
   }, [conversation?.id]);
 
   useEffect(() => {
@@ -212,20 +234,24 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   };
 
   const handleSend = async () => {
+    const text = draftText || '';
     if (!conversation || !text.trim()) return;
     setLoadingSend(true);
     try {
       const result = await apiClient.post(`/api/conversations/${conversation.id}/messages`, { text });
       if (result?.sendResult && !result.sendResult.success) {
-        alert(
-          `Mensaje guardado, pero el envío a WhatsApp falló: ${
-            result.sendResult.error || 'Error desconocido'
-          }`
-        );
+        const errText = result.sendResult.error || 'Error desconocido';
+        setSendError(`Mensaje guardado, pero el envío a WhatsApp falló: ${errText}`);
+        if (String(errText).includes('SAFE_OUTBOUND_BLOCKED')) {
+          setSafeModeBlockedReason(String(errText));
+          setSafeModeTargetWaId(String(conversation?.contact?.waId || '').trim() || null);
+          setSafeModeModalOpen(true);
+        }
+      } else {
+        onDraftChange('');
+        setSendError(null);
       }
-      setText('');
       onMessageSent();
-      setSendError(null);
     } catch (err: any) {
       setSendError(err.message || 'No se pudo enviar el mensaje');
     } finally {
@@ -387,9 +413,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     setLoadingAi(true);
     setSendError(null);
     try {
-      const res = await apiClient.post(`/api/conversations/${conversation.id}/ai-suggest`, { draft: text });
+      const res = await apiClient.post(`/api/conversations/${conversation.id}/ai-suggest`, { draft: draftText || '' });
       if (res.suggestion) {
-        setText(res.suggestion);
+        onDraftChange(res.suggestion);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'No se pudo sugerir';
@@ -496,6 +522,48 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
 
   const templateVariablesReady =
     templateVariableCount === 0 || templateVariables.every(value => value.trim().length > 0);
+
+  const addTargetToAllowlist = async () => {
+    if (!safeModeTargetWaId) return;
+    setSafeModeActionLoading(true);
+    setSafeModeActionStatus(null);
+    setSafeModeActionError(null);
+    try {
+      const ok = window.confirm(`¿Agregar +${safeModeTargetWaId} a la allowlist de DEV (SAFE MODE)?`);
+      if (!ok) return;
+      const current: any = await apiClient.get('/api/config/outbound-safety');
+      const existing = Array.isArray(current?.outboundAllowlist) ? current.outboundAllowlist : [];
+      const next = [...existing.map((v: any) => String(v))];
+      if (!next.includes(String(safeModeTargetWaId))) next.push(String(safeModeTargetWaId));
+      await apiClient.put('/api/config/outbound-safety', { outboundAllowlist: next });
+      setSafeModeActionStatus('Agregado a allowlist. Reintenta el envío.');
+      setSafeModeModalOpen(false);
+    } catch (err: any) {
+      setSafeModeActionError(err.message || 'No se pudo actualizar allowlist');
+    } finally {
+      setSafeModeActionLoading(false);
+    }
+  };
+
+  const enableTempOff = async () => {
+    setSafeModeActionLoading(true);
+    setSafeModeActionStatus(null);
+    setSafeModeActionError(null);
+    try {
+      const mins = Number.isFinite(safeModeMinutes) ? Math.max(1, Math.min(180, Math.floor(safeModeMinutes))) : 30;
+      const ok = window.confirm(
+        `⚠️ TEMP_OFF permite enviar a cualquier número por ${mins} minutos.\n\n¿Activar TEMP_OFF ahora?`
+      );
+      if (!ok) return;
+      await apiClient.post('/api/config/outbound-safety/temp-off', { minutes: mins });
+      setSafeModeActionStatus('TEMP_OFF activado. Reintenta el envío.');
+      setSafeModeModalOpen(false);
+    } catch (err: any) {
+      setSafeModeActionError(err.message || 'No se pudo activar TEMP_OFF');
+    } finally {
+      setSafeModeActionLoading(false);
+    }
+  };
 
   const describeMedia = (message: any) => {
     if (!message?.mediaType) return null;
@@ -950,13 +1018,13 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         <div style={{ display: 'flex', gap: 8 }}>
           <textarea
             style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc', minHeight: 40 }}
-            value={text}
-            onChange={e => setText(e.target.value)}
+            value={draftText}
+            onChange={e => onDraftChange(e.target.value)}
             placeholder="Escribe una respuesta..."
           />
           <button
             onClick={handleSuggest}
-            disabled={!hasConversation || loadingAi || (isManualMode && !text.trim())}
+            disabled={!hasConversation || loadingAi || (isManualMode && !(draftText || '').trim())}
             style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#eee' }}
           >
             {loadingAi ? 'IA...' : 'Sugerir'}
@@ -971,6 +1039,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         </div>
         {sendError && <div style={{ color: '#b93800', fontSize: 13 }}>{sendError}</div>}
         {downloadError && <div style={{ color: '#b93800', fontSize: 13 }}>{downloadError}</div>}
+        {safeModeActionStatus && <div style={{ color: '#1a7f37', fontSize: 13 }}>{safeModeActionStatus}</div>}
+        {safeModeActionError && <div style={{ color: '#b93800', fontSize: 13 }}>{safeModeActionError}</div>}
         {hasConversation && !isAdmin && !within24h && (
           <>
             {requiredTemplate ? (
@@ -1011,6 +1081,82 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
           </>
         )}
       </div>
+
+      {safeModeModalOpen ? (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.35)',
+            zIndex: 70,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16
+          }}
+          onClick={() => setSafeModeModalOpen(false)}
+        >
+          <div
+            style={{
+              width: 'min(520px, 94vw)',
+              background: '#fff',
+              borderRadius: 12,
+              border: '1px solid #eee',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
+              padding: 16,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <div style={{ fontWeight: 900 }}>SAFE MODE bloqueó el envío</div>
+              <button
+                onClick={() => setSafeModeModalOpen(false)}
+                style={{ padding: '4px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff' }}
+              >
+                Cerrar
+              </button>
+            </div>
+            <div style={{ fontSize: 13, color: '#444', whiteSpace: 'pre-wrap' }}>
+              {safeModeBlockedReason || 'SAFE_OUTBOUND_BLOCKED'}
+            </div>
+            <div style={{ fontSize: 12, color: '#666' }}>
+              Número destino: <span style={{ fontFamily: 'monospace' }}>{safeModeTargetWaId ? `+${safeModeTargetWaId}` : '—'}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button
+                onClick={() => addTargetToAllowlist().catch(() => {})}
+                disabled={safeModeActionLoading || !safeModeTargetWaId}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                {safeModeActionLoading ? '...' : 'Agregar a allowlist'}
+              </button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="number"
+                  min={1}
+                  max={180}
+                  value={safeModeMinutes}
+                  onChange={(e) => setSafeModeMinutes(Number(e.target.value))}
+                  style={{ width: 84, padding: '8px 10px', borderRadius: 10, border: '1px solid #ccc' }}
+                />
+                <button
+                  onClick={() => enableTempOff().catch(() => {})}
+                  disabled={safeModeActionLoading}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #b93800', background: '#fff', color: '#b93800', fontWeight: 900 }}
+                >
+                  TEMP_OFF
+                </button>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: '#666' }}>
+              Tip: Revisa Configuración → Workspace → SAFE OUTBOUND MODE para ver allowlist efectiva y auditoría.
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

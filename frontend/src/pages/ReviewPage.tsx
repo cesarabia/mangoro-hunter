@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 
 type PageTab = 'help' | 'qa';
-type LogTab = 'agentRuns' | 'outbound' | 'automationRuns' | 'copilotRuns';
+type LogTab = 'agentRuns' | 'outbound' | 'automationRuns' | 'copilotRuns' | 'configChanges';
 
 type ScenarioResult = {
   id: string;
@@ -68,6 +68,7 @@ export const ReviewPage: React.FC<{
   const [automationRuns, setAutomationRuns] = useState<any[]>([]);
   const [outboundLogs, setOutboundLogs] = useState<any[]>([]);
   const [copilotRuns, setCopilotRuns] = useState<any[]>([]);
+  const [configChanges, setConfigChanges] = useState<any[]>([]);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
 
@@ -154,14 +155,16 @@ export const ReviewPage: React.FC<{
       const outboundPath = conversationFilter
         ? `/api/logs/outbound-messages?limit=20&conversationId=${encodeURIComponent(conversationFilter)}`
         : '/api/logs/outbound-messages?limit=20';
-      const [ar, or, au] = await Promise.all([
+      const [ar, or, au, cc] = await Promise.all([
         apiClient.get('/api/logs/agent-runs?limit=20'),
         apiClient.get(outboundPath),
-        apiClient.get('/api/logs/automation-runs?limit=20')
+        apiClient.get('/api/logs/automation-runs?limit=20'),
+        apiClient.get('/api/logs/config-changes?limit=20'),
       ]);
       setAgentRuns(Array.isArray(ar) ? ar : []);
       setOutboundLogs(Array.isArray(or) ? or : []);
       setAutomationRuns(Array.isArray(au) ? au : []);
+      setConfigChanges(Array.isArray(cc) ? cc : []);
       apiClient
         .get('/api/logs/copilot-runs?limit=20')
         .then((cr) => setCopilotRuns(Array.isArray(cr) ? cr : []))
@@ -172,6 +175,7 @@ export const ReviewPage: React.FC<{
       setOutboundLogs([]);
       setAutomationRuns([]);
       setCopilotRuns([]);
+      setConfigChanges([]);
     } finally {
       setLogsLoading(false);
     }
@@ -205,7 +209,7 @@ export const ReviewPage: React.FC<{
         setActiveTab(storedTab);
       }
       const storedLogTab = localStorage.getItem('reviewLogTab');
-      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns' || storedLogTab === 'copilotRuns') {
+      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns' || storedLogTab === 'copilotRuns' || storedLogTab === 'configChanges') {
         setLogTab(storedLogTab);
         setActiveTab('qa');
       }
@@ -398,6 +402,35 @@ export const ReviewPage: React.FC<{
                   {r.threadId || '—'}
                 </td>
                 <td style={{ ...tdStyle, color: r.status === 'ERROR' ? '#b93800' : '#555' }}>{r.error || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+
+    if (logTab === 'configChanges') {
+      return (
+        <table style={tableStyle}>
+          <thead>
+            <tr>
+              <th style={thStyle}>createdAt</th>
+              <th style={thStyle}>type</th>
+              <th style={thStyle}>user</th>
+              <th style={thStyle}>after</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(configChanges || []).slice(0, 20).map((c: any) => (
+              <tr key={c.id}>
+                <td style={tdStyle}>{c.createdAt}</td>
+                <td style={tdStyle}>{c.type}</td>
+                <td style={tdStyle}>{c.user?.email || c.user?.id || '—'}</td>
+                <td style={tdStyle}>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                    {c.after ? JSON.stringify(c.after, null, 2) : '—'}
+                  </pre>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -936,6 +969,9 @@ export const ReviewPage: React.FC<{
               </button>
               <button onClick={() => setLogTab('copilotRuns')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'copilotRuns' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'copilotRuns' ? '#111' : '#fff', color: logTab === 'copilotRuns' ? '#fff' : '#333', fontSize: 12 }}>
                 Copilot Runs
+              </button>
+              <button onClick={() => setLogTab('configChanges')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'configChanges' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'configChanges' ? '#111' : '#fff', color: logTab === 'configChanges' ? '#fff' : '#333', fontSize: 12 }}>
+                Config Changes
               </button>
               <button onClick={() => openConfigTab('logs')} style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
                 Ver en Config → Logs

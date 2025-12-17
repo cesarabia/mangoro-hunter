@@ -193,4 +193,30 @@ export async function registerLogRoutes(app: FastifyInstance) {
       responseText: r.responseText,
     }));
   });
+
+  app.get('/config-changes', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+
+    const limitRaw = (request.query as any)?.limit;
+    const limit = typeof limitRaw === 'string' ? parseInt(limitRaw, 10) : 50;
+    const take = Number.isFinite(limit) && limit > 0 && limit <= 200 ? limit : 50;
+
+    const logs = await prisma.configChangeLog.findMany({
+      where: { workspaceId: access.workspaceId },
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: { user: { select: { id: true, email: true, name: true } } },
+    });
+
+    return logs.map((l) => ({
+      id: l.id,
+      createdAt: l.createdAt.toISOString(),
+      workspaceId: l.workspaceId,
+      user: l.user ? { id: l.user.id, email: l.user.email, name: l.user.name } : null,
+      type: l.type,
+      before: safeJsonParse(l.beforeJson),
+      after: safeJsonParse(l.afterJson),
+    }));
+  });
 }

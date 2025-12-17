@@ -14,6 +14,7 @@ import {
 import { sendAdminNotification } from '../services/adminNotificationService';
 import { getContactDisplayName } from '../utils/contactDisplay';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
+import { stableHash } from '../services/agent/tools';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -460,6 +461,24 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         read: true
       }
     });
+
+    try {
+      await prisma.outboundMessageLog.create({
+        data: {
+          workspaceId: conversation.workspaceId,
+          conversationId: conversation.id,
+          channel: 'WHATSAPP',
+          type: 'SESSION_TEXT',
+          templateName: null,
+          dedupeKey: `manual:${message.id}`,
+          textHash: stableHash(text),
+          blockedReason: sendResult.success ? null : (sendResult.error || 'SEND_FAILED'),
+          waMessageId: sendResult.messageId || null,
+        }
+      });
+    } catch (err) {
+      app.log.warn({ err, conversationId: conversation.id }, 'Failed to write OutboundMessageLog for manual send');
+    }
 
     return { message, sendResult };
   });

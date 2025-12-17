@@ -204,7 +204,23 @@ Elementos (izq → der):
 2) Badge SAFE MODE (estado)  
 3) Build stamp (gitSha + startedAt)  
 4) Tabs: Inbox | Inactivos | Simulador | Agenda | Configuración | Ayuda/QA | Salir  
-5) Copilot flotante (global; abajo derecha)  
+5) Copilot flotante (global; auto-posicionado para no tapar el compositor del chat)  
+
+### 8.1.1 Responsive & State (reglas)
+Breakpoints (v1):
+- **Topbar**: `< 980px` se colapsa a menú (hamburger) para evitar overflow.
+- **Inbox**: `< 900px` usa navegación tipo mobile: Lista → Chat fullscreen con botón **Volver**.
+- **Copilot**: `< 820px` se muestra como **bottom sheet** (no tapa navegación ni el compositor).
+
+Reglas de estado (NO perder contexto):
+- `selectedConversationId` se persiste en `localStorage` para diagnóstico (Copilot) y continuidad.
+- El **draft del input** se guarda **por conversación** (persistente en `localStorage`) y no se pierde al:
+  - cambiar de conversación,
+  - volver a la lista en mobile,
+  - cruzar breakpoints (redimensionar).
+- En mobile:
+  - **Volver** solo cambia el panel visible; **no** borra la conversación seleccionada.
+  - El chat siempre tiene scroll vertical propio; **cero** scroll horizontal.
 
 ### 8.2 Inbox (Chat-first)
 **Lista conversaciones (izquierda)**
@@ -308,7 +324,11 @@ Tabs:
 ---
 
 ## 11) Seguridad y cumplimiento
-- **SAFE MODE (DEV)**: `ALLOWLIST_ONLY`; bloquea envíos fuera allowlist y registra `blockedReason`.  
+- **SAFE OUTBOUND MODE (DEV)**:
+  - Policies: `ALLOWLIST_ONLY` (default), `BLOCK_ALL`, `ALLOW_ALL` (solo si se habilita explícitamente).
+  - **TEMP_OFF**: permite `ALLOW_ALL` por X minutos (campo `SystemConfig.outboundAllowAllUntil`) y vuelve a `ALLOWLIST_ONLY` al expirar.
+  - Cualquier bloqueo queda registrado como `blockedReason` (ej: `SAFE_OUTBOUND_BLOCKED:*`) y se muestra en QA → Logs.
+  - Cambios de policy/allowlist/TEMP_OFF quedan auditados en `ConfigChangeLog` (visible en QA → Logs → Config Changes).
 - **NO_CONTACTAR**: bloquea cualquier outbound (respeto opt-out).  
 - **Ventana WhatsApp 24h**: fuera de ventana, texto libre bloqueado; solo templates.  
 - **Auditoría**: cada run y cada tool call queda logueado; replay no toca conversaciones reales.  

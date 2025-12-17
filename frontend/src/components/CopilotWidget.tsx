@@ -294,11 +294,17 @@ export const CopilotWidget: React.FC<{
   }, [dockSide, isMobile, widthPx]);
 
   const floatingButtonStyle: React.CSSProperties = useMemo(() => {
-    const bottom = isMobile ? 88 : 16;
-    const right = 16;
+    const isChatView = currentView === 'inbox' || currentView === 'inactive';
+    const bottom = isChatView
+      ? isMobile
+        ? 'calc(env(safe-area-inset-bottom, 0px) + 140px)'
+        : 108
+      : isMobile
+        ? 'calc(env(safe-area-inset-bottom, 0px) + 88px)'
+        : 16;
     return {
       position: 'fixed',
-      right,
+      ...(isMobile && isChatView ? { left: 16 } : { right: 16 }),
       bottom,
       zIndex: 60,
       padding: '10px 12px',
@@ -310,7 +316,7 @@ export const CopilotWidget: React.FC<{
       cursor: 'pointer',
       boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
     };
-  }, [isMobile, open]);
+  }, [isMobile, open, currentView]);
 
   const formatThreadWhen = (iso?: string | null) => {
     if (!iso) return '';

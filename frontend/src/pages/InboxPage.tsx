@@ -5,6 +5,7 @@ import { ConversationView } from '../components/ConversationView';
 
 interface Props {
   mode: 'INBOX' | 'INACTIVE';
+  workspaceId: string;
   onOpenAgenda?: () => void;
   onOpenSimulator?: () => void;
   onOpenConfig?: () => void;
@@ -13,6 +14,7 @@ interface Props {
 
 export const InboxPage: React.FC<Props> = ({
   mode,
+  workspaceId,
   onReplayInSimulator
 }) => {
   const POLLING_INTERVAL = 7000;
@@ -44,6 +46,29 @@ export const InboxPage: React.FC<Props> = ({
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 900;
   });
+  const [mobilePane, setMobilePane] = useState<'LIST' | 'CHAT'>(() => {
+    if (typeof window === 'undefined') return 'CHAT';
+    return window.innerWidth < 900 ? 'LIST' : 'CHAT';
+  });
+
+  const selectionStorageKey = `selectedConversationId:${workspaceId}:${mode}`;
+  const draftsStorageKey = `conversationDrafts:${workspaceId}`;
+
+  const [draftsByConversationId, setDraftsByConversationId] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem(draftsStorageKey);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      const out: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed as Record<string, any>)) {
+        if (typeof value === 'string') out[String(key)] = value;
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  });
 
   useEffect(() => {
     const onResize = () => setIsNarrow(window.innerWidth < 900);
@@ -51,6 +76,14 @@ export const InboxPage: React.FC<Props> = ({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  useEffect(() => {
+    setMobilePane((prev) => {
+      if (!isNarrow) return 'CHAT';
+      if (prev === 'CHAT') return 'CHAT';
+      return selectedIdRef.current ? 'CHAT' : 'LIST';
+    });
+  }, [isNarrow]);
 
   const recordBackendError = useCallback((err: unknown) => {
     const message = err instanceof Error ? err.message : 'Backend no disponible';
@@ -75,14 +108,21 @@ export const InboxPage: React.FC<Props> = ({
   useEffect(() => {
     try {
       if (selectedId) {
+        localStorage.setItem(selectionStorageKey, selectedId);
         localStorage.setItem('selectedConversationId', selectedId);
-      } else {
-        localStorage.removeItem('selectedConversationId');
       }
     } catch {
       // ignore
     }
-  }, [selectedId]);
+  }, [selectedId, selectionStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(draftsStorageKey, JSON.stringify(draftsByConversationId));
+    } catch {
+      // ignore
+    }
+  }, [draftsByConversationId, draftsStorageKey]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -99,7 +139,7 @@ export const InboxPage: React.FC<Props> = ({
       const currentSelected = selectedIdRef.current;
       const storedSelected = (() => {
         try {
-          return localStorage.getItem('selectedConversationId');
+          return localStorage.getItem(selectionStorageKey) || localStorage.getItem('selectedConversationId');
         } catch {
           return null;
         }
@@ -117,11 +157,13 @@ export const InboxPage: React.FC<Props> = ({
           initialSelectionDone.current = true;
           selectedIdRef.current = firstId;
           setSelectedId(firstId);
+          setMobilePane('CHAT');
         } else {
           // Mobile: start on list view; user taps a conversation.
           initialSelectionDone.current = true;
           selectedIdRef.current = null;
           setSelectedId(null);
+          setMobilePane('LIST');
         }
       }
 
@@ -131,17 +173,19 @@ export const InboxPage: React.FC<Props> = ({
           initialSelectionDone.current = true;
           selectedIdRef.current = nextId;
           setSelectedId(nextId);
+          setMobilePane('CHAT');
         } else {
           selectedIdRef.current = null;
           setSelectedId(null);
           setSelectedConversation(null);
           initialSelectionDone.current = false;
+          setMobilePane('LIST');
         }
       }
     } catch (err) {
       recordBackendError(err);
     }
-  }, [clearBackendError, recordBackendError, mode, isNarrow]);
+  }, [clearBackendError, recordBackendError, mode, isNarrow, selectionStorageKey]);
 
   const loadConversation = useCallback(async (id: string) => {
     try {
@@ -200,7 +244,9 @@ export const InboxPage: React.FC<Props> = ({
     initialSelectionDone.current = true;
     selectedIdRef.current = id;
     setSelectedId(id);
+    if (isNarrow) setMobilePane('CHAT');
     try {
+      localStorage.setItem(selectionStorageKey, id);
       localStorage.setItem('selectedConversationId', id);
     } catch {
       // ignore
@@ -281,14 +327,12 @@ export const InboxPage: React.FC<Props> = ({
       </div>
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         {isNarrow ? (
-          selectedId && selectedConversation ? (
+          mobilePane === 'CHAT' ? (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <div style={{ padding: '10px 12px', borderBottom: '1px solid #eee', display: 'flex', alignItems: 'center', gap: 10 }}>
                 <button
                   onClick={() => {
-                    selectedIdRef.current = null;
-                    setSelectedId(null);
-                    setSelectedConversation(null);
+                    setMobilePane('LIST');
                   }}
                   style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff' }}
                 >
@@ -329,12 +373,23 @@ export const InboxPage: React.FC<Props> = ({
                   </div>
                 </div>
               ) : null}
-              <ConversationView
-                conversation={selectedConversation}
-                onMessageSent={handleMessageSent}
-                programs={programs}
-                onReplayInSimulator={onReplayInSimulator}
-              />
+              {selectedId && selectedConversation ? (
+                <ConversationView
+                  conversation={selectedConversation}
+                  onMessageSent={handleMessageSent}
+                  programs={programs}
+                  onReplayInSimulator={onReplayInSimulator}
+                  draftText={draftsByConversationId[selectedId] || ''}
+                  onDraftChange={(value) => {
+                    setDraftsByConversationId((prev) => ({
+                      ...prev,
+                      [selectedId]: value
+                    }));
+                  }}
+                />
+              ) : (
+                <div style={{ padding: 16, color: '#666' }}>Cargando conversación…</div>
+              )}
             </div>
           ) : (
             <ConversationList
@@ -388,6 +443,14 @@ export const InboxPage: React.FC<Props> = ({
                 onMessageSent={handleMessageSent}
                 programs={programs}
                 onReplayInSimulator={onReplayInSimulator}
+                draftText={selectedId ? draftsByConversationId[selectedId] || '' : ''}
+                onDraftChange={(value) => {
+                  if (!selectedId) return;
+                  setDraftsByConversationId((prev) => ({
+                    ...prev,
+                    [selectedId]: value
+                  }));
+                }}
               />
             </div>
           </>

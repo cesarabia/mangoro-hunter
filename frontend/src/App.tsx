@@ -258,6 +258,7 @@ export const App: React.FC = () => {
     >
       <InboxPage
         mode={view === 'inactive' ? 'INACTIVE' : 'INBOX'}
+        workspaceId={workspaceId}
         onOpenAgenda={handleOpenAgenda}
         onOpenSimulator={() => setView('simulator')}
         onOpenConfig={() => setView('config')}
@@ -374,21 +375,37 @@ const Layout: React.FC<{
               </option>
             ))}
           </select>
-          {outboundPolicy && outboundPolicy !== 'ALLOW_ALL' ? (
-            <div
+          {outboundPolicy ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (!isAdmin) return;
+                try {
+                  localStorage.setItem('configSelectedTab', 'workspace');
+                } catch {
+                  // ignore
+                }
+                setView('config');
+              }}
               style={{
                 padding: '4px 8px',
                 borderRadius: 8,
-                background: '#b93800',
+                border: '1px solid #b93800',
+                background: outboundPolicy === 'ALLOW_ALL' ? '#fff7f1' : '#b93800',
                 color: '#fff',
                 fontSize: 12,
                 fontWeight: 700,
-                whiteSpace: 'nowrap'
+                whiteSpace: 'nowrap',
+                cursor: isAdmin ? 'pointer' : 'default'
               }}
-              title="Safe Outbound Mode activo: se bloquean envíos a números fuera de allowlist."
+              title="Outbound policy: click para abrir SAFE MODE (Configuración → Workspace)."
             >
-              SAFE MODE: {outboundPolicy === 'BLOCK_ALL' ? 'block all' : 'allowlist only'}
-            </div>
+              <span style={{ color: outboundPolicy === 'ALLOW_ALL' ? '#b93800' : '#fff' }}>
+                {outboundPolicy === 'ALLOW_ALL'
+                  ? 'SAFE MODE OFF (allow all)'
+                  : `SAFE MODE: ${outboundPolicy === 'BLOCK_ALL' ? 'block all' : 'allowlist only'}`}
+              </span>
+            </button>
           ) : null}
           {versionStamp.label ? (
             <div

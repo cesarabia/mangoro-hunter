@@ -67,6 +67,9 @@ export const ConfigPage: React.FC = () => {
   const [outboundAllowlistText, setOutboundAllowlistText] = useState<string>('');
   const [outboundStatus, setOutboundStatus] = useState<string | null>(null);
   const [outboundError, setOutboundError] = useState<string | null>(null);
+  const [tempOffMinutes, setTempOffMinutes] = useState<number>(30);
+  const [tempOffStatus, setTempOffStatus] = useState<string | null>(null);
+  const [tempOffError, setTempOffError] = useState<string | null>(null);
 
   const [integrationsAi, setIntegrationsAi] = useState<any | null>(null);
   const [integrationsAiModel, setIntegrationsAiModel] = useState<string>('');
@@ -606,6 +609,8 @@ export const ConfigPage: React.FC = () => {
   const saveOutboundSafety = async () => {
     setOutboundStatus(null);
     setOutboundError(null);
+    setTempOffStatus(null);
+    setTempOffError(null);
     try {
       const allowlist = outboundAllowlistText
         .split(/[\n,]/g)
@@ -621,6 +626,57 @@ export const ConfigPage: React.FC = () => {
       setOutboundError(err.message || 'No se pudo guardar');
     }
   };
+
+  const enableTempOff = async (minutes: number) => {
+    setTempOffStatus(null);
+    setTempOffError(null);
+    setOutboundStatus(null);
+    setOutboundError(null);
+    const mins = Number.isFinite(minutes) ? Math.max(1, Math.min(180, Math.floor(minutes))) : 30;
+    const ok = window.confirm(
+      `⚠️ Esto desactiva SAFE MODE temporalmente y permite enviar WhatsApp a cualquier número por ${mins} minutos.\n\n¿Continuar?`
+    );
+    if (!ok) return;
+    try {
+      const res: any = await apiClient.post('/api/config/outbound-safety/temp-off', { minutes: mins });
+      setOutboundSafety(res);
+      const stored = res?.outboundPolicyStored || outboundPolicy;
+      setOutboundPolicy(String(stored || 'ALLOWLIST_ONLY'));
+      const allow = Array.isArray(res?.outboundAllowlist) ? res.outboundAllowlist : [];
+      setOutboundAllowlistText(allow.join('\n'));
+      setTempOffStatus(`TEMP_OFF activado por ${mins} min.`);
+    } catch (err: any) {
+      setTempOffError(err.message || 'No se pudo activar TEMP_OFF');
+    }
+  };
+
+  const clearTempOff = async () => {
+    setTempOffStatus(null);
+    setTempOffError(null);
+    const ok = window.confirm('¿Reactivar SAFE MODE ahora (cancelar TEMP_OFF)?');
+    if (!ok) return;
+    try {
+      const res: any = await apiClient.post('/api/config/outbound-safety/clear-temp-off', {});
+      setOutboundSafety(res);
+      const stored = res?.outboundPolicyStored || outboundPolicy;
+      setOutboundPolicy(String(stored || 'ALLOWLIST_ONLY'));
+      const allow = Array.isArray(res?.outboundAllowlist) ? res.outboundAllowlist : [];
+      setOutboundAllowlistText(allow.join('\n'));
+      setTempOffStatus('TEMP_OFF cancelado. SAFE MODE reactivado.');
+    } catch (err: any) {
+      setTempOffError(err.message || 'No se pudo cancelar TEMP_OFF');
+    }
+  };
+
+  const tempOffUntilIso =
+    outboundSafety && typeof outboundSafety?.outboundAllowAllUntil === 'string'
+      ? outboundSafety.outboundAllowAllUntil
+      : null;
+  const tempOffUntil = tempOffUntilIso ? new Date(tempOffUntilIso) : null;
+  const tempOffActive = Boolean(tempOffUntil && Number.isFinite(tempOffUntil.getTime()) && tempOffUntil.getTime() > Date.now());
+  const tempOffRemainingMinutes = tempOffActive && tempOffUntil
+    ? Math.max(1, Math.ceil((tempOffUntil.getTime() - Date.now()) / (60 * 1000)))
+    : null;
 
   return (
     <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0 }}>
@@ -708,6 +764,42 @@ export const ConfigPage: React.FC = () => {
                   Default env: <span style={{ fontFamily: 'monospace' }}>{outboundSafety.defaultPolicy}</span>
                 </div>
               ) : null}
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              {tempOffActive ? (
+                <div style={{ border: '1px solid #f3c4a6', background: '#fff7f1', borderRadius: 10, padding: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 12, color: '#7a3b00', fontWeight: 800 }}>
+                    ⚠️ TEMP_OFF activo: envíos a cualquier número por {tempOffRemainingMinutes} min (hasta {tempOffUntil ? tempOffUntil.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) : '—'}).
+                  </div>
+                  <button
+                    onClick={() => clearTempOff().catch(() => {})}
+                    style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #7a3b00', background: '#fff', fontSize: 12, fontWeight: 800 }}
+                  >
+                    Reactivar SAFE MODE ahora
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 12, color: '#666' }}>TEMP_OFF (permite envíos a todos por minutos)</div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={180}
+                    value={tempOffMinutes}
+                    onChange={(e) => setTempOffMinutes(Number(e.target.value))}
+                    style={{ width: 90, padding: '6px 8px', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                  <button
+                    onClick={() => enableTempOff(tempOffMinutes).catch(() => {})}
+                    style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #b93800', background: '#fff', fontSize: 12, fontWeight: 800 }}
+                  >
+                    Permitir temporalmente
+                  </button>
+                </div>
+              )}
+              {tempOffStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{tempOffStatus}</div> : null}
+              {tempOffError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{tempOffError}</div> : null}
             </div>
 
             <div style={{ marginTop: 10 }}>

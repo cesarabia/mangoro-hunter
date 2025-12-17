@@ -56,6 +56,7 @@ import { prisma } from '../db/client';
 import { sendWhatsAppTemplate } from '../services/whatsappMessageService';
 import { serializeJson } from '../utils/json';
 import { archiveConversation } from '../services/conversationArchiveService';
+import { resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import {
   DEFAULT_WORKFLOW_ARCHIVE_DAYS,
   DEFAULT_WORKFLOW_INACTIVITY_DAYS,
@@ -215,6 +216,24 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     }
   }
 
+  async function logConfigChange(request: any, type: string, before: any, after: any) {
+    try {
+      const access = await resolveWorkspaceAccess(request);
+      const userId = (request as any)?.user?.userId || null;
+      await prisma.configChangeLog.create({
+        data: {
+          workspaceId: access.workspaceId,
+          userId,
+          type,
+          beforeJson: before ? serializeJson(before) : null,
+          afterJson: after ? serializeJson(after) : null,
+        },
+      });
+    } catch (err) {
+      request.log?.warn?.({ err, type }, 'Failed to log config change');
+    }
+  }
+
   app.get('/whatsapp', { preValidation: [app.authenticate] }, async (request, reply) => {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
@@ -335,6 +354,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         outboundPolicyStored: null,
         defaultPolicy: getDefaultOutboundPolicy(),
         outboundAllowlist: [],
+        outboundAllowAllUntil: null,
         effectiveAllowlist: [],
         adminNumbers: [],
         testNumbers: []
@@ -345,6 +365,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       outboundPolicyStored: (config as any).outboundPolicy || null,
       defaultPolicy: getDefaultOutboundPolicy(),
       outboundAllowlist: getOutboundAllowlist(config),
+      outboundAllowAllUntil: (config as any).outboundAllowAllUntil ? new Date((config as any).outboundAllowAllUntil).toISOString() : null,
       effectiveAllowlist: getEffectiveOutboundAllowlist(config),
       adminNumbers: getAdminWaIdAllowlist(config),
       testNumbers: getTestWaIdAllowlist(config)
@@ -380,6 +401,21 @@ export async function registerConfigRoutes(app: FastifyInstance) {
 
     const allowlist = typeof body?.outboundAllowlist === 'undefined' ? undefined : body.outboundAllowlist;
 
+    const before = await loadConfigSafe(request);
+    const snapshot = (cfg: any) =>
+      cfg
+        ? {
+            outboundPolicyStored: (cfg as any).outboundPolicy || null,
+            outboundPolicyEffective: getOutboundPolicy(cfg),
+            outboundAllowlist: getOutboundAllowlist(cfg),
+            outboundAllowAllUntil: (cfg as any).outboundAllowAllUntil
+              ? new Date((cfg as any).outboundAllowAllUntil).toISOString()
+              : null,
+            adminNumbers: getAdminWaIdAllowlist(cfg),
+            testNumbers: getTestWaIdAllowlist(cfg)
+          }
+        : null;
+
     const updated = await executeUpdate(reply, () =>
       updateOutboundSafetyConfig({
         outboundPolicy: outboundPolicy as any,
@@ -388,11 +424,100 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     );
     if (!updated) return;
 
+    await logConfigChange(request, 'OUTBOUND_SAFETY', snapshot(before), snapshot(updated));
+
     return {
       outboundPolicy: getOutboundPolicy(updated),
       outboundPolicyStored: (updated as any).outboundPolicy || null,
       defaultPolicy: getDefaultOutboundPolicy(),
       outboundAllowlist: getOutboundAllowlist(updated),
+      outboundAllowAllUntil: (updated as any).outboundAllowAllUntil ? new Date((updated as any).outboundAllowAllUntil).toISOString() : null,
+      effectiveAllowlist: getEffectiveOutboundAllowlist(updated),
+      adminNumbers: getAdminWaIdAllowlist(updated),
+      testNumbers: getTestWaIdAllowlist(updated)
+    };
+  });
+
+  app.post('/outbound-safety/temp-off', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const body = request.body as { minutes?: number };
+    const raw = typeof body?.minutes === 'number' ? body.minutes : 30;
+    const minutes = Number.isFinite(raw) ? Math.max(1, Math.min(180, Math.floor(raw))) : 30;
+
+    const before = await loadConfigSafe(request);
+    const until = new Date(Date.now() + minutes * 60 * 1000);
+
+    const updated = await executeUpdate(reply, () =>
+      updateOutboundSafetyConfig({
+        outboundAllowAllUntil: until,
+      }),
+    );
+    if (!updated) return;
+
+    const snapshot = (cfg: any) =>
+      cfg
+        ? {
+            outboundPolicyStored: (cfg as any).outboundPolicy || null,
+            outboundPolicyEffective: getOutboundPolicy(cfg),
+            outboundAllowlist: getOutboundAllowlist(cfg),
+            outboundAllowAllUntil: (cfg as any).outboundAllowAllUntil
+              ? new Date((cfg as any).outboundAllowAllUntil).toISOString()
+              : null,
+            adminNumbers: getAdminWaIdAllowlist(cfg),
+            testNumbers: getTestWaIdAllowlist(cfg)
+          }
+        : null;
+
+    await logConfigChange(request, 'OUTBOUND_SAFETY_TEMP_OFF', snapshot(before), snapshot(updated));
+
+    return {
+      outboundPolicy: getOutboundPolicy(updated),
+      outboundPolicyStored: (updated as any).outboundPolicy || null,
+      defaultPolicy: getDefaultOutboundPolicy(),
+      outboundAllowlist: getOutboundAllowlist(updated),
+      outboundAllowAllUntil: (updated as any).outboundAllowAllUntil ? new Date((updated as any).outboundAllowAllUntil).toISOString() : null,
+      effectiveAllowlist: getEffectiveOutboundAllowlist(updated),
+      adminNumbers: getAdminWaIdAllowlist(updated),
+      testNumbers: getTestWaIdAllowlist(updated)
+    };
+  });
+
+  app.post('/outbound-safety/clear-temp-off', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const before = await loadConfigSafe(request);
+    const updated = await executeUpdate(reply, () =>
+      updateOutboundSafetyConfig({
+        outboundAllowAllUntil: null,
+      }),
+    );
+    if (!updated) return;
+
+    const snapshot = (cfg: any) =>
+      cfg
+        ? {
+            outboundPolicyStored: (cfg as any).outboundPolicy || null,
+            outboundPolicyEffective: getOutboundPolicy(cfg),
+            outboundAllowlist: getOutboundAllowlist(cfg),
+            outboundAllowAllUntil: (cfg as any).outboundAllowAllUntil
+              ? new Date((cfg as any).outboundAllowAllUntil).toISOString()
+              : null,
+            adminNumbers: getAdminWaIdAllowlist(cfg),
+            testNumbers: getTestWaIdAllowlist(cfg)
+          }
+        : null;
+
+    await logConfigChange(request, 'OUTBOUND_SAFETY_CLEAR_TEMP_OFF', snapshot(before), snapshot(updated));
+
+    return {
+      outboundPolicy: getOutboundPolicy(updated),
+      outboundPolicyStored: (updated as any).outboundPolicy || null,
+      defaultPolicy: getDefaultOutboundPolicy(),
+      outboundAllowlist: getOutboundAllowlist(updated),
+      outboundAllowAllUntil: (updated as any).outboundAllowAllUntil ? new Date((updated as any).outboundAllowAllUntil).toISOString() : null,
       effectiveAllowlist: getEffectiveOutboundAllowlist(updated),
       adminNumbers: getAdminWaIdAllowlist(updated),
       testNumbers: getTestWaIdAllowlist(updated)
