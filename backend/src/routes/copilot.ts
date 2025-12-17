@@ -46,18 +46,21 @@ function inferNavigation(text: string): z.infer<typeof CopilotActionSchema> | nu
   const go = (view: z.infer<typeof ViewSchema>, configTab?: z.infer<typeof ConfigTabSchema>, label?: string) =>
     ({ type: 'NAVIGATE', view, ...(configTab ? { configTab } : {}), ...(label ? { label } : {}) }) as const;
 
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(inbox|bandeja)/i.test(text) || t === 'inbox') return go('inbox', undefined, 'Abrir Inbox');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(inactivos|archivados)/i.test(text) || t === 'inactivos') return go('inactive', undefined, 'Abrir Inactivos');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(simulador|simulator)/i.test(text) || t === 'simulador') return go('simulator', undefined, 'Abrir Simulador');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(agenda|calendario)/i.test(text) || t === 'agenda') return go('agenda', undefined, 'Abrir Agenda');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(config|configuracion|settings)/i.test(text)) return go('config', undefined, 'Abrir Configuración');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(programs?|programas)/i.test(text)) return go('config', 'programs', 'Ir a Programs');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(automations?|reglas|automat)/i.test(text)) return go('config', 'automations', 'Ir a Automations');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(numeros|whatsapp|phoneline)/i.test(text)) return go('config', 'phoneLines', 'Ir a Números WhatsApp');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(usuarios|users)/i.test(text)) return go('config', 'users', 'Ir a Usuarios');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(logs?)/i.test(text)) return go('config', 'logs', 'Ir a Logs');
-  if (/(ll[eé]vame|ir|abre|abrir|vamos a)\s+(uso|costos|consumo)/i.test(text)) return go('config', 'usage', 'Ir a Uso & Costos');
-  if (/(ayuda|qa|owner review)/i.test(text)) return go('review', undefined, 'Abrir Ayuda / QA');
+  const wantsNav = /(ll[eé]vame|lleva(me)?|ir|abre|abrir|vamos)/i.test(text);
+  if (wantsNav) {
+    if (/\b(inbox|bandeja)\b/i.test(text) || t === 'inbox') return go('inbox', undefined, 'Abrir Inbox');
+    if (/\b(inactivos|archivados)\b/i.test(text) || t === 'inactivos') return go('inactive', undefined, 'Abrir Inactivos');
+    if (/\b(simulador|simulator)\b/i.test(text) || t === 'simulador') return go('simulator', undefined, 'Abrir Simulador');
+    if (/\b(agenda|calendario)\b/i.test(text) || t === 'agenda') return go('agenda', undefined, 'Abrir Agenda');
+    if (/\b(config|configuracion|settings)\b/i.test(text)) return go('config', undefined, 'Abrir Configuración');
+    if (/\b(program|programa|programs)\b/i.test(text)) return go('config', 'programs', 'Ir a Programs');
+    if (/\b(automation|automat|regla)\b/i.test(text)) return go('config', 'automations', 'Ir a Automations');
+    if (/\b(numeros|numero|whatsapp|phoneline|linea)\b/i.test(text)) return go('config', 'phoneLines', 'Ir a Números WhatsApp');
+    if (/\b(usuarios|users)\b/i.test(text)) return go('config', 'users', 'Ir a Usuarios');
+    if (/\b(logs?|bitacora)\b/i.test(text)) return go('config', 'logs', 'Ir a Logs');
+    if (/\b(uso|costos|consumo)\b/i.test(text)) return go('config', 'usage', 'Ir a Uso & Costos');
+  }
+  if (/\b(ayuda|qa|owner review)\b/i.test(text)) return go('review', undefined, 'Abrir Ayuda / QA');
   return null;
 }
 
