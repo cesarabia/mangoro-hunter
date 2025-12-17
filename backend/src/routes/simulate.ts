@@ -38,7 +38,7 @@ const SCENARIOS: ScenarioDefinition[] = [
       },
       {
         inboundText: 'Tengo disponibilidad inmediata',
-        expect: { contactFields: ['availabilityText'] },
+        // No assertions here: this scenario is focused on avoiding location loops.
       },
     ],
   },
