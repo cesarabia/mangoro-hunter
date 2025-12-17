@@ -602,6 +602,9 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         botAutoReply: true,
         outboundPolicy,
         outboundAllowlist: null,
+        devReleaseNotes: null,
+        openAiModelPricing: null,
+        whatsappPricing: null,
         interviewAiPrompt: DEFAULT_INTERVIEW_AI_PROMPT,
         interviewAiModel: DEFAULT_INTERVIEW_AI_MODEL,
         aiModel: DEFAULT_AI_MODEL,
@@ -726,6 +729,15 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (typeof (existing as any).outboundAllowlist === 'undefined') {
     updates.outboundAllowlist = null;
+  }
+  if (typeof (existing as any).devReleaseNotes === 'undefined') {
+    updates.devReleaseNotes = null;
+  }
+  if (typeof (existing as any).openAiModelPricing === 'undefined') {
+    updates.openAiModelPricing = null;
+  }
+  if (typeof (existing as any).whatsappPricing === 'undefined') {
+    updates.whatsappPricing = null;
   }
   if (!existing.interviewAiPrompt) {
     updates.interviewAiPrompt = DEFAULT_INTERVIEW_AI_PROMPT;

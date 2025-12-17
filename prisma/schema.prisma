@@ -17,6 +17,8 @@ model User {
   role           String         @default("AGENT")
   memberships    Membership[]
   conversations  Conversation[] @relation("UserConversations")
+  copilotRuns    CopilotRunLog[]
+  scenarioRuns   ScenarioRunLog[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 }
@@ -34,6 +36,9 @@ model Workspace {
   contacts    Contact[]
   agentRuns   AgentRunLog[]
   outboundLogs OutboundMessageLog[]
+  copilotRuns CopilotRunLog[]
+  aiUsageLogs AiUsageLog[]
+  scenarioRuns ScenarioRunLog[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 }
@@ -92,6 +97,7 @@ model Program {
   defaultInLines  PhoneLine[] @relation("PhoneLineDefaultProgram")
   automations     AutomationRule[]
   agentRuns       AgentRunLog[]
+  aiUsageLogs     AiUsageLog[]
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -170,6 +176,9 @@ model Conversation {
   askedFields   ConversationAskedField[]
   agentRuns     AgentRunLog[]
   outboundLogs  OutboundMessageLog[]
+  copilotRuns   CopilotRunLog[]
+  aiUsageLogs   AiUsageLog[]
+  scenarioRuns  ScenarioRunLog[]
   automationRuns AutomationRunLog[]
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
@@ -229,6 +238,7 @@ model AgentRunLog {
   error          String?
   toolCalls      ToolCallLog[]
   outboundLogs   OutboundMessageLog[]
+  aiUsageLogs    AiUsageLog[]
   createdAt      DateTime     @default(now())
 
   @@index([workspaceId])
@@ -259,6 +269,7 @@ model OutboundMessageLog {
   agentRunId    String?
   channel       String
   type          String
+  templateName  String?
   dedupeKey     String
   textHash      String
   blockedReason String?
@@ -269,6 +280,74 @@ model OutboundMessageLog {
   @@index([workspaceId])
   @@index([createdAt])
   @@index([dedupeKey])
+}
+
+model CopilotRunLog {
+  id            String     @id @default(cuid())
+  workspace     Workspace  @relation(fields: [workspaceId], references: [id])
+  workspaceId   String     @default("default")
+  user          User?      @relation(fields: [userId], references: [id])
+  userId        String?
+  conversation  Conversation? @relation(fields: [conversationId], references: [id])
+  conversationId String?
+  view          String?
+  inputText     String
+  responseText  String?
+  actionsJson   String?
+  status        String     @default("SUCCESS")
+  error         String?
+  aiUsage       AiUsageLog[]
+  createdAt     DateTime   @default(now())
+
+  @@index([workspaceId])
+  @@index([conversationId])
+  @@index([createdAt])
+}
+
+model AiUsageLog {
+  id            String     @id @default(cuid())
+  workspace     Workspace  @relation(fields: [workspaceId], references: [id])
+  workspaceId   String     @default("default")
+  actor         String
+  model         String
+  inputTokens   Int        @default(0)
+  outputTokens  Int        @default(0)
+  totalTokens   Int        @default(0)
+  agentRun      AgentRunLog? @relation(fields: [agentRunId], references: [id])
+  agentRunId    String?
+  copilotRun    CopilotRunLog? @relation(fields: [copilotRunId], references: [id])
+  copilotRunId  String?
+  conversation  Conversation? @relation(fields: [conversationId], references: [id])
+  conversationId String?
+  program       Program?   @relation(fields: [programId], references: [id])
+  programId     String?
+  createdAt     DateTime   @default(now())
+
+  @@index([workspaceId])
+  @@index([createdAt])
+  @@index([programId])
+  @@index([conversationId])
+  @@index([actor])
+  @@index([model])
+}
+
+model ScenarioRunLog {
+  id                    String     @id @default(cuid())
+  workspace             Workspace  @relation(fields: [workspaceId], references: [id])
+  workspaceId           String     @default("sandbox")
+  scenarioId            String
+  ok                    Boolean    @default(false)
+  sessionConversation    Conversation? @relation(fields: [sessionConversationId], references: [id])
+  sessionConversationId String?
+  triggeredBy           User?      @relation(fields: [triggeredByUserId], references: [id])
+  triggeredByUserId     String?
+  startedAt             DateTime
+  finishedAt            DateTime
+  createdAt             DateTime   @default(now())
+
+  @@index([workspaceId])
+  @@index([scenarioId])
+  @@index([createdAt])
 }
 
 model AutomationRule {
@@ -361,6 +440,9 @@ model SystemConfig {
   botAutoReply    Boolean  @default(true)
   outboundPolicy String?
   outboundAllowlist String?
+  devReleaseNotes String?
+  openAiModelPricing String?
+  whatsappPricing    String?
   openAiApiKey    String?
   aiPrompt        String?
   aiModel         String?

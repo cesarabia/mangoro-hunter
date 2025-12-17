@@ -170,6 +170,7 @@ async function logOutbound(params: {
   conversationId: string;
   agentRunId?: string | null;
   type: string;
+  templateName?: string | null;
   dedupeKey: string;
   textHash: string;
   blockedReason?: string | null;
@@ -182,6 +183,7 @@ async function logOutbound(params: {
       agentRunId: params.agentRunId || null,
       channel: 'WHATSAPP',
       type: params.type,
+      templateName: params.templateName || null,
       dedupeKey: params.dedupeKey,
       textHash: params.textHash,
       blockedReason: params.blockedReason || null,
@@ -386,6 +388,7 @@ export async function executeAgentResponse(params: {
           conversationId: baseConversation.id,
           agentRunId: params.agentRunId,
           type: cmd.type,
+          templateName: cmd.type === 'TEMPLATE' ? cmd.templateName || null : null,
           dedupeKey: cmd.dedupeKey,
           textHash,
           blockedReason: 'NO_CONTACTAR',
@@ -401,6 +404,7 @@ export async function executeAgentResponse(params: {
           conversationId: baseConversation.id,
           agentRunId: params.agentRunId,
           type: cmd.type,
+          templateName: null,
           dedupeKey: cmd.dedupeKey,
           textHash,
           blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
@@ -437,6 +441,7 @@ export async function executeAgentResponse(params: {
           conversationId: baseConversation.id,
           agentRunId: params.agentRunId,
           type: cmd.type,
+          templateName: cmd.type === 'TEMPLATE' ? cmd.templateName || null : null,
           dedupeKey: cmd.dedupeKey,
           textHash: payloadHash,
           blockedReason: blockReason,
@@ -497,6 +502,7 @@ export async function executeAgentResponse(params: {
         conversationId: baseConversation.id,
         agentRunId: params.agentRunId,
         type: cmd.type,
+        templateName: cmd.type === 'TEMPLATE' ? cmd.templateName || null : null,
         dedupeKey: cmd.dedupeKey,
         textHash: payloadHash,
         blockedReason: sendResult.success ? null : `SEND_FAILED:${sendResult.error || 'unknown'}`,

@@ -8,6 +8,7 @@ import { ConfigPage } from './pages/ConfigPage';
 import { SimulatorPage } from './pages/SimulatorPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { CopilotWidget } from './components/CopilotWidget';
 
 type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review';
 
@@ -403,6 +404,28 @@ const Layout: React.FC<{
           {children}
         </ErrorBoundary>
       </div>
+      <CopilotWidget
+        currentView={view}
+        isAdmin={isAdmin}
+        onNavigate={(action, ctx) => {
+          try {
+            if (action.type === 'NAVIGATE' && action.view === 'config' && action.configTab) {
+              localStorage.setItem('configSelectedTab', action.configTab);
+            }
+            if (action.type === 'NAVIGATE' && action.view === 'review') {
+              const wantsQa = Boolean(ctx?.conversationId) || /log/i.test(action.label || '');
+              localStorage.setItem('reviewTab', wantsQa ? 'qa' : 'help');
+              if (ctx?.conversationId) {
+                localStorage.setItem('reviewLogTab', 'outbound');
+                localStorage.setItem('reviewConversationId', String(ctx.conversationId));
+              }
+            }
+          } catch {
+            // ignore
+          }
+          setView(action.view as any);
+        }}
+      />
     </div>
   );
 };

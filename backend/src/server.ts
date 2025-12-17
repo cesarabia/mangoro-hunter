@@ -18,6 +18,9 @@ import { registerProgramRoutes } from './routes/programs';
 import { registerAutomationRoutes } from './routes/automations';
 import { registerLogRoutes } from './routes/logs';
 import { registerUserRoutes } from './routes/users';
+import { registerUsageRoutes } from './routes/usage';
+import { registerReleaseNotesRoutes } from './routes/releaseNotes';
+import { registerCopilotRoutes } from './routes/copilot';
 
 export async function buildServer() {
   const app = Fastify({ logger: true });
@@ -49,6 +52,9 @@ export async function buildServer() {
   app.register(registerProgramRoutes, { prefix: '/api/programs' });
   app.register(registerAutomationRoutes, { prefix: '/api/automations' });
   app.register(registerLogRoutes, { prefix: '/api/logs' });
+  app.register(registerUsageRoutes, { prefix: '/api/usage' });
+  app.register(registerReleaseNotesRoutes, { prefix: '/api/release-notes' });
+  app.register(registerCopilotRoutes, { prefix: '/api/copilot' });
   app.register(registerAgendaRoutes, { prefix: '/api/agenda' });
   app.register(registerSimulationRoutes, { prefix: '/api/simulate' });
   app.register(registerMessageRoutes, { prefix: '/api/messages' });

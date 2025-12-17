@@ -451,6 +451,9 @@ export async function runAgent(event: AgentEvent): Promise<{
 
   const client = new OpenAI({ apiKey });
   const model = normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+  let usagePromptTokens = 0;
+  let usageCompletionTokens = 0;
+  let usageTotalTokens = 0;
 
   const tools = toolDefinitions();
 
@@ -479,6 +482,12 @@ export async function runAgent(event: AgentEvent): Promise<{
         max_tokens: 900,
         response_format: { type: 'json_object' } as any,
       });
+      const usage: any = (completion as any)?.usage;
+      if (usage) {
+        usagePromptTokens += Number(usage.prompt_tokens || 0) || 0;
+        usageCompletionTokens += Number(usage.completion_tokens || 0) || 0;
+        usageTotalTokens += Number(usage.total_tokens || 0) || 0;
+      }
 
       const message = completion.choices[0]?.message;
       if (!message) throw new Error('Respuesta vacía del modelo');
@@ -571,6 +580,22 @@ export async function runAgent(event: AgentEvent): Promise<{
         data: { status: 'PLANNED', commandsJson: serializeJson(validated.data) },
       });
 
+      await prisma.aiUsageLog
+        .create({
+          data: {
+            workspaceId: event.workspaceId,
+            actor: 'AGENT_RUNTIME',
+            model,
+            inputTokens: usagePromptTokens,
+            outputTokens: usageCompletionTokens,
+            totalTokens: usageTotalTokens,
+            agentRunId: runLog.id,
+            conversationId: conversation.id,
+            programId: conversation.programId,
+          },
+        })
+        .catch(() => {});
+
       return { runId: runLog.id, windowStatus, response: validated.data };
     }
 
@@ -589,6 +614,21 @@ export async function runAgent(event: AgentEvent): Promise<{
         }),
       },
     });
+    await prisma.aiUsageLog
+      .create({
+        data: {
+          workspaceId: event.workspaceId,
+          actor: 'AGENT_RUNTIME',
+          model,
+          inputTokens: usagePromptTokens,
+          outputTokens: usageCompletionTokens,
+          totalTokens: usageTotalTokens,
+          agentRunId: runLog.id,
+          conversationId: conversation.id,
+          programId: conversation.programId,
+        },
+      })
+      .catch(() => {});
     throw err;
   }
 }

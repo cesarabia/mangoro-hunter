@@ -61,6 +61,18 @@ export const InboxPage: React.FC<Props> = ({
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
+  useEffect(() => {
+    try {
+      if (selectedId) {
+        localStorage.setItem('selectedConversationId', selectedId);
+      } else {
+        localStorage.removeItem('selectedConversationId');
+      }
+    } catch {
+      // ignore
+    }
+  }, [selectedId]);
+
   const loadConversations = useCallback(async () => {
     try {
       const data = await apiClient.get('/api/conversations');
@@ -157,6 +169,11 @@ export const InboxPage: React.FC<Props> = ({
     initialSelectionDone.current = true;
     selectedIdRef.current = id;
     setSelectedId(id);
+    try {
+      localStorage.setItem('selectedConversationId', id);
+    } catch {
+      // ignore
+    }
   };
 
   const handleMessageSent = async () => {

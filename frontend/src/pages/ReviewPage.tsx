@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 
+type PageTab = 'help' | 'qa';
 type LogTab = 'agentRuns' | 'outbound' | 'automationRuns';
 
 type ScenarioResult = {
@@ -13,6 +14,26 @@ type ScenarioResult = {
   error?: string;
 };
 
+type ReleaseNotes = {
+  changed: string[];
+  todo: string[];
+  risks: string[];
+};
+
+const normalizeSearch = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim();
+
+const joinLines = (arr: string[] | null | undefined) => (Array.isArray(arr) ? arr.join('\n') : '');
+const splitLines = (text: string) =>
+  text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+
 export const ReviewPage: React.FC<{
   onGoInbox: () => void;
   onGoInactive: () => void;
@@ -20,12 +41,28 @@ export const ReviewPage: React.FC<{
   onGoAgenda: () => void;
   onGoConfig: () => void;
 }> = ({ onGoInbox, onGoInactive, onGoSimulator, onGoAgenda, onGoConfig }) => {
+  const [activeTab, setActiveTab] = useState<PageTab>('help');
+  const [helpSearch, setHelpSearch] = useState('');
+
   const [health, setHealth] = useState<any | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [outbound, setOutbound] = useState<any | null>(null);
   const [outboundError, setOutboundError] = useState<string | null>(null);
 
+  const [phoneLines, setPhoneLines] = useState<any[]>([]);
+  const [programs, setPrograms] = useState<any[]>([]);
+  const [automations, setAutomations] = useState<any[]>([]);
+  const [setupError, setSetupError] = useState<string | null>(null);
+
+  const [release, setRelease] = useState<any | null>(null);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
+  const [savingRelease, setSavingRelease] = useState(false);
+  const [releaseChanged, setReleaseChanged] = useState('');
+  const [releaseTodo, setReleaseTodo] = useState('');
+  const [releaseRisks, setReleaseRisks] = useState('');
+
   const [logTab, setLogTab] = useState<LogTab>('agentRuns');
+  const [outboundConversationId, setOutboundConversationId] = useState<string>('');
   const [agentRuns, setAgentRuns] = useState<any[]>([]);
   const [automationRuns, setAutomationRuns] = useState<any[]>([]);
   const [outboundLogs, setOutboundLogs] = useState<any[]>([]);
@@ -37,6 +74,15 @@ export const ReviewPage: React.FC<{
   const [runningScenarios, setRunningScenarios] = useState(false);
 
   const allowedNumbers = useMemo(() => new Set(['56982345846', '56994830202']), []);
+
+  const openConfigTab = (tab: string) => {
+    try {
+      localStorage.setItem('configSelectedTab', tab);
+    } catch {
+      // ignore
+    }
+    onGoConfig();
+  };
 
   const refreshHealth = async () => {
     setHealthError(null);
@@ -60,13 +106,51 @@ export const ReviewPage: React.FC<{
     }
   };
 
-  const refreshLogs = async () => {
+  const refreshSetup = async () => {
+    setSetupError(null);
+    try {
+      const [lines, progs, autos] = await Promise.all([
+        apiClient.get('/api/phone-lines'),
+        apiClient.get('/api/programs'),
+        apiClient.get('/api/automations')
+      ]);
+      setPhoneLines(Array.isArray(lines) ? lines : []);
+      setPrograms(Array.isArray(progs) ? progs : []);
+      setAutomations(Array.isArray(autos) ? autos : []);
+    } catch (err: any) {
+      setPhoneLines([]);
+      setPrograms([]);
+      setAutomations([]);
+      setSetupError(err.message || 'No se pudo cargar configuración');
+    }
+  };
+
+  const refreshReleaseNotes = async () => {
+    setReleaseError(null);
+    try {
+      const data = await apiClient.get('/api/release-notes');
+      setRelease(data);
+      const notes: ReleaseNotes | null = data?.notes || null;
+      setReleaseChanged(joinLines(notes?.changed));
+      setReleaseTodo(joinLines(notes?.todo));
+      setReleaseRisks(joinLines(notes?.risks));
+    } catch (err: any) {
+      setRelease(null);
+      setReleaseError(err.message || 'No se pudieron cargar Release Notes');
+    }
+  };
+
+  const refreshLogs = async (conversationIdOverride?: string) => {
     setLogsLoading(true);
     setLogsError(null);
     try {
+      const conversationFilter = (typeof conversationIdOverride === 'string' ? conversationIdOverride : outboundConversationId).trim();
+      const outboundPath = conversationFilter
+        ? `/api/logs/outbound-messages?limit=20&conversationId=${encodeURIComponent(conversationFilter)}`
+        : '/api/logs/outbound-messages?limit=20';
       const [ar, or, au] = await Promise.all([
         apiClient.get('/api/logs/agent-runs?limit=20'),
-        apiClient.get('/api/logs/outbound-messages?limit=20'),
+        apiClient.get(outboundPath),
         apiClient.get('/api/logs/automation-runs?limit=20')
       ]);
       setAgentRuns(Array.isArray(ar) ? ar : []);
@@ -82,10 +166,57 @@ export const ReviewPage: React.FC<{
     }
   };
 
+  const saveReleaseNotes = async () => {
+    setSavingRelease(true);
+    setReleaseError(null);
+    try {
+      const payload = {
+        notes: {
+          changed: splitLines(releaseChanged),
+          todo: splitLines(releaseTodo),
+          risks: splitLines(releaseRisks)
+        }
+      };
+      await apiClient.put('/api/release-notes', payload);
+      await refreshReleaseNotes();
+    } catch (err: any) {
+      setReleaseError(err.message || 'No se pudieron guardar Release Notes');
+    } finally {
+      setSavingRelease(false);
+    }
+  };
+
   useEffect(() => {
+    let preloadConversationId: string | undefined;
+    try {
+      const storedTab = localStorage.getItem('reviewTab');
+      if (storedTab === 'help' || storedTab === 'qa') {
+        setActiveTab(storedTab);
+      }
+      const storedLogTab = localStorage.getItem('reviewLogTab');
+      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns') {
+        setLogTab(storedLogTab);
+        setActiveTab('qa');
+      }
+      const storedConversationId = localStorage.getItem('reviewConversationId');
+      if (storedConversationId) {
+        preloadConversationId = storedConversationId;
+        setOutboundConversationId(storedConversationId);
+        setLogTab('outbound');
+        setActiveTab('qa');
+      }
+      localStorage.removeItem('reviewTab');
+      localStorage.removeItem('reviewLogTab');
+      localStorage.removeItem('reviewConversationId');
+    } catch {
+      // ignore
+    }
+
     refreshHealth().catch(() => {});
     refreshOutbound().catch(() => {});
-    refreshLogs().catch(() => {});
+    refreshSetup().catch(() => {});
+    refreshReleaseNotes().catch(() => {});
+    refreshLogs(preloadConversationId).catch(() => {});
     apiClient
       .get('/api/simulate/scenarios')
       .then((data) => setScenarios(Array.isArray(data) ? data : []))
@@ -94,8 +225,25 @@ export const ReviewPage: React.FC<{
 
   const effectiveAllowlist: string[] = Array.isArray(outbound?.effectiveAllowlist) ? outbound.effectiveAllowlist : [];
   const policy: string | null = typeof outbound?.outboundPolicy === 'string' ? outbound.outboundPolicy : null;
-  const unexpectedAllowlist = useMemo(() => effectiveAllowlist.filter((n) => !allowedNumbers.has(String(n))), [effectiveAllowlist, allowedNumbers]);
+  const unexpectedAllowlist = useMemo(
+    () => effectiveAllowlist.filter((n) => !allowedNumbers.has(String(n))),
+    [effectiveAllowlist, allowedNumbers]
+  );
   const safeModeOk = policy === 'ALLOWLIST_ONLY' && unexpectedAllowlist.length === 0;
+
+  const phoneLineOk = useMemo(() => (phoneLines || []).some((l: any) => Boolean(l?.isActive) && l?.waPhoneNumberId), [phoneLines]);
+  const programsOk = useMemo(() => (programs || []).some((p: any) => Boolean(p?.isActive) && !p?.archivedAt), [programs]);
+  const automationsOk = useMemo(
+    () =>
+      (automations || []).some(
+        (r: any) =>
+          Boolean(r?.enabled) &&
+          String(r?.trigger || '').toUpperCase() === 'INBOUND_MESSAGE' &&
+          String(r?.actionsJson || '').includes('RUN_AGENT')
+      ),
+    [automations]
+  );
+  const lastQaOk = Boolean(release?.lastQa?.ok);
 
   const runAllScenarios = async () => {
     setRunningScenarios(true);
@@ -119,6 +267,7 @@ export const ReviewPage: React.FC<{
         }
       }
       setScenarioResults(results);
+      await refreshReleaseNotes();
       await refreshLogs();
     } finally {
       setRunningScenarios(false);
@@ -217,170 +366,516 @@ export const ReviewPage: React.FC<{
     );
   };
 
+  const helpQuery = normalizeSearch(helpSearch);
+
+  const concepts = [
+    {
+      key: 'workspace',
+      title: 'Workspace',
+      body: 'Cliente/cuenta. Aquí vive la configuración y acceso.',
+      actionLabel: 'Ir a Workspace',
+      onGo: () => openConfigTab('workspace'),
+    },
+    {
+      key: 'phoneline',
+      title: 'PhoneLine',
+      body: 'Número WhatsApp conectado (línea) y su Program por defecto.',
+      actionLabel: 'Ir a Números WhatsApp',
+      onGo: () => openConfigTab('phoneLines'),
+    },
+    {
+      key: 'program',
+      title: 'Program',
+      body: 'Agente/experiencia que gobierna una conversación (reclutamiento, ventas, etc.).',
+      actionLabel: 'Ir a Programs',
+      onGo: () => openConfigTab('programs'),
+    },
+    {
+      key: 'automations',
+      title: 'Automations',
+      body: 'Reglas que disparan agentes/acciones (ej: inbound → RUN_AGENT).',
+      actionLabel: 'Ir a Automations',
+      onGo: () => openConfigTab('automations'),
+    },
+    {
+      key: 'simulator',
+      title: 'Simulator',
+      body: 'Pruebas sin WhatsApp real (NullTransport) con logs y replay.',
+      actionLabel: 'Abrir Simulador',
+      onGo: () => onGoSimulator(),
+    },
+    {
+      key: 'safe',
+      title: 'SAFE MODE (DEV)',
+      body: 'Protección: allowlist-only para no molestar números reales.',
+      actionLabel: 'Ver SAFE MODE',
+      onGo: () => openConfigTab('workspace'),
+    },
+  ];
+
+  const helpSteps = [
+    {
+      title: 'Paso 1: Confirmar SAFE MODE (DEV)',
+      ok: safeModeOk,
+      detail: safeModeOk ? 'ALLOWLIST_ONLY con 2 números autorizados.' : 'Revisa policy/allowlist.',
+      action: () => openConfigTab('workspace'),
+      actionLabel: 'Ir a Config',
+    },
+    {
+      title: 'Paso 2: Confirmar PhoneLine',
+      ok: phoneLineOk,
+      detail: phoneLineOk ? 'Hay al menos 1 línea activa.' : 'No hay líneas activas.',
+      action: () => openConfigTab('phoneLines'),
+      actionLabel: 'Ir a Números WhatsApp',
+    },
+    {
+      title: 'Paso 3: Crear/confirmar Programs',
+      ok: programsOk,
+      detail: programsOk ? 'Hay al menos 1 Program activo.' : 'No hay Programs activos.',
+      action: () => openConfigTab('programs'),
+      actionLabel: 'Ir a Programs',
+    },
+    {
+      title: 'Paso 4: Activar automation básica (RUN_AGENT)',
+      ok: automationsOk,
+      detail: automationsOk ? 'Hay una regla inbound → RUN_AGENT.' : 'Falta regla básica RUN_AGENT.',
+      action: () => openConfigTab('automations'),
+      actionLabel: 'Ir a Automations',
+    },
+    {
+      title: 'Paso 5 (recomendado): Probar en Simulator',
+      ok: lastQaOk,
+      detail: lastQaOk ? 'Último QA: PASS.' : 'Aún no hay QA reciente o falló.',
+      action: () => setActiveTab('qa'),
+      actionLabel: 'Ir a QA',
+    },
+  ];
+
+  const moduleGuides = [
+    {
+      key: 'inbox',
+      title: 'Inbox',
+      text: 'Aquí gestionas conversaciones. Usa “Detalles” para ver Program/Stage/ventana WhatsApp y acciones.',
+      example: 'Ejemplo: selecciona una conversación → abre “Detalles” → cambia Program si corresponde.',
+      onGo: onGoInbox,
+    },
+    {
+      key: 'inactive',
+      title: 'Inactivos',
+      text: 'Conversaciones archivadas o sin respuesta. Sirve para retomar, revisar o auditar.',
+      example: 'Ejemplo: abre Inactivos → revisa “sin respuesta” → decide siguiente acción.',
+      onGo: onGoInactive,
+    },
+    {
+      key: 'sim',
+      title: 'Simulador',
+      text: 'Sesiones sandbox para probar agentes y reglas sin WhatsApp real. Incluye replay y scenarios.',
+      example: 'Ejemplo: crea sesión → envía “✅ PUENTE ALTO…” → revisa logs y respuesta.',
+      onGo: () => onGoSimulator(),
+    },
+    {
+      key: 'agenda',
+      title: 'Agenda',
+      text: 'Reserva/gestiona entrevistas y evita double-booking con disponibilidad.',
+      example: 'Ejemplo: abre Agenda → revisa reservas → ajusta disponibilidad en Config.',
+      onGo: onGoAgenda,
+    },
+    {
+      key: 'config',
+      title: 'Configuración',
+      text: 'Workspace, Usuarios, Números WhatsApp, Programs, Automations y Logs.',
+      example: 'Ejemplo: crea un Program → activa automation inbound → prueba en Simulator.',
+      onGo: onGoConfig,
+    },
+  ];
+
+  const troubleshooting = [
+    {
+      key: 'no_reply',
+      title: 'No respondió',
+      text: 'Causas comunes: SAFE MODE bloqueó, NO_CONTACTAR, fuera de ventana 24h, error del agente.',
+      actionLabel: 'Ver logs',
+      onGo: () => {
+        setActiveTab('qa');
+        setLogTab('outbound');
+      },
+    },
+    {
+      key: 'repeated',
+      title: 'Se repitió',
+      text: 'Anti-loop y dedupe evitan duplicados. Si ves repetición, revisa Outbound blockedReason y dedupeKey.',
+      actionLabel: 'Ver outbound',
+      onGo: () => {
+        setActiveTab('qa');
+        setLogTab('outbound');
+      },
+    },
+    {
+      key: 'outside_24h',
+      title: 'Fuera de ventana 24h',
+      text: 'WhatsApp limita mensajes fuera de 24h: se deben usar plantillas.',
+      actionLabel: 'Abrir Inbox',
+      onGo: onGoInbox,
+    },
+    {
+      key: 'safe_mode_block',
+      title: 'No se envía por SAFE MODE',
+      text: 'En DEV, allowlist-only bloquea cualquier número fuera de admin/test. El bloqueo queda logueado.',
+      actionLabel: 'Ver SAFE MODE',
+      onGo: () => openConfigTab('workspace'),
+    },
+  ];
+
+  const matchHelp = (obj: { title: string; body?: string; text?: string; example?: string }) => {
+    if (!helpQuery) return true;
+    const hay = [obj.title, obj.body, obj.text, obj.example].filter(Boolean).join(' ');
+    return normalizeSearch(hay).includes(helpQuery);
+  };
+
+  const tabButton = (tab: PageTab, label: string) => (
+    <button
+      onClick={() => setActiveTab(tab)}
+      style={{
+        padding: '6px 12px',
+        borderRadius: 999,
+        border: activeTab === tab ? '1px solid #111' : '1px solid #ccc',
+        background: activeTab === tab ? '#111' : '#fff',
+        color: activeTab === tab ? '#fff' : '#111',
+        fontSize: 13,
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div style={{ padding: 16, maxWidth: 1120, margin: '0 auto' }}>
-      <h2 style={{ margin: '8px 0 16px' }}>Ayuda / QA (Owner Review Mode)</h2>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-            <div style={{ fontWeight: 800 }}>Build / Health</div>
-            <button onClick={() => refreshHealth().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
-              Refresh
-            </button>
-          </div>
-          {healthError ? <div style={{ marginTop: 8, color: '#b93800' }}>{healthError}</div> : null}
-          <div style={{ marginTop: 8, fontSize: 12, color: '#555' }}>
-            <div>
-              status: <strong>{health?.ok ? 'OK' : '—'}</strong>
-            </div>
-            <div>
-              gitSha: <strong>{health?.gitSha || '—'}</strong>
-            </div>
-            <div>
-              startedAt: <strong>{health?.startedAt || '—'}</strong>
-            </div>
-            <div>
-              repoDirty: <strong>{typeof health?.repoDirty === 'boolean' ? String(health.repoDirty) : '—'}</strong>
-            </div>
-            <div>
-              backendVersion: <strong>{health?.backendVersion || '—'}</strong>
-            </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ margin: '8px 0 2px' }}>{activeTab === 'help' ? 'Ayuda — Agent OS' : 'QA / Owner Review'}</h2>
+          <div style={{ fontSize: 12, color: '#666' }}>
+            {activeTab === 'help'
+              ? 'Crea Programs (agentes) y reglas (Automations) para operar conversaciones.'
+              : 'Health, SAFE MODE, logs y smoke scenarios (sin WhatsApp real).'}
           </div>
         </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {tabButton('help', 'Ayuda')}
+          {tabButton('qa', 'QA / Owner Review')}
+        </div>
+      </div>
 
-        <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-            <div style={{ fontWeight: 800 }}>SAFE MODE (DEV)</div>
-            <button onClick={() => refreshOutbound().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
-              Refresh
-            </button>
+      {activeTab === 'help' ? (
+        <>
+          <div style={{ marginTop: 14, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                value={helpSearch}
+                onChange={(e) => setHelpSearch(e.target.value)}
+                placeholder="Buscar en la ayuda…"
+                style={{ flex: '1 1 260px', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+              />
+              <button
+                onClick={() => {
+                  setHelpSearch('');
+                  refreshSetup().catch(() => {});
+                  refreshOutbound().catch(() => {});
+                }}
+                style={{ padding: '8px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 13 }}
+              >
+                Refresh
+              </button>
+            </div>
+            {setupError ? <div style={{ marginTop: 8, color: '#b93800' }}>{setupError}</div> : null}
           </div>
-          {outboundError ? <div style={{ marginTop: 8, color: '#b93800' }}>{outboundError}</div> : null}
-          <div style={{ marginTop: 8, fontSize: 12, color: '#555' }}>
-            <div>
-              Policy: <strong style={{ color: safeModeOk ? '#1a7f37' : '#b93800' }}>{policy || '—'}</strong>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Conceptos clave</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              {concepts.filter(matchHelp).map((c) => (
+                <div key={c.key} style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+                  <div style={{ fontWeight: 800 }}>{c.title}</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>{c.body}</div>
+                  <button
+                    onClick={c.onGo}
+                    style={{ marginTop: 10, padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                  >
+                    {c.actionLabel}
+                  </button>
+                </div>
+              ))}
             </div>
-            <div style={{ marginTop: 8, fontWeight: 700 }}>Allowlist efectiva (debe ser SOLO 2 números):</div>
-            <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {effectiveAllowlist.length === 0 ? (
-                <span style={{ color: '#666' }}>— (vacío)</span>
-              ) : (
-                effectiveAllowlist.map((n) => (
-                  <span key={String(n)} style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
-                    {String(n)}
-                  </span>
-                ))
-              )}
+          </div>
+
+          <div style={{ marginTop: 14, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Primeros pasos (click-only)</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {helpSteps.filter(matchHelp).map((s) => (
+                <div key={s.title} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontWeight: 800 }}>
+                      <span style={{ color: s.ok ? '#1a7f37' : '#b93800' }}>{s.ok ? '✅' : '⚠️'}</span>{' '}
+                      {s.title}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>{s.detail}</div>
+                  </div>
+                  <button onClick={s.action} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                    {s.actionLabel}
+                  </button>
+                </div>
+              ))}
             </div>
-            {unexpectedAllowlist.length > 0 ? (
-              <div style={{ marginTop: 8, color: '#b93800' }}>
-                ⚠️ Hay números fuera de la allowlist autorizada: {unexpectedAllowlist.join(', ')}
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Guía por módulo</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {moduleGuides.filter(matchHelp).map((m) => (
+                <details key={m.key} style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fff' }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 800 }}>{m.title}</summary>
+                  <div style={{ marginTop: 8, fontSize: 13, color: '#555' }}>{m.text}</div>
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
+                    <strong>Ejemplo:</strong> {m.example}
+                  </div>
+                  <button onClick={m.onGo} style={{ marginTop: 10, padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                    Ir a {m.title}
+                  </button>
+                </details>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Solución de problemas</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              {troubleshooting.filter(matchHelp).map((t) => (
+                <div key={t.key} style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+                  <div style={{ fontWeight: 800 }}>{t.title}</div>
+                  <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>{t.text}</div>
+                  <button onClick={t.onGo} style={{ marginTop: 10, padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                    {t.actionLabel}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14 }}>
+            <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <div style={{ fontWeight: 800 }}>Build / Health</div>
+                <button onClick={() => refreshHealth().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                  Refresh
+                </button>
+              </div>
+              {healthError ? <div style={{ marginTop: 8, color: '#b93800' }}>{healthError}</div> : null}
+              <div style={{ marginTop: 8, fontSize: 12, color: '#555' }}>
+                <div>
+                  status: <strong>{health?.ok ? 'OK' : '—'}</strong>
+                </div>
+                <div>
+                  gitSha: <strong>{health?.gitSha || '—'}</strong>
+                </div>
+                <div>
+                  startedAt: <strong>{health?.startedAt || '—'}</strong>
+                </div>
+                <div>
+                  repoDirty: <strong>{typeof health?.repoDirty === 'boolean' ? String(health.repoDirty) : '—'}</strong>
+                </div>
+                <div>
+                  backendVersion: <strong>{health?.backendVersion || '—'}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <div style={{ fontWeight: 800 }}>SAFE MODE (DEV)</div>
+                <button onClick={() => refreshOutbound().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                  Refresh
+                </button>
+              </div>
+              {outboundError ? <div style={{ marginTop: 8, color: '#b93800' }}>{outboundError}</div> : null}
+              <div style={{ marginTop: 8, fontSize: 12, color: '#555' }}>
+                <div>
+                  Policy: <strong style={{ color: safeModeOk ? '#1a7f37' : '#b93800' }}>{policy || '—'}</strong>
+                </div>
+                <div style={{ marginTop: 8, fontWeight: 700 }}>Allowlist efectiva (debe ser SOLO 2 números):</div>
+                <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {effectiveAllowlist.length === 0 ? (
+                    <span style={{ color: '#666' }}>— (vacío)</span>
+                  ) : (
+                    effectiveAllowlist.map((n) => (
+                      <span key={String(n)} style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                        {String(n)}
+                      </span>
+                    ))
+                  )}
+                </div>
+                {unexpectedAllowlist.length > 0 ? (
+                  <div style={{ marginTop: 8, color: '#b93800' }}>
+                    ⚠️ Hay números fuera de la allowlist autorizada: {unexpectedAllowlist.join(', ')}
+                  </div>
+                ) : null}
+                <div style={{ marginTop: 8, color: '#666' }}>
+                  Autorizados: <strong>56982345846</strong> (admin) y <strong>56994830202</strong> (test)
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 900, marginBottom: 6 }}>Release Notes (DEV)</div>
+            <div style={{ fontSize: 12, color: '#666' }}>
+              Build: <strong>{health?.gitSha || '—'}</strong> · startedAt: <strong>{health?.startedAt || '—'}</strong>
+            </div>
+            {releaseError ? <div style={{ marginTop: 8, color: '#b93800' }}>{releaseError}</div> : null}
+            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              <div>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Qué cambió</div>
+                <textarea value={releaseChanged} onChange={(e) => setReleaseChanged(e.target.value)} style={{ width: '100%', minHeight: 120, padding: 8, borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }} placeholder="- item 1\n- item 2" />
+              </div>
+              <div>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Qué falta / próximos pasos</div>
+                <textarea value={releaseTodo} onChange={(e) => setReleaseTodo(e.target.value)} style={{ width: '100%', minHeight: 120, padding: 8, borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }} placeholder="- next 1\n- next 2" />
+              </div>
+              <div>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Riesgos conocidos</div>
+                <textarea value={releaseRisks} onChange={(e) => setReleaseRisks(e.target.value)} style={{ width: '100%', minHeight: 120, padding: 8, borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }} placeholder="- risk 1\n- risk 2" />
+              </div>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <button
+                onClick={() => saveReleaseNotes().catch(() => {})}
+                disabled={savingRelease}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+              >
+                {savingRelease ? 'Guardando…' : 'Guardar'}
+              </button>
+              <button
+                onClick={() => refreshReleaseNotes().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+              >
+                Recargar
+              </button>
+              <div style={{ fontSize: 12, color: '#666' }}>
+                Último QA: <strong style={{ color: release?.lastQa?.ok ? '#1a7f37' : '#b93800' }}>{release?.lastQa ? (release.lastQa.ok ? 'PASS' : 'FAIL') : '—'}</strong>{' '}
+                {release?.lastQa?.createdAt ? `(${release.lastQa.createdAt})` : ''}
+              </div>
+              <div style={{ marginLeft: 'auto', fontSize: 12, color: '#666' }}>
+                updatedAt: <strong>{release?.updatedAt || '—'}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 800, marginBottom: 10 }}>Checklist (click-only)</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 10, alignItems: 'center' }}>
+              <div>Inbox abre y el chat se ve (sin scroll horizontal / sin crash).</div>
+              <button onClick={onGoInbox} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Abrir Inbox
+              </button>
+              <div>Inactivos abre.</div>
+              <button onClick={onGoInactive} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Abrir Inactivos
+              </button>
+              <div>Simulador abre y corre una sesión.</div>
+              <button onClick={() => onGoSimulator()} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Abrir Simulador
+              </button>
+              <div>Agenda abre sin romper.</div>
+              <button onClick={onGoAgenda} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Abrir Agenda
+              </button>
+              <div>Configuración abre (Workspace/Usuarios/PhoneLines/Programs/Automations/Logs/Uso & Costos).</div>
+              <button onClick={onGoConfig} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Abrir Config
+              </button>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 800 }}>Logs recientes</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <input
+                  value={outboundConversationId}
+                  onChange={(e) => setOutboundConversationId(e.target.value)}
+                  placeholder="Filtro conversationId (opcional)"
+                  style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #ddd', fontSize: 12, width: 260 }}
+                />
+                <button onClick={() => refreshLogs().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                  Refresh
+                </button>
+              </div>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button onClick={() => setLogTab('agentRuns')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'agentRuns' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'agentRuns' ? '#111' : '#fff', color: logTab === 'agentRuns' ? '#fff' : '#333', fontSize: 12 }}>
+                Agent Runs
+              </button>
+              <button onClick={() => setLogTab('outbound')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'outbound' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'outbound' ? '#111' : '#fff', color: logTab === 'outbound' ? '#fff' : '#333', fontSize: 12 }}>
+                Outbound
+              </button>
+              <button onClick={() => setLogTab('automationRuns')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'automationRuns' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'automationRuns' ? '#111' : '#fff', color: logTab === 'automationRuns' ? '#fff' : '#333', fontSize: 12 }}>
+                Automation Runs
+              </button>
+              <button onClick={() => openConfigTab('logs')} style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                Ver en Config → Logs
+              </button>
+            </div>
+            <div style={{ marginTop: 10, overflowX: 'auto' }}>{renderLogTable()}</div>
+          </div>
+
+          <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <div style={{ fontWeight: 800 }}>Run Smoke Scenarios (Sandbox / NullTransport)</div>
+              <button
+                onClick={() => runAllScenarios().catch(() => {})}
+                disabled={runningScenarios || scenarios.length === 0}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                {runningScenarios ? 'Ejecutando…' : 'Run'}
+              </button>
+            </div>
+            {scenarios.length === 0 ? <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>No hay escenarios disponibles.</div> : null}
+            {scenarioResults.length > 0 ? (
+              <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {scenarioResults.map((r) => (
+                  <div key={r.id} style={{ border: '1px solid #eee', borderRadius: 10, padding: 10, background: '#fafafa' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ fontWeight: 800 }}>
+                        {r.name}{' '}
+                        <span style={{ marginLeft: 6, color: r.ok ? '#1a7f37' : '#b93800' }}>{r.ok ? 'PASS' : 'FAIL'}</span>
+                      </div>
+                      {r.sessionId ? (
+                        <button
+                          onClick={() => onGoSimulator(r.sessionId)}
+                          style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                        >
+                          Abrir en Simulador
+                        </button>
+                      ) : null}
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
+                      {r.sessionId ? (
+                        <div>
+                          sessionId: <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{r.sessionId}</span>
+                        </div>
+                      ) : null}
+                      {r.error ? <div style={{ color: '#b93800' }}>{r.error}</div> : null}
+                      {r.startedAt ? <div>startedAt: {r.startedAt}</div> : null}
+                      {r.finishedAt ? <div>finishedAt: {r.finishedAt}</div> : null}
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : null}
-            <div style={{ marginTop: 8, color: '#666' }}>
-              Autorizados: <strong>56982345846</strong> (admin) y <strong>56994830202</strong> (test)
-            </div>
           </div>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
-        <div style={{ fontWeight: 800, marginBottom: 10 }}>Checklist (click-only)</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 10, alignItems: 'center' }}>
-          <div>Inbox abre y el chat se ve (sin scroll horizontal / sin crash).</div>
-          <button onClick={onGoInbox} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
-            Abrir Inbox
-          </button>
-          <div>Inactivos abre.</div>
-          <button onClick={onGoInactive} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
-            Abrir Inactivos
-          </button>
-          <div>Simulador abre y corre una sesión.</div>
-          <button onClick={() => onGoSimulator()} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
-            Abrir Simulador
-          </button>
-          <div>Agenda abre sin romper.</div>
-          <button onClick={onGoAgenda} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
-            Abrir Agenda
-          </button>
-          <div>Configuración abre (Workspace/Usuarios/PhoneLines/Programs/Automations/Logs).</div>
-          <button onClick={onGoConfig} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
-            Abrir Config
-          </button>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          <div style={{ fontWeight: 800 }}>Logs recientes</div>
-          <button onClick={() => refreshLogs().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
-            Refresh
-          </button>
-        </div>
-        <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button onClick={() => setLogTab('agentRuns')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'agentRuns' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'agentRuns' ? '#111' : '#fff', color: logTab === 'agentRuns' ? '#fff' : '#333', fontSize: 12 }}>
-            Agent Runs
-          </button>
-          <button onClick={() => setLogTab('outbound')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'outbound' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'outbound' ? '#111' : '#fff', color: logTab === 'outbound' ? '#fff' : '#333', fontSize: 12 }}>
-            Outbound
-          </button>
-          <button onClick={() => setLogTab('automationRuns')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'automationRuns' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'automationRuns' ? '#111' : '#fff', color: logTab === 'automationRuns' ? '#fff' : '#333', fontSize: 12 }}>
-            Automation Runs
-          </button>
-          <button onClick={onGoConfig} style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
-            Ver en Config → Logs
-          </button>
-        </div>
-        <div style={{ marginTop: 10, overflowX: 'auto' }}>{renderLogTable()}</div>
-      </div>
-
-      <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          <div style={{ fontWeight: 800 }}>Run Smoke Scenarios (Sandbox / NullTransport)</div>
-          <button
-            onClick={() => runAllScenarios().catch(() => {})}
-            disabled={runningScenarios || scenarios.length === 0}
-            style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
-          >
-            {runningScenarios ? 'Ejecutando…' : 'Run'}
-          </button>
-        </div>
-        {scenarios.length === 0 ? <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>No hay escenarios disponibles.</div> : null}
-        {scenarioResults.length > 0 ? (
-          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {scenarioResults.map((r) => (
-              <div key={r.id} style={{ border: '1px solid #eee', borderRadius: 10, padding: 10, background: '#fafafa' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <div style={{ fontWeight: 800 }}>
-                    {r.name}{' '}
-                    <span style={{ marginLeft: 6, color: r.ok ? '#1a7f37' : '#b93800' }}>{r.ok ? 'PASS' : 'FAIL'}</span>
-                  </div>
-                  {r.sessionId ? (
-                    <button
-                      onClick={() => onGoSimulator(r.sessionId)}
-                      style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
-                    >
-                      Abrir en Simulador
-                    </button>
-                  ) : null}
-                </div>
-                <div style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
-                  {r.sessionId ? (
-                    <div>
-                      sessionId: <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{r.sessionId}</span>
-                    </div>
-                  ) : null}
-                  {r.error ? <div style={{ color: '#b93800' }}>{r.error}</div> : null}
-                  {r.startedAt ? <div>startedAt: {r.startedAt}</div> : null}
-                  {r.finishedAt ? <div>finishedAt: {r.finishedAt}</div> : null}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
+        </>
+      )}
     </div>
   );
 };
-

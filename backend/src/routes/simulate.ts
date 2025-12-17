@@ -187,12 +187,27 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       select: { id: true, direction: true, text: true, transcriptText: true, timestamp: true },
     });
 
+    const finishedAt = new Date();
+    await prisma.scenarioRunLog
+      .create({
+        data: {
+          workspaceId: 'sandbox',
+          scenarioId: scenario.id,
+          ok,
+          sessionConversationId: conversation.id,
+          triggeredByUserId: request.user?.userId || null,
+          startedAt,
+          finishedAt,
+        } as any,
+      })
+      .catch(() => {});
+
     return {
       ok,
       scenario: { id: scenario.id, name: scenario.name },
       sessionId: conversation.id,
       startedAt: startedAt.toISOString(),
-      finishedAt: new Date().toISOString(),
+      finishedAt: finishedAt.toISOString(),
       steps: stepResults,
       transcript: transcript.map((m) => ({
         id: m.id,

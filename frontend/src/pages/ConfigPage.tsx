@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 
-type TabKey = 'workspace' | 'users' | 'phoneLines' | 'programs' | 'automations' | 'logs';
+type TabKey = 'workspace' | 'users' | 'phoneLines' | 'programs' | 'automations' | 'usage' | 'logs';
 type LogsTabKey = 'agentRuns' | 'automationRuns';
 
 const TABS: Array<{ key: TabKey; label: string }> = [
@@ -10,6 +10,7 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'phoneLines', label: 'Números WhatsApp' },
   { key: 'programs', label: 'Programs' },
   { key: 'automations', label: 'Automations' },
+  { key: 'usage', label: 'Uso & Costos' },
   { key: 'logs', label: 'Logs' }
 ];
 
@@ -80,6 +81,31 @@ export const ConfigPage: React.FC = () => {
   const [automationRunLogs, setAutomationRunLogs] = useState<any[]>([]);
   const [selectedAgentRun, setSelectedAgentRun] = useState<any | null>(null);
 
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [usageOverviewByDays, setUsageOverviewByDays] = useState<Record<string, any>>({});
+  const [usageTopPrograms, setUsageTopPrograms] = useState<any[]>([]);
+  const [usageTopConversations, setUsageTopConversations] = useState<any[]>([]);
+  const [pricingModels, setPricingModels] = useState<Array<{ model: string; promptUsdPer1k: string; completionUsdPer1k: string }>>([]);
+  const [waSessionUsd, setWaSessionUsd] = useState<string>('0');
+  const [waTemplateUsd, setWaTemplateUsd] = useState<string>('0');
+  const [waOverridesText, setWaOverridesText] = useState<string>('');
+  const [pricingStatus, setPricingStatus] = useState<string | null>(null);
+  const [pricingError, setPricingError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('configSelectedTab');
+      const keys = new Set(TABS.map((t) => t.key));
+      if (stored && keys.has(stored as any)) {
+        setTab(stored as TabKey);
+      }
+      localStorage.removeItem('configSelectedTab');
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const loadWorkspaces = async () => {
     const data = await apiClient.get('/api/workspaces');
     setWorkspaces(Array.isArray(data) ? data : []);
@@ -118,6 +144,107 @@ export const ConfigPage: React.FC = () => {
     setOutboundAllowlistText(allow.join('\n'));
   };
 
+  const applyPricingToState = (data: any) => {
+    const openAi = data?.openAiModelPricing && typeof data.openAiModelPricing === 'object' ? data.openAiModelPricing : null;
+    const rows: Array<{ model: string; promptUsdPer1k: string; completionUsdPer1k: string }> = [];
+    if (openAi) {
+      for (const [model, v] of Object.entries(openAi)) {
+        const prompt = (v as any)?.promptUsdPer1k;
+        const completion = (v as any)?.completionUsdPer1k;
+        if (typeof model !== 'string') continue;
+        rows.push({
+          model,
+          promptUsdPer1k: typeof prompt === 'number' ? String(prompt) : '',
+          completionUsdPer1k: typeof completion === 'number' ? String(completion) : ''
+        });
+      }
+    }
+    setPricingModels(rows.sort((a, b) => a.model.localeCompare(b.model)));
+
+    const wa = data?.whatsappPricing && typeof data.whatsappPricing === 'object' ? data.whatsappPricing : null;
+    setWaSessionUsd(typeof wa?.sessionTextUsd === 'number' ? String(wa.sessionTextUsd) : '0');
+    setWaTemplateUsd(typeof wa?.templateUsd === 'number' ? String(wa.templateUsd) : '0');
+    setWaOverridesText(
+      wa?.templateByNameUsd && typeof wa.templateByNameUsd === 'object'
+        ? JSON.stringify(wa.templateByNameUsd, null, 2)
+        : ''
+    );
+  };
+
+  const loadUsage = async () => {
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      const [pricing, d1, d7, d30, topP, topC] = await Promise.all([
+        apiClient.get('/api/usage/pricing'),
+        apiClient.get('/api/usage/overview?days=1'),
+        apiClient.get('/api/usage/overview?days=7'),
+        apiClient.get('/api/usage/overview?days=30'),
+        apiClient.get('/api/usage/top-programs?days=30'),
+        apiClient.get('/api/usage/top-conversations?days=30')
+      ]);
+      applyPricingToState(pricing);
+      setUsageOverviewByDays({ '1': d1, '7': d7, '30': d30 });
+      setUsageTopPrograms(Array.isArray(topP?.rows) ? topP.rows : []);
+      setUsageTopConversations(Array.isArray(topC?.rows) ? topC.rows : []);
+    } catch (err: any) {
+      setUsageError(err.message || 'No se pudo cargar uso/costos');
+      setUsageOverviewByDays({});
+      setUsageTopPrograms([]);
+      setUsageTopConversations([]);
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
+  const saveUsagePricing = async () => {
+    setPricingStatus(null);
+    setPricingError(null);
+    try {
+      const modelObj: any = {};
+      for (const row of pricingModels) {
+        const model = row.model.trim();
+        if (!model) continue;
+        const prompt = Number(row.promptUsdPer1k);
+        const completion = Number(row.completionUsdPer1k);
+        if (!Number.isFinite(prompt) || !Number.isFinite(completion) || prompt < 0 || completion < 0) {
+          throw new Error(`Precio inválido para modelo: ${model}`);
+        }
+        modelObj[model] = { promptUsdPer1k: prompt, completionUsdPer1k: completion };
+      }
+
+      let overrides: any = undefined;
+      const overridesRaw = waOverridesText.trim();
+      if (overridesRaw) {
+        try {
+          overrides = JSON.parse(overridesRaw);
+        } catch {
+          throw new Error('templateByNameUsd debe ser JSON válido');
+        }
+      }
+
+      const sessionTextUsd = Number(waSessionUsd);
+      const templateUsd = Number(waTemplateUsd);
+      if (!Number.isFinite(sessionTextUsd) || sessionTextUsd < 0) throw new Error('sessionTextUsd inválido');
+      if (!Number.isFinite(templateUsd) || templateUsd < 0) throw new Error('templateUsd inválido');
+
+      const payload: any = {
+        openAiModelPricing: modelObj,
+        whatsappPricing: {
+          sessionTextUsd,
+          templateUsd,
+          ...(overrides ? { templateByNameUsd: overrides } : {})
+        }
+      };
+      const updated = await apiClient.put('/api/usage/pricing', payload);
+      applyPricingToState(updated);
+      setPricingStatus('Guardado.');
+      await loadUsage();
+    } catch (err: any) {
+      setPricingError(err.message || 'No se pudo guardar pricing');
+    }
+  };
+
   useEffect(() => {
     loadWorkspaces().catch(() => {});
     loadPrograms().catch(() => {});
@@ -135,6 +262,7 @@ export const ConfigPage: React.FC = () => {
     if (tab === 'automations') loadAutomations().catch(() => {});
     if (tab === 'programs') loadPrograms().catch(() => {});
     if (tab === 'phoneLines') loadPhoneLines().catch(() => {});
+    if (tab === 'usage') loadUsage().catch(() => {});
   }, [tab]);
 
   const usedAsDefaultCountByProgramId = useMemo(() => {
@@ -940,6 +1068,231 @@ export const ConfigPage: React.FC = () => {
               </div>
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {tab === 'usage' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>Uso & Costos</div>
+            <button
+              onClick={() => loadUsage().catch(() => {})}
+              style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+            >
+              Refresh
+            </button>
+          </div>
+
+          {usageLoading ? <div style={{ fontSize: 12, color: '#666' }}>Cargando…</div> : null}
+          {usageError ? <div style={{ fontSize: 12, color: '#b93800' }}>{usageError}</div> : null}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            {[
+              { days: '1', label: 'Hoy' },
+              { days: '7', label: '7 días' },
+              { days: '30', label: '30 días' }
+            ].map((w) => {
+              const data = usageOverviewByDays[w.days];
+              const openai = data?.openai || {};
+              const wa = data?.whatsapp || {};
+              const costOpenai = typeof openai?.costUsdKnown === 'number' ? `$${openai.costUsdKnown.toFixed(4)}` : '—';
+              const costWa = typeof wa?.costUsdKnown === 'number' ? `$${wa.costUsdKnown.toFixed(4)}` : '—';
+              return (
+                <div key={w.days} style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+                  <div style={{ fontWeight: 900 }}>{w.label}</div>
+                  <div style={{ marginTop: 8, fontSize: 12, color: '#555' }}>
+                    <div>
+                      OpenAI tokens: <strong>{openai?.totalTokens ?? '—'}</strong> · costo: <strong>{costOpenai}</strong>
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                      WhatsApp: <strong>{wa?.sentSessionText ?? '—'}</strong> session · <strong>{wa?.sentTemplate ?? '—'}</strong> templates ·{' '}
+                      <strong style={{ color: wa?.blocked ? '#b93800' : '#555' }}>{wa?.blocked ?? '—'}</strong> bloqueados · costo:{' '}
+                      <strong>{costWa}</strong>
+                    </div>
+                    {openai?.missingPricingModels?.length ? (
+                      <div style={{ marginTop: 6, color: '#b93800' }}>Falta pricing para: {openai.missingPricingModels.join(', ')}</div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Pricing (editable)</div>
+
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>OpenAI (USD por 1k tokens)</div>
+            <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#fafafa', textAlign: 'left' }}>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Modelo</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Prompt</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Completion</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pricingModels.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} style={{ padding: 10, fontSize: 12, color: '#666' }}>
+                        No hay pricing configurado (aún). Agrega modelos para estimar costo.
+                      </td>
+                    </tr>
+                  ) : null}
+                  {pricingModels.map((row, idx) => (
+                    <tr key={`${row.model}-${idx}`} style={{ borderTop: '1px solid #f0f0f0' }}>
+                      <td style={{ padding: 10 }}>
+                        <input
+                          value={row.model}
+                          onChange={(e) => {
+                            const next = [...pricingModels];
+                            next[idx] = { ...row, model: e.target.value };
+                            setPricingModels(next);
+                          }}
+                          style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontFamily: 'monospace', fontSize: 12 }}
+                          placeholder="gpt-4.1-mini"
+                        />
+                      </td>
+                      <td style={{ padding: 10 }}>
+                        <input
+                          value={row.promptUsdPer1k}
+                          onChange={(e) => {
+                            const next = [...pricingModels];
+                            next[idx] = { ...row, promptUsdPer1k: e.target.value };
+                            setPricingModels(next);
+                          }}
+                          style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 12 }}
+                          placeholder="0.0004"
+                        />
+                      </td>
+                      <td style={{ padding: 10 }}>
+                        <input
+                          value={row.completionUsdPer1k}
+                          onChange={(e) => {
+                            const next = [...pricingModels];
+                            next[idx] = { ...row, completionUsdPer1k: e.target.value };
+                            setPricingModels(next);
+                          }}
+                          style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 12 }}
+                          placeholder="0.0016"
+                        />
+                      </td>
+                      <td style={{ padding: 10 }}>
+                        <button
+                          onClick={() => setPricingModels(pricingModels.filter((_r, i) => i !== idx))}
+                          style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                        >
+                          Quitar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button
+              onClick={() => setPricingModels([...pricingModels, { model: '', promptUsdPer1k: '', completionUsdPer1k: '' }])}
+              style={{ marginTop: 10, padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+            >
+              + Agregar modelo
+            </button>
+
+            <div style={{ marginTop: 14, fontWeight: 800, marginBottom: 6 }}>WhatsApp (estimación simple)</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, maxWidth: 720 }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#555' }}>
+                SESSION_TEXT (USD por mensaje)
+                <input value={waSessionUsd} onChange={(e) => setWaSessionUsd(e.target.value)} style={{ padding: 8, borderRadius: 10, border: '1px solid #ddd' }} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#555' }}>
+                TEMPLATE (USD por mensaje)
+                <input value={waTemplateUsd} onChange={(e) => setWaTemplateUsd(e.target.value)} style={{ padding: 8, borderRadius: 10, border: '1px solid #ddd' }} />
+              </label>
+            </div>
+            <div style={{ marginTop: 10, maxWidth: 720 }}>
+              <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>Overrides por templateName (JSON opcional)</div>
+              <textarea
+                value={waOverridesText}
+                onChange={(e) => setWaOverridesText(e.target.value)}
+                placeholder='{\n  "postulacion_completar_1": 0.01\n}'
+                rows={6}
+                style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd', fontFamily: 'monospace', fontSize: 12 }}
+              />
+            </div>
+
+            <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => saveUsagePricing().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+              >
+                Guardar pricing
+              </button>
+              {pricingStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{pricingStatus}</div> : null}
+              {pricingError ? <div style={{ fontSize: 12, color: '#b93800' }}>{pricingError}</div> : null}
+            </div>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Top Programs (30 días)</div>
+            <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#fafafa', textAlign: 'left' }}>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Program</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Tokens</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Costo (USD)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usageTopPrograms.slice(0, 15).map((r: any) => (
+                    <tr key={r.programId} style={{ borderTop: '1px solid #f0f0f0' }}>
+                      <td style={{ padding: 10, fontSize: 13 }}>{r.program?.name || r.programId}</td>
+                      <td style={{ padding: 10, fontSize: 13 }}>{r.totalTokens}</td>
+                      <td style={{ padding: 10, fontSize: 13 }}>
+                        {typeof r.costUsdKnown === 'number' ? `$${r.costUsdKnown.toFixed(4)}` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                  {usageTopPrograms.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} style={{ padding: 10, fontSize: 12, color: '#666' }}>
+                        Sin datos.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Top Conversaciones por tokens (30 días)</div>
+            <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#fafafa', textAlign: 'left' }}>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>conversationId</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Tokens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usageTopConversations.slice(0, 15).map((r: any) => (
+                    <tr key={r.conversationId} style={{ borderTop: '1px solid #f0f0f0' }}>
+                      <td style={{ padding: 10, fontSize: 12, fontFamily: 'monospace' }}>{r.conversationId}</td>
+                      <td style={{ padding: 10, fontSize: 13 }}>{r.totalTokens}</td>
+                    </tr>
+                  ))}
+                  {usageTopConversations.length === 0 ? (
+                    <tr>
+                      <td colSpan={2} style={{ padding: 10, fontSize: 12, color: '#666' }}>
+                        Sin datos.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       ) : null}
 
