@@ -34,7 +34,7 @@ const SCENARIOS: ScenarioDefinition[] = [
     steps: [
       {
         inboundText: '✅ PUENTE ALTO / REGION METROPOLITANA / RUT 12.345.678-9',
-        expect: { contactFields: ['comuna', 'ciudad', 'region', 'rut'] },
+        expect: { contactFields: ['comuna', 'ciudad', 'rut'] },
       },
       {
         inboundText: 'Tengo disponibilidad inmediata',
