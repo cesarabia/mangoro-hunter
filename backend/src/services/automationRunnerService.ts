@@ -3,7 +3,164 @@ import { prisma } from '../db/client';
 import { serializeJson } from '../utils/json';
 import { executeAgentResponse, ExecutorTransportMode } from './agent/commandExecutorService';
 import { runAgent } from './agent/agentRuntimeService';
-import { stripAccents } from './agent/tools';
+import { stableHash, stripAccents } from './agent/tools';
+
+type ProgramSummary = { id: string; name: string; slug: string };
+
+async function listActivePrograms(workspaceId: string): Promise<ProgramSummary[]> {
+  return prisma.program.findMany({
+    where: { workspaceId, isActive: true, archivedAt: null },
+    select: { id: true, name: true, slug: true },
+    orderBy: { name: 'asc' },
+  });
+}
+
+function normalizeLoose(value: string): string {
+  return stripAccents(String(value || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function resolveProgramChoice(inboundText: string, programs: ProgramSummary[]): ProgramSummary | null {
+  const normalized = normalizeLoose(inboundText);
+  if (!normalized) return null;
+
+  const numeric = normalized.match(/^(\d{1,2})\b/);
+  if (numeric?.[1]) {
+    const idx = parseInt(numeric[1], 10);
+    if (Number.isFinite(idx) && idx >= 1 && idx <= programs.length) return programs[idx - 1];
+  }
+
+  const slugMatches = programs.filter((p) => normalized.includes(normalizeLoose(p.slug)));
+  if (slugMatches.length === 1) return slugMatches[0];
+
+  const nameMatches = programs.filter((p) => normalized.includes(normalizeLoose(p.name)));
+  if (nameMatches.length === 1) return nameMatches[0];
+
+  return null;
+}
+
+async function maybeHandleProgramSelection(params: {
+  app: FastifyInstance;
+  workspaceId: string;
+  conversation: any;
+  inboundText: string | null;
+  inboundMessageId?: string | null;
+  windowStatus: string;
+  transportMode: ExecutorTransportMode;
+}): Promise<{ handled: boolean; selectedProgramId?: string | null }> {
+  if (!params.conversation) return { handled: false };
+  if (params.conversation.programId) return { handled: false };
+
+  const programsAll = await listActivePrograms(params.workspaceId);
+  const programs = params.conversation.isAdmin
+    ? programsAll
+    : programsAll.filter((p) => normalizeLoose(p.slug) !== 'admin');
+  if (programs.length === 0) return { handled: false };
+
+  // Admin conversations should never show a program menu; default to the "admin" program when present.
+  if (params.conversation.isAdmin) {
+    const adminProgram = programs.find((p) => normalizeLoose(p.slug) === 'admin');
+    if (adminProgram) {
+      await prisma.conversation.update({
+        where: { id: params.conversation.id },
+        data: { programId: adminProgram.id, updatedAt: new Date() },
+      });
+      params.conversation.programId = adminProgram.id;
+      return { handled: false, selectedProgramId: adminProgram.id };
+    }
+    return { handled: false };
+  }
+
+  if (programs.length === 1) {
+    await prisma.conversation.update({
+      where: { id: params.conversation.id },
+      data: { programId: programs[0].id, updatedAt: new Date() },
+    });
+    params.conversation.programId = programs[0].id;
+    return { handled: false, selectedProgramId: programs[0].id };
+  }
+
+  const inbound = String(params.inboundText || '').trim();
+  const choice = inbound ? resolveProgramChoice(inbound, programs) : null;
+  if (choice) {
+    await prisma.conversation.update({
+      where: { id: params.conversation.id },
+      data: { programId: choice.id, updatedAt: new Date() },
+    });
+    params.conversation.programId = choice.id;
+    return { handled: false, selectedProgramId: choice.id };
+  }
+
+  // If we can't resolve, ask a short menu and stop here.
+  const menuLines = programs.map((p, idx) => `${idx + 1}) ${p.name}`).join('\n');
+  const menuText =
+    `¿Sobre qué programa necesitas ayuda?\nResponde con el número:\n${menuLines}`.trim();
+
+  const agentRun = await prisma.agentRunLog.create({
+    data: {
+      workspaceId: params.workspaceId,
+      conversationId: params.conversation.id,
+      programId: null,
+      phoneLineId: params.conversation.phoneLineId || null,
+      eventType: 'PROGRAM_SELECTION',
+      status: 'RUNNING',
+      inputContextJson: serializeJson({
+        reason: 'programId_missing',
+        inboundMessageId: params.inboundMessageId || null,
+        inboundText: inbound || null,
+        programs: programs.map((p) => ({ id: p.id, name: p.name, slug: p.slug })),
+      }),
+      commandsJson: serializeJson({
+        agent: 'system_program_selector',
+        version: 1,
+        commands: [
+          {
+            command: 'SET_CONVERSATION_STAGE',
+            conversationId: params.conversation.id,
+            stage: 'PROGRAM_SELECTION',
+            reason: 'awaiting_program_choice',
+          },
+          {
+            command: 'SEND_MESSAGE',
+            conversationId: params.conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_TEXT',
+            text: menuText,
+            dedupeKey: `program_menu:${stableHash(`${params.conversation.id}:${menuText}`).slice(0, 12)}`,
+          },
+        ],
+      }),
+    },
+  });
+
+  await executeAgentResponse({
+    app: params.app,
+    workspaceId: params.workspaceId,
+    agentRunId: agentRun.id,
+    response: {
+      agent: 'system_program_selector',
+      version: 1,
+      commands: [
+        {
+          command: 'SET_CONVERSATION_STAGE',
+          conversationId: params.conversation.id,
+          stage: 'PROGRAM_SELECTION',
+          reason: 'awaiting_program_choice',
+        } as any,
+        {
+          command: 'SEND_MESSAGE',
+          conversationId: params.conversation.id,
+          channel: 'WHATSAPP',
+          type: 'SESSION_TEXT',
+          text: menuText,
+          dedupeKey: `program_menu:${stableHash(`${params.conversation.id}:${menuText}`).slice(0, 12)}`,
+        } as any,
+      ],
+    } as any,
+    transportMode: params.transportMode,
+  });
+
+  return { handled: true };
+}
 
 type ConditionRow = { field: string; op: string; value?: any };
 type ActionRow =
@@ -24,6 +181,43 @@ function normalize(value: string): string {
   return stripAccents(String(value || '')).toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function safeJsonParseArray(value: any): string[] | null {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map((v) => String(v));
+  } catch {
+    return null;
+  }
+}
+
+function parseTagList(raw: any): string[] {
+  if (!raw) return [];
+  const fromJson = safeJsonParseArray(raw);
+  const items = fromJson ?? String(raw).split(/[,\n]/g);
+  const out: string[] = [];
+  for (const item of items) {
+    const t = normalize(String(item));
+    if (!t) continue;
+    if (!out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+function parseBoolean(value: any): boolean | null {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value !== 0;
+  if (typeof value === 'string') {
+    const t = normalize(value);
+    if (['true', '1', 'si', 'sí', 'yes'].includes(t)) return true;
+    if (['false', '0', 'no'].includes(t)) return false;
+  }
+  return null;
+}
+
 function evaluateCondition(params: {
   condition: ConditionRow;
   conversation: any;
@@ -39,15 +233,38 @@ function evaluateCondition(params: {
   const getFieldValue = (): any => {
     if (field === 'conversation.status') return params.conversation.status;
     if (field === 'conversation.stage') return params.conversation.conversationStage;
+    if (field === 'conversation.stageTags') return parseTagList(params.conversation.stageTags);
     if (field === 'conversation.programId') return params.conversation.programId;
     if (field === 'conversation.phoneLineId') return params.conversation.phoneLineId;
     if (field === 'contact.noContactar') return Boolean(params.contact.noContact);
+    if (field === 'contact.hasCandidateName') {
+      const manual = String(params.contact.candidateNameManual || '').trim();
+      const detected = String(params.contact.candidateName || '').trim();
+      return Boolean(manual || detected);
+    }
+    if (field === 'contact.hasLocation') {
+      const comuna = String(params.contact.comuna || '').trim();
+      const ciudad = String(params.contact.ciudad || '').trim();
+      const region = String(params.contact.region || '').trim();
+      return Boolean(comuna || ciudad || region);
+    }
+    if (field === 'contact.hasRut') return Boolean(String(params.contact.rut || '').trim());
+    if (field === 'contact.hasEmail') return Boolean(String(params.contact.email || '').trim());
+    if (field === 'contact.hasAvailability') return Boolean(String(params.contact.availabilityText || '').trim());
+    if (field === 'contact.hasExperience') {
+      const years = (params.contact as any).experienceYears;
+      if (typeof years === 'number' && Number.isFinite(years) && years > 0) return true;
+      const terrain = (params.contact as any).terrainExperience;
+      if (typeof terrain === 'boolean') return true;
+      return false;
+    }
     if (field === 'whatsapp.windowStatus') return params.windowStatus;
     if (field === 'inbound.textContains') return normalize(params.inboundText || '');
     return undefined;
   };
 
   const fieldValue = getFieldValue();
+  if (typeof fieldValue === 'undefined') return false;
 
   if (field === 'inbound.textContains') {
     if (op !== 'contains') return false;
@@ -55,6 +272,37 @@ function evaluateCondition(params: {
     const needle = normalize(String(rawValue || ''));
     if (!needle) return false;
     return hay.includes(needle);
+  }
+
+  if (field === 'conversation.stageTags') {
+    const tags: string[] = Array.isArray(fieldValue) ? fieldValue : [];
+    const needle = normalize(String(rawValue || ''));
+    if (!needle) return false;
+    if (op === 'contains') return tags.includes(needle) || tags.some((t) => t.includes(needle));
+    if (op === 'equals') return tags.includes(needle);
+    if (op === 'not_equals') return !tags.includes(needle);
+    if (op === 'in') {
+      const list = Array.isArray(rawValue)
+        ? rawValue.map((v) => normalize(String(v)))
+        : String(rawValue || '')
+            .split(',')
+            .map((v) => normalize(v))
+            .filter(Boolean);
+      return list.some((v) => tags.includes(v));
+    }
+    return false;
+  }
+
+  if (
+    field === 'contact.noContactar' ||
+    field.startsWith('contact.has')
+  ) {
+    const lhs = parseBoolean(fieldValue);
+    const rhs = parseBoolean(rawValue);
+    if (lhs === null || rhs === null) return false;
+    if (op === 'equals') return lhs === rhs;
+    if (op === 'not_equals') return lhs !== rhs;
+    return false;
   }
 
   if (op === 'equals') {
@@ -96,6 +344,7 @@ export async function runAutomations(params: {
     include: { contact: true },
   });
   if (!conversation) return;
+  if (conversation.workspaceId !== params.workspaceId) return;
 
   const lastInbound = await prisma.message.findFirst({
     where: { conversationId: conversation.id, direction: 'INBOUND' },
@@ -108,6 +357,19 @@ export async function runAutomations(params: {
     const delta = Date.now() - new Date(lastInbound.timestamp).getTime();
     return delta <= WINDOW_MS ? 'IN_24H' : 'OUTSIDE_24H';
   })();
+
+  if (params.eventType === 'INBOUND_MESSAGE') {
+    const selection = await maybeHandleProgramSelection({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      conversation,
+      inboundText: params.inboundText || null,
+      inboundMessageId: params.inboundMessageId || null,
+      windowStatus,
+      transportMode: params.transportMode,
+    });
+    if (selection.handled) return;
+  }
 
   const rules = await prisma.automationRule.findMany({
     where: {
@@ -226,4 +488,3 @@ export async function runAutomations(params: {
     }
   }
 }
-

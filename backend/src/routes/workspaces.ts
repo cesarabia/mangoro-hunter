@@ -6,21 +6,6 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const userId = request.user?.userId as string | undefined;
     if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-    const isAdmin = request.user?.role === 'ADMIN';
-    if (isAdmin) {
-      const workspaces = await prisma.workspace.findMany({
-        where: { memberships: { some: { userId, archivedAt: null } } },
-        orderBy: { createdAt: 'asc' },
-        select: { id: true, name: true, isSandbox: true, createdAt: true },
-      });
-      return workspaces.map((w) => ({
-        id: w.id,
-        name: w.name,
-        isSandbox: w.isSandbox,
-        createdAt: w.createdAt.toISOString(),
-      }));
-    }
-
     const memberships = await prisma.membership.findMany({
       where: { userId, archivedAt: null },
       include: { workspace: true },
@@ -35,4 +20,3 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     }));
   });
 }
-

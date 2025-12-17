@@ -6,9 +6,10 @@ import { computeOutboundBlockReason } from './guardrails';
 import { stableHash, stripAccents } from './tools';
 import { sendWhatsAppTemplate, sendWhatsAppText, SendResult } from '../whatsappMessageService';
 import { attemptScheduleInterview, formatInterviewExactAddress } from '../interviewSchedulerService';
-import { getSystemConfig } from '../configService';
+import { getEffectiveOutboundAllowlist, getOutboundPolicy, getSystemConfig } from '../configService';
 import { sendAdminNotification } from '../adminNotificationService';
 import { getContactDisplayName } from '../../utils/contactDisplay';
+import { normalizeWhatsAppId } from '../../utils/whatsapp';
 
 export type ExecutorTransportMode = 'REAL' | 'NULL';
 
@@ -58,6 +59,25 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
   if (patterns.some((p) => lower.includes(normalizeForNameChecks(p)))) return true;
   if (/\b\d{1,2}:\d{2}\b/.test(lower)) return true;
   return false;
+}
+
+function safeOutboundBlockedReason(params: {
+  toWaId: string;
+  config: Awaited<ReturnType<typeof getSystemConfig>>;
+}): string | null {
+  const toWaId = String(params.toWaId || '').trim();
+  if (!toWaId) return 'SAFE_OUTBOUND_BLOCKED:UNKNOWN:INVALID_TO';
+  if (toWaId === 'sandbox') return null;
+
+  const policy = getOutboundPolicy(params.config);
+  if (policy === 'ALLOW_ALL') return null;
+  if (policy === 'BLOCK_ALL') return `SAFE_OUTBOUND_BLOCKED:${policy}:BLOCK_ALL`;
+
+  const normalized = normalizeWhatsAppId(toWaId);
+  if (!normalized) return `SAFE_OUTBOUND_BLOCKED:${policy}:INVALID_TO`;
+  const allowlist = getEffectiveOutboundAllowlist(params.config);
+  if (allowlist.includes(normalized)) return null;
+  return `SAFE_OUTBOUND_BLOCKED:${policy}:NOT_IN_ALLOWLIST`;
 }
 
 async function computeWhatsAppWindowStatus(conversationId: string): Promise<WhatsAppWindowStatus> {
@@ -457,6 +477,22 @@ export async function executeAgentResponse(params: {
         continue;
       }
 
+      const safetyBlock = safeOutboundBlockedReason({ toWaId, config });
+      if (safetyBlock) {
+        await logOutbound({
+          workspaceId: params.workspaceId,
+          conversationId: baseConversation.id,
+          agentRunId: params.agentRunId,
+          type: cmd.type,
+          templateName: cmd.type === 'TEMPLATE' ? cmd.templateName || null : null,
+          dedupeKey: cmd.dedupeKey,
+          textHash: payloadHash,
+          blockedReason: safetyBlock,
+        });
+        results.push({ ok: true, blocked: true, blockedReason: safetyBlock });
+        continue;
+      }
+
       const phoneNumberId = baseConversation.phoneLine?.waPhoneNumberId || null;
 
       let sendResult: SendResult = { success: true, messageId: `null-${Date.now()}` };
@@ -542,6 +578,8 @@ export async function executeAgentResponse(params: {
         app: params.app,
         eventType: cmd.eventType as any,
         contact,
+        workspaceId: baseConversation.workspaceId,
+        phoneLineId: baseConversation.phoneLineId,
         summary: cmd.text || `Evento: ${cmd.eventType} para ${displayName}`,
       });
       results.push({ ok: true });

@@ -45,7 +45,9 @@ import {
   DEFAULT_RECRUIT_JOB_SHEET,
   DEFAULT_RECRUIT_FAQ,
   getAdminWaIdAllowlist,
-  getTestWaIdAllowlist
+  getTestWaIdAllowlist,
+  DEFAULT_WHATSAPP_BASE_URL,
+  normalizeModelId
 } from '../services/configService';
 import { hashPassword } from '../services/passwordService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
@@ -61,6 +63,7 @@ import {
 } from '../services/workflowService';
 import fs from 'fs/promises';
 import path from 'path';
+import OpenAI from 'openai';
 
 export async function registerConfigRoutes(app: FastifyInstance) {
   const whatsappDefaults = {
@@ -421,7 +424,10 @@ export async function registerConfigRoutes(app: FastifyInstance) {
 
     const body = request.body as { openAiApiKey?: string | null; aiModel?: string | null };
     const updated = await executeUpdate(reply, async () => {
-      const cfg = await updateAiConfig(body?.openAiApiKey ?? null);
+      let cfg = await getSystemConfig();
+      if (typeof body?.openAiApiKey !== 'undefined') {
+        cfg = await updateAiConfig(body.openAiApiKey);
+      }
       if (typeof body?.aiModel !== 'undefined') {
         await updateAiModel(body.aiModel ?? null);
       }
@@ -433,6 +439,95 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       hasOpenAiKey: Boolean(fresh.openAiApiKey),
       aiModel: fresh.aiModel || DEFAULT_AI_MODEL
     };
+  });
+
+  app.post('/ai/test', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return reply.code(409).send({ error: 'Configuración no disponible. Ejecuta migraciones.' });
+    }
+    const apiKey = String(config.openAiApiKey || '').trim();
+    if (!apiKey) {
+      return reply.code(400).send({ error: 'OpenAI API Key no está configurada.' });
+    }
+
+    const model = normalizeModelId(config.aiModel || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+    const client = new OpenAI({ apiKey });
+    try {
+      const completion = await client.chat.completions.create({
+        model,
+        messages: [
+          { role: 'system', content: 'Eres un verificador de conectividad. Responde solo "OK".' },
+          { role: 'user', content: 'ping' },
+        ],
+        max_tokens: 5,
+        temperature: 0,
+      });
+      const text = completion.choices?.[0]?.message?.content?.trim() || '';
+      return { ok: true, model, sample: text || null };
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : String(err || 'Error');
+      request.log.warn({ err: message }, 'OpenAI test failed');
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post('/whatsapp/test', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const body = request.body as { phoneNumberId?: string | null };
+    const config = await loadConfigSafe(request);
+    if (!config) {
+      return reply.code(409).send({ error: 'Configuración no disponible. Ejecuta migraciones.' });
+    }
+    const token = String(config.whatsappToken || '').trim();
+    if (!token) {
+      return reply.code(400).send({ error: 'WhatsApp token no está configurado.' });
+    }
+
+    const baseUrl = String(config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL).trim().replace(/\/$/, '');
+    const requested = typeof body?.phoneNumberId === 'string' ? body.phoneNumberId.trim() : '';
+    let phoneNumberId = requested || String(config.whatsappPhoneId || '').trim();
+    if (!phoneNumberId) {
+      const workspaceId = String((request as any).workspaceId || 'default');
+      const line = await prisma.phoneLine.findFirst({
+        where: { workspaceId, archivedAt: null, isActive: true },
+        orderBy: { createdAt: 'asc' },
+        select: { waPhoneNumberId: true },
+      });
+      phoneNumberId = String(line?.waPhoneNumberId || '').trim();
+    }
+    if (!phoneNumberId) {
+      return reply.code(400).send({ error: 'No se pudo resolver phone_number_id para test.' });
+    }
+
+    try {
+      const url = `${baseUrl}/${phoneNumberId}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const raw = await res.text();
+      if (!res.ok) {
+        return reply.code(400).send({ error: raw || `HTTP ${res.status}` });
+      }
+      let parsed: any = null;
+      try {
+        parsed = raw ? JSON.parse(raw) : null;
+      } catch {
+        parsed = raw;
+      }
+      const displayPhoneNumber = parsed?.display_phone_number || null;
+      const verifiedName = parsed?.verified_name || parsed?.name || null;
+      return { ok: true, phoneNumberId, displayPhoneNumber, verifiedName };
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : String(err || 'Error');
+      request.log.warn({ err: message }, 'WhatsApp test failed');
+      return reply.code(400).send({ error: message });
+    }
   });
 
   app.get('/ai-prompt', { preValidation: [app.authenticate] }, async (request, reply) => {
@@ -1053,18 +1148,21 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     }
 
     // Log conversation for traceability
+    const workspaceId = 'default';
     const contact = await prisma.contact.upsert({
-      where: { waId: targetWaId },
+      where: { workspaceId_waId: { workspaceId, waId: targetWaId } },
       update: { phone: targetWaId },
-      create: { waId: targetWaId, phone: targetWaId }
+      create: { workspaceId, waId: targetWaId, phone: targetWaId }
     });
     let conversation = await prisma.conversation.findFirst({
-      where: { contactId: contact.id, isAdmin: false },
+      where: { workspaceId, phoneLineId: 'default', contactId: contact.id, isAdmin: false },
       orderBy: { updatedAt: 'desc' }
     });
     if (!conversation) {
       conversation = await prisma.conversation.create({
         data: {
+          workspaceId,
+          phoneLineId: 'default',
           contactId: contact.id,
           status: 'NEW',
           channel: 'whatsapp',
@@ -1467,5 +1565,8 @@ export async function registerConfigRoutes(app: FastifyInstance) {
 }
 
 function isAdmin(request: any): boolean {
-  return request.user?.role === 'ADMIN';
+  if (request.user?.role === 'ADMIN') return true;
+  if (request.isWorkspaceAdmin === true) return true;
+  const role = String(request.workspaceRole || '').toUpperCase();
+  return role === 'OWNER' || role === 'ADMIN';
 }

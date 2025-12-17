@@ -21,6 +21,8 @@ import { registerUserRoutes } from './routes/users';
 import { registerUsageRoutes } from './routes/usage';
 import { registerReleaseNotesRoutes } from './routes/releaseNotes';
 import { registerCopilotRoutes } from './routes/copilot';
+import { registerReviewPackRoutes } from './routes/reviewPack';
+import { isWorkspaceAdmin, resolveWorkspaceAccess } from './services/workspaceAuthService';
 
 export async function buildServer() {
   const app = Fastify({ logger: true });
@@ -32,6 +34,18 @@ export async function buildServer() {
   app.decorate('authenticate', async function (request: any, reply: any) {
     try {
       await request.jwtVerify();
+      try {
+        const access = await resolveWorkspaceAccess(request);
+        request.workspaceAccess = access;
+        request.workspaceId = access.workspaceId;
+        request.workspaceRole = access.role;
+        request.isWorkspaceAdmin = isWorkspaceAdmin(request, access);
+      } catch {
+        request.workspaceAccess = null;
+        request.workspaceId = 'default';
+        request.workspaceRole = null;
+        request.isWorkspaceAdmin = request.user?.role === 'ADMIN';
+      }
     } catch (err) {
       reply.code(401).send({ error: 'Unauthorized' });
     }
@@ -55,6 +69,7 @@ export async function buildServer() {
   app.register(registerUsageRoutes, { prefix: '/api/usage' });
   app.register(registerReleaseNotesRoutes, { prefix: '/api/release-notes' });
   app.register(registerCopilotRoutes, { prefix: '/api/copilot' });
+  app.register(registerReviewPackRoutes, { prefix: '/api/review-pack' });
   app.register(registerAgendaRoutes, { prefix: '/api/agenda' });
   app.register(registerSimulationRoutes, { prefix: '/api/simulate' });
   app.register(registerMessageRoutes, { prefix: '/api/messages' });

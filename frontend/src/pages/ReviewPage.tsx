@@ -12,6 +12,7 @@ type ScenarioResult = {
   startedAt?: string;
   finishedAt?: string;
   error?: string;
+  failedAssertions?: string[];
 };
 
 type ReleaseNotes = {
@@ -72,6 +73,10 @@ export const ReviewPage: React.FC<{
   const [scenarios, setScenarios] = useState<any[]>([]);
   const [scenarioResults, setScenarioResults] = useState<ScenarioResult[]>([]);
   const [runningScenarios, setRunningScenarios] = useState(false);
+
+  const [reviewPackLoading, setReviewPackLoading] = useState(false);
+  const [reviewPackError, setReviewPackError] = useState<string | null>(null);
+  const [reviewPackStatus, setReviewPackStatus] = useState<string | null>(null);
 
   const allowedNumbers = useMemo(() => new Set(['56982345846', '56994830202']), []);
 
@@ -254,13 +259,22 @@ export const ReviewPage: React.FC<{
       for (const s of list) {
         try {
           const res = await apiClient.post(`/api/simulate/scenario/${s.id}`, { sanitizePii: true });
+          const steps = Array.isArray(res?.steps) ? res.steps : [];
+          const failedAssertions = steps
+            .flatMap((st: any) =>
+              (Array.isArray(st?.assertions) ? st.assertions : [])
+                .filter((a: any) => a && a.ok === false)
+                .map((a: any) => `Paso ${st?.step || '?'}: ${a.message || 'assert falló'}`)
+            )
+            .slice(0, 8);
           results.push({
             id: s.id,
             name: s.name || s.id,
             ok: Boolean(res?.ok),
             sessionId: res?.sessionId,
             startedAt: res?.startedAt,
-            finishedAt: res?.finishedAt
+            finishedAt: res?.finishedAt,
+            failedAssertions: failedAssertions.length > 0 ? failedAssertions : undefined,
           });
         } catch (err: any) {
           results.push({ id: s.id, name: s.name || s.id, ok: false, error: err.message || 'Error al ejecutar' });
@@ -271,6 +285,44 @@ export const ReviewPage: React.FC<{
       await refreshLogs();
     } finally {
       setRunningScenarios(false);
+    }
+  };
+
+  const downloadReviewPack = async () => {
+    setReviewPackLoading(true);
+    setReviewPackError(null);
+    setReviewPackStatus(null);
+    try {
+      const token = localStorage.getItem('token');
+      const workspaceId = localStorage.getItem('workspaceId') || 'default';
+      if (!token) throw new Error('No hay sesión.');
+
+      const res = await fetch('/api/review-pack/', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-Workspace-Id': workspaceId,
+        },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const dispo = res.headers.get('Content-Disposition') || '';
+      const match = dispo.match(/filename=\"?([^\";]+)\"?/i);
+      const filename = match?.[1] || `review-pack-${workspaceId}.zip`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setReviewPackStatus(`Descargado: ${filename}`);
+    } catch (err: any) {
+      setReviewPackError(err.message || 'No se pudo descargar el Review Pack');
+    } finally {
+      setReviewPackLoading(false);
     }
   };
 
@@ -771,6 +823,26 @@ export const ReviewPage: React.FC<{
             </div>
           </div>
 
+          <div style={{ marginTop: 14, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ fontWeight: 900 }}>Review Pack (zip)</div>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  Descarga un paquete con docs + snapshots de logs + escenarios (sin terminal).
+                </div>
+              </div>
+              <button
+                onClick={() => downloadReviewPack().catch(() => {})}
+                disabled={reviewPackLoading}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12 }}
+              >
+                {reviewPackLoading ? 'Generando…' : 'Download Review Pack'}
+              </button>
+            </div>
+            {reviewPackStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{reviewPackStatus}</div> : null}
+            {reviewPackError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{reviewPackError}</div> : null}
+          </div>
+
           <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
             <div style={{ fontWeight: 800, marginBottom: 10 }}>Checklist (click-only)</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 10, alignItems: 'center' }}>
@@ -866,6 +938,13 @@ export const ReviewPage: React.FC<{
                         </div>
                       ) : null}
                       {r.error ? <div style={{ color: '#b93800' }}>{r.error}</div> : null}
+                      {!r.ok && r.failedAssertions && r.failedAssertions.length > 0 ? (
+                        <div style={{ marginTop: 6, color: '#b93800' }}>
+                          {r.failedAssertions.map((a, idx) => (
+                            <div key={`${r.id}-fa-${idx}`}>• {a}</div>
+                          ))}
+                        </div>
+                      ) : null}
                       {r.startedAt ? <div>startedAt: {r.startedAt}</div> : null}
                       {r.finishedAt ? <div>finishedAt: {r.finishedAt}</div> : null}
                     </div>

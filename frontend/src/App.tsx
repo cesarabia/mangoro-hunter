@@ -28,7 +28,7 @@ export const App: React.FC = () => {
   const [hydrated, setHydrated] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [view, setView] = useState<View>('inbox');
-  const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string; isSandbox?: boolean }>>([]);
+  const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string; isSandbox?: boolean; role?: string | null }>>([]);
   const [workspaceId, setWorkspaceId] = useState<string>('default');
   const [outboundPolicy, setOutboundPolicy] = useState<string | null>(null);
   const [versionInfo, setVersionInfo] = useState<any | null>(null);
@@ -58,7 +58,11 @@ export const App: React.FC = () => {
   }, []);
 
   const userRole = decodeUserRole(token);
-  const isAdmin = userRole === 'ADMIN';
+  const workspaceRole = useMemo(() => {
+    const found = workspaces.find((w) => String(w.id) === String(workspaceId));
+    return found?.role || null;
+  }, [workspaces, workspaceId]);
+  const isAdmin = userRole === 'ADMIN' || ['OWNER', 'ADMIN'].includes(String(workspaceRole || '').toUpperCase());
 
   useEffect(() => {
     if ((view === 'config' || view === 'agenda' || view === 'simulator' || view === 'review') && !isAdmin) {
@@ -268,7 +272,7 @@ const Layout: React.FC<{
   setView: (v: View) => void;
   onLogout: () => void;
   isAdmin: boolean;
-  workspaces: Array<{ id: string; name: string; isSandbox?: boolean }>;
+  workspaces: Array<{ id: string; name: string; isSandbox?: boolean; role?: string | null }>;
   workspaceId: string;
   setWorkspaceId: (id: string) => void;
   outboundPolicy?: string | null;

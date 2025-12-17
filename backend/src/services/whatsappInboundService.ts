@@ -75,50 +75,63 @@ interface InboundMessageParams {
 
 const UPLOADS_BASE = path.join(__dirname, "..", "uploads");
 
-async function resolvePhoneLineId(params: {
-  workspaceId: string;
+async function resolveInboundRouting(params: {
   waPhoneNumberId?: string | null;
-}): Promise<string> {
+}): Promise<{ workspaceId: string; phoneLineId: string } | null> {
   const raw = String(params.waPhoneNumberId || "").trim();
-  if (!raw) return "default";
-  const line = await prisma.phoneLine.findFirst({
-    where: { workspaceId: params.workspaceId, waPhoneNumberId: raw, archivedAt: null },
-    select: { id: true },
-  }).catch(() => null);
-  return line?.id || "default";
+  // Simulation/internal calls may omit phone_number_id: fall back to default workspace/line.
+  if (!raw) return { workspaceId: "default", phoneLineId: "default" };
+
+  const matches = await prisma.phoneLine
+    .findMany({
+      where: {
+        waPhoneNumberId: raw,
+        archivedAt: null,
+        isActive: true,
+        workspace: { isSandbox: false },
+      },
+      select: { id: true, workspaceId: true },
+      take: 3,
+    })
+    .catch(() => []);
+
+  if (matches.length === 1) {
+    return { workspaceId: matches[0].workspaceId, phoneLineId: matches[0].id };
+  }
+
+  return null;
 }
 
-async function mergeOrCreateContact(waId: string, preferredId?: string) {
-  const candidates = buildWaIdCandidates(waId);
+async function mergeOrCreateContact(params: { workspaceId: string; waId: string; preferredId?: string }) {
+  const candidates = buildWaIdCandidates(params.waId);
   let contacts = await prisma.contact.findMany({
     where: {
-      OR: [
-        { waId: { in: candidates } },
-        { phone: { in: candidates } },
-      ],
+      workspaceId: params.workspaceId,
+      OR: [{ waId: { in: candidates } }, { phone: { in: candidates } }],
     },
     orderBy: { createdAt: "asc" },
   });
-  if (preferredId && !contacts.find((c) => c.id === preferredId)) {
-    const preferred = await prisma.contact.findUnique({ where: { id: preferredId } });
+  if (params.preferredId && !contacts.find((c) => c.id === params.preferredId)) {
+    const preferred = await prisma.contact.findUnique({ where: { id: params.preferredId } });
     if (preferred) contacts = [preferred, ...contacts];
   }
   if (contacts.length === 0) {
     return prisma.contact.create({
       data: {
-        waId: normalizeWhatsAppId(waId),
-        phone: waId,
+        workspaceId: params.workspaceId,
+        waId: normalizeWhatsAppId(params.waId),
+        phone: params.waId,
       },
     });
   }
   let primary =
-    contacts.find((c) => c.id === preferredId) ||
+    contacts.find((c) => c.id === params.preferredId) ||
     contacts.find((c) => (c as any).candidateNameManual) ||
     contacts.find((c) => c.candidateName) ||
     contacts[0];
   const secondaries = contacts.filter((c) => c.id !== primary.id);
   const canonicalWaId =
-    normalizeWhatsAppId(primary.waId || primary.phone || waId) || primary.waId || waId;
+    normalizeWhatsAppId(primary.waId || primary.phone || params.waId) || primary.waId || params.waId;
   const canonicalPhone = primary.phone || (canonicalWaId ? `+${canonicalWaId}` : null);
 
   await prisma.$transaction(async (tx) => {
@@ -152,7 +165,7 @@ async function mergeOrCreateContact(waId: string, preferredId?: string) {
       }
 
       await tx.conversation.updateMany({
-        where: { contactId: sec.id },
+        where: { contactId: sec.id, workspaceId: params.workspaceId },
         data: { contactId: primary.id },
       });
       await tx.application.updateMany({
@@ -190,8 +203,9 @@ async function mergeOrCreateContact(waId: string, preferredId?: string) {
   if (refreshed) return refreshed;
   return prisma.contact.create({
     data: {
-      waId: normalizeWhatsAppId(waId),
-      phone: waId,
+      workspaceId: params.workspaceId,
+      waId: normalizeWhatsAppId(params.waId),
+      phone: params.waId,
     },
   });
 }
@@ -201,11 +215,26 @@ export async function handleInboundWhatsAppMessage(
   params: InboundMessageParams,
 ): Promise<{ conversationId: string }> {
   const config = params.config ?? (await getSystemConfig());
-  const workspaceId = "default";
-  const phoneLineId = await resolvePhoneLineId({
-    workspaceId,
-    waPhoneNumberId: params.waPhoneNumberId,
-  });
+  const routing = await resolveInboundRouting({ waPhoneNumberId: params.waPhoneNumberId });
+  if (!routing) {
+    app.log.error(
+      {
+        waPhoneNumberId: params.waPhoneNumberId || null,
+        waMessageId: params.waMessageId || null,
+        from: params.from,
+      },
+      'Inbound WhatsApp no pudo resolverse a PhoneLine (phone_number_id desconocido).',
+    );
+    return { conversationId: '' };
+  }
+  const { workspaceId, phoneLineId } = routing;
+  const phoneLine = await prisma.phoneLine
+    .findFirst({
+      where: { id: phoneLineId, workspaceId, archivedAt: null },
+      select: { defaultProgramId: true },
+    })
+    .catch(() => null);
+  const defaultProgramId = phoneLine?.defaultProgramId || null;
   const waId = normalizeWhatsAppId(params.from) || params.from;
   const normalizedSender = normalizeWhatsAppId(waId);
   const adminAllowlist = getAdminWaIdAllowlist(config);
@@ -227,7 +256,7 @@ export async function handleInboundWhatsAppMessage(
   }
 
   if (isAdminSender && normalizedSender) {
-    const adminThread = await ensureAdminConversation(waId, normalizedSender, phoneLineId);
+    const adminThread = await ensureAdminConversation({ workspaceId, waId, normalizedAdmin: normalizedSender, phoneLineId });
     const baseText = buildInboundText(params.text, params.media);
     let adminMessage;
     try {
@@ -524,7 +553,7 @@ export async function handleInboundWhatsAppMessage(
   return { conversationId: adminThread.conversation.id };
 }
 
-const contact = (await mergeOrCreateContact(waId))!;
+const contact = (await mergeOrCreateContact({ workspaceId, waId }))!;
 await maybeUpdateContactName(contact, params.profileName, params.text, config);
 
   let conversation = await prisma.conversation.findFirst({
@@ -537,6 +566,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
       data: {
         workspaceId,
         phoneLineId,
+        programId: defaultProgramId,
         contactId: contact.id,
         status: "NEW",
         channel: "whatsapp",
@@ -634,7 +664,15 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
           : "Recibí tu archivo, pero no pude leer el adjunto. ¿Puedes reenviarlo en PDF legible o escribir en un mensaje: nombre y apellido, comuna/ciudad, RUT, experiencia y disponibilidad?";
       let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
       if (contact.waId) {
-        sendResultRaw = await sendWhatsAppText(contact.waId, question);
+        const line = await prisma.phoneLine
+          .findUnique({
+            where: { id: conversation.phoneLineId },
+            select: { waPhoneNumberId: true },
+          })
+          .catch(() => null);
+        sendResultRaw = await sendWhatsAppText(contact.waId, question, {
+          phoneNumberId: line?.waPhoneNumberId || null,
+        });
       }
       const normalizedSendResult = {
         success: sendResultRaw.success,
@@ -699,7 +737,10 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
   });
 
   if (!isAdminSender && isAdminCommandText(params.text)) {
-    await sendWhatsAppText(waId, "Comando no reconocido");
+    const line = await prisma.phoneLine
+      .findUnique({ where: { id: conversation.phoneLineId }, select: { waPhoneNumberId: true } })
+      .catch(() => null);
+    await sendWhatsAppText(waId, "Comando no reconocido", { phoneNumberId: line?.waPhoneNumberId || null });
   }
 
   return { conversationId: conversation.id };
@@ -726,6 +767,10 @@ export async function maybeSendAutoReply(
 
     if (!conversation || conversation.isAdmin) return;
     if (conversation.contact?.noContact) return;
+    const phoneLine = await prisma.phoneLine
+      .findUnique({ where: { id: conversation.phoneLineId }, select: { id: true, waPhoneNumberId: true } })
+      .catch(() => null);
+    const phoneNumberId = phoneLine?.waPhoneNumberId || null;
 
     const mode = conversation.aiMode || "RECRUIT";
     if (mode === "OFF" || conversation.aiPaused) return;
@@ -837,7 +882,7 @@ export async function maybeSendAutoReply(
         if (replyText) {
           let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
           if (waId) {
-            sendResultRaw = await sendWhatsAppText(waId, replyText);
+            sendResultRaw = await sendWhatsAppText(waId, replyText, { phoneNumberId });
           }
           const normalizedSendResult = {
             success: sendResultRaw.success,
@@ -890,7 +935,7 @@ export async function maybeSendAutoReply(
           error: "waId is missing",
         };
         if (waId) {
-          sendResultRaw = await sendWhatsAppText(waId, closingText);
+          sendResultRaw = await sendWhatsAppText(waId, closingText, { phoneNumberId });
         }
 
         const normalizedSendResult = {
@@ -968,7 +1013,7 @@ export async function maybeSendAutoReply(
 
         let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
         if (waId) {
-          sendResultRaw = await sendWhatsAppText(waId, replyText);
+          sendResultRaw = await sendWhatsAppText(waId, replyText, { phoneNumberId });
         }
         const normalizedSendResult = {
           success: sendResultRaw.success,
@@ -1002,7 +1047,7 @@ export async function maybeSendAutoReply(
             "Cuando quieras retomarla, escríbeme y dime 2 alternativas de día y hora.";
           let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
           if (waId) {
-            sendResultRaw = await sendWhatsAppText(waId, replyText);
+            sendResultRaw = await sendWhatsAppText(waId, replyText, { phoneNumberId });
           }
           const normalizedSendResult = {
             success: sendResultRaw.success,
@@ -1041,7 +1086,7 @@ export async function maybeSendAutoReply(
             "Si prefieres, también puedo dejar la coordinación en pausa.";
           let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
           if (waId) {
-            sendResultRaw = await sendWhatsAppText(waId, replyText);
+            sendResultRaw = await sendWhatsAppText(waId, replyText, { phoneNumberId });
           }
           const normalizedSendResult = {
             success: sendResultRaw.success,
@@ -1185,7 +1230,7 @@ export async function maybeSendAutoReply(
 
       let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
       if (waId) {
-        sendResultRaw = await sendWhatsAppText(waId, replyText);
+        sendResultRaw = await sendWhatsAppText(waId, replyText, { phoneNumberId });
       }
       const normalizedSendResult = {
         success: sendResultRaw.success,
@@ -1293,7 +1338,7 @@ export async function maybeSendAutoReply(
       error: "waId is missing",
     };
     if (waId) {
-      sendResultRaw = await sendWhatsAppText(waId, suggestionText);
+      sendResultRaw = await sendWhatsAppText(waId, suggestionText, { phoneNumberId });
     }
 
     const normalizedSendResult = {
@@ -1433,6 +1478,12 @@ async function maybeHandleContextualAttachmentReply(params: {
   const { app, conversation, conversationId, waId, mode, extractedText } = params;
   const cleaned = normalizeExtractedText(extractedText || "");
   if (!cleaned) return false;
+  const phoneLine = conversation?.phoneLineId
+    ? await prisma.phoneLine
+        .findUnique({ where: { id: conversation.phoneLineId }, select: { waPhoneNumberId: true } })
+        .catch(() => null)
+    : null;
+  const phoneNumberId = phoneLine?.waPhoneNumberId || null;
 
   if (mode === "RECRUIT") {
     const inboundMessages = (conversation.messages || []).filter((m: any) => m.direction === "INBOUND");
@@ -1486,7 +1537,7 @@ async function maybeHandleContextualAttachmentReply(params: {
 
     let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
     if (waId) {
-      sendResultRaw = await sendWhatsAppText(waId, replyText);
+      sendResultRaw = await sendWhatsAppText(waId, replyText, { phoneNumberId });
     }
     const normalizedSendResult = {
       success: sendResultRaw.success,
@@ -1552,7 +1603,7 @@ async function maybeHandleContextualAttachmentReply(params: {
 
     let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
     if (waId) {
-      sendResultRaw = await sendWhatsAppText(waId, replyText);
+      sendResultRaw = await sendWhatsAppText(waId, replyText, { phoneNumberId });
     }
     const normalizedSendResult = {
       success: sendResultRaw.success,
@@ -1580,7 +1631,7 @@ async function maybeHandleContextualAttachmentReply(params: {
 
     let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
     if (waId) {
-      sendResultRaw = await sendWhatsAppText(waId, replyText);
+      sendResultRaw = await sendWhatsAppText(waId, replyText, { phoneNumberId });
     }
     const normalizedSendResult = {
       success: sendResultRaw.success,
@@ -3659,10 +3710,22 @@ async function executePendingAction(params: {
   pendingAction: AdminPendingAction;
 }): Promise<boolean> {
   const { pendingAction, app, adminConversationId, adminWaId } = params;
+  const adminConversation = await prisma.conversation
+    .findUnique({
+      where: { id: adminConversationId },
+      select: {
+        workspaceId: true,
+        phoneLine: { select: { waPhoneNumberId: true } },
+      },
+    })
+    .catch(() => null);
+  const workspaceId = adminConversation?.workspaceId || "default";
+  const adminPhoneNumberId = adminConversation?.phoneLine?.waPhoneNumberId || null;
   if (pendingAction.targetWaId && pendingAction.type !== "reactivate") {
     const candidates = buildWaIdCandidates(pendingAction.targetWaId);
     const contact = await prisma.contact.findFirst({
       where: {
+        workspaceId,
         OR: [
           { waId: { in: candidates } },
           { phone: { in: candidates } },
@@ -3695,7 +3758,19 @@ async function executePendingAction(params: {
               includeMessages: false,
             }))?.id ||
             null;
-          const sendResult = await sendWhatsAppText(pendingAction.targetWaId, simpleDraft);
+          const targetPhoneNumberId = targetConvo
+            ? (
+                await prisma.conversation
+                  .findUnique({
+                    where: { id: targetConvo },
+                    select: { phoneLine: { select: { waPhoneNumberId: true } } },
+                  })
+                  .catch(() => null)
+              )?.phoneLine?.waPhoneNumberId || null
+            : null;
+          const sendResult = await sendWhatsAppText(pendingAction.targetWaId, simpleDraft, {
+            phoneNumberId: targetPhoneNumberId || adminPhoneNumberId,
+          });
           if (sendResult.success && targetConvo) {
             await prisma.message.create({
               data: {
@@ -3728,11 +3803,12 @@ async function executePendingAction(params: {
         sendTemplateNow: true,
         variables: pendingAction.variables,
         templateNameOverride: pendingAction.templateName,
+        workspaceId,
       });
       const success = result.sendResult?.success;
       if (success) {
         await prisma.conversation.updateMany({
-          where: { isAdmin: true },
+          where: { isAdmin: true, workspaceId },
           data: { adminLastCandidateWaId: pendingAction.targetWaId },
         });
         await saveAdminPendingAction(adminConversationId, null);
@@ -3766,7 +3842,19 @@ async function executePendingAction(params: {
   }
   if (pendingAction.type === "send_message") {
     try {
-      const sendResult = await sendWhatsAppText(pendingAction.targetWaId, pendingAction.text);
+      const targetPhoneNumberId = pendingAction.relatedConversationId
+        ? (
+            await prisma.conversation
+              .findUnique({
+                where: { id: pendingAction.relatedConversationId },
+                select: { phoneLine: { select: { waPhoneNumberId: true } } },
+              })
+              .catch(() => null)
+          )?.phoneLine?.waPhoneNumberId || null
+        : null;
+      const sendResult = await sendWhatsAppText(pendingAction.targetWaId, pendingAction.text, {
+        phoneNumberId: targetPhoneNumberId || adminPhoneNumberId,
+      });
       if (sendResult.success) {
         if (pendingAction.relatedConversationId) {
           await prisma.message.create({
@@ -4767,9 +4855,11 @@ async function maybeHandleOptIn(
   if (!contact?.noContact) return false;
   if (!text || !isOptInText(text)) return false;
   try {
+    const workspaceId = String(conversation?.workspaceId || contact?.workspaceId || "default");
     const candidates = buildWaIdCandidates(contact.waId || contact.phone);
     const contacts = await prisma.contact.findMany({
       where: {
+        workspaceId,
         OR: [
           { waId: { in: candidates } },
           { phone: { in: candidates } },
@@ -4787,7 +4877,7 @@ async function maybeHandleOptIn(
       data: { noContact: false, noContactAt: null, noContactReason: null },
     });
     await prisma.conversation.updateMany({
-      where: { contactId: { in: contactIds } },
+      where: { workspaceId, contactId: { in: contactIds } },
       data: { aiPaused: false },
     });
     await prisma.message.create({
@@ -4805,7 +4895,12 @@ async function maybeHandleOptIn(
     let sendResult: SendResult = { success: false, error: "Missing waId" };
     try {
       if (contact.waId) {
-        sendResult = await sendWhatsAppText(contact.waId, ackText);
+        const line = conversation?.phoneLineId
+          ? await prisma.phoneLine
+              .findUnique({ where: { id: conversation.phoneLineId }, select: { waPhoneNumberId: true } })
+              .catch(() => null)
+          : null;
+        sendResult = await sendWhatsAppText(contact.waId, ackText, { phoneNumberId: line?.waPhoneNumberId || null });
       }
     } catch (err: any) {
       sendResult = { success: false, error: err?.message || "Unknown error" };
@@ -4836,9 +4931,11 @@ async function maybeHandleOptOut(
 ): Promise<boolean> {
   if (!text || !isOptOutText(text)) return false;
   try {
+    const workspaceId = String(conversation?.workspaceId || contact?.workspaceId || "default");
     const candidates = buildWaIdCandidates(contact.waId || contact.phone);
     const contacts = await prisma.contact.findMany({
       where: {
+        workspaceId,
         OR: [
           { waId: { in: candidates } },
           { phone: { in: candidates } },
@@ -4858,11 +4955,18 @@ async function maybeHandleOptOut(
       data: { noContact: true, noContactAt: now, noContactReason: reason },
     });
     await prisma.conversation.updateMany({
-      where: { contactId: { in: contactIds } },
+      where: { workspaceId, contactId: { in: contactIds } },
       data: { aiPaused: true },
     });
     if (contact.waId) {
-      await sendWhatsAppText(contact.waId, "Entendido, detendremos los mensajes.");
+      const line = conversation?.phoneLineId
+        ? await prisma.phoneLine
+            .findUnique({ where: { id: conversation.phoneLineId }, select: { waPhoneNumberId: true } })
+            .catch(() => null)
+        : null;
+      await sendWhatsAppText(contact.waId, "Entendido, detendremos los mensajes.", {
+        phoneNumberId: line?.waPhoneNumberId || null,
+      });
     }
     await logAdminMessage(
       conversation.id,
@@ -4936,37 +5040,55 @@ async function detectAdminTemplateIntent(
   };
 }
 
-async function ensureAdminConversation(waId: string, normalizedAdmin: string, phoneLineId: string) {
+async function ensureAdminConversation(params: {
+  workspaceId: string;
+  waId: string;
+  normalizedAdmin: string;
+  phoneLineId: string;
+}) {
   let contact = await prisma.contact.findFirst({
     where: {
-      OR: [{ waId: normalizedAdmin }, { phone: normalizedAdmin }, { phone: `+${normalizedAdmin}` }],
+      workspaceId: params.workspaceId,
+      OR: [
+        { waId: params.normalizedAdmin },
+        { phone: params.normalizedAdmin },
+        { phone: `+${params.normalizedAdmin}` },
+      ],
     },
   });
   if (!contact) {
     contact = await prisma.contact.create({
       data: {
-        waId: normalizedAdmin,
-        phone: `+${normalizedAdmin}`,
+        workspaceId: params.workspaceId,
+        waId: params.normalizedAdmin,
+        phone: `+${params.normalizedAdmin}`,
         name: "Administrador",
       },
     });
   } else if (!contact.waId) {
     contact = await prisma.contact.update({
       where: { id: contact.id },
-      data: { waId: normalizedAdmin },
+      data: { waId: params.normalizedAdmin },
     });
   }
 
   let conversation = await prisma.conversation.findFirst({
-    where: { contactId: contact.id, isAdmin: true, phoneLineId },
+    where: { contactId: contact.id, isAdmin: true, workspaceId: params.workspaceId, phoneLineId: params.phoneLineId },
     orderBy: { updatedAt: "desc" },
   });
 
   if (!conversation) {
+    const adminProgram = await prisma.program
+      .findFirst({
+        where: { workspaceId: params.workspaceId, slug: "admin", archivedAt: null },
+        select: { id: true },
+      })
+      .catch(() => null);
     conversation = await prisma.conversation.create({
       data: {
-        workspaceId: "default",
-        phoneLineId,
+        workspaceId: params.workspaceId,
+        phoneLineId: params.phoneLineId,
+        programId: adminProgram?.id || null,
         contactId: contact.id,
         status: "OPEN",
         channel: "admin",
@@ -5008,7 +5130,14 @@ async function sendAdminReply(
   waId: string,
   text: string,
 ) {
-  let sendResultRaw: SendResult = await sendWhatsAppText(waId, text);
+  const convo = await prisma.conversation
+    .findUnique({
+      where: { id: conversationId },
+      select: { phoneLine: { select: { id: true, waPhoneNumberId: true } } },
+    })
+    .catch(() => null);
+  const phoneNumberId = convo?.phoneLine?.waPhoneNumberId || null;
+  let sendResultRaw: SendResult = await sendWhatsAppText(waId, text, { phoneNumberId });
   const normalizedSendResult = {
     success: sendResultRaw.success,
     messageId:
@@ -5025,4 +5154,9 @@ async function sendAdminReply(
     adminReply: true,
     sendResult: normalizedSendResult,
   });
+  if (sendResultRaw.success && convo?.phoneLine?.id) {
+    await prisma.phoneLine
+      .update({ where: { id: convo.phoneLine.id }, data: { lastOutboundAt: new Date() } })
+      .catch(() => {});
+  }
 }

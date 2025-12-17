@@ -13,7 +13,7 @@ import {
 } from '../services/interviewSchedulerService';
 import { sendAdminNotification } from '../services/adminNotificationService';
 import { getContactDisplayName } from '../utils/contactDisplay';
-import { resolveWorkspaceAccess } from '../services/workspaceAuthService';
+import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -63,8 +63,6 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
     return contact;
   }
-
-  const isAdmin = (request: any): boolean => request.user?.role === 'ADMIN';
 
   const normalizeManualName = (value: unknown): string | null | undefined => {
     if (typeof value === 'undefined') return undefined;
@@ -159,8 +157,13 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.post('/create-and-send', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
     const body = request.body as {
       phoneE164?: string;
+      phoneLineId?: string | null;
       mode?: string | null;
       status?: string | null;
       sendTemplateNow?: boolean;
@@ -179,7 +182,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         status: body.status,
         sendTemplateNow: body.sendTemplateNow !== false,
         variables: body.variables,
-        templateNameOverride: body.templateName ?? null
+        templateNameOverride: body.templateName ?? null,
+        workspaceId: access.workspaceId,
+        phoneLineId: typeof body.phoneLineId === 'string' ? body.phoneLineId.trim() : body.phoneLineId ?? null
       });
 
       if (body.sendTemplateNow !== false && result.sendResult && !result.sendResult.success) {
@@ -242,10 +247,10 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.patch('/:id/program', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
-    const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
     const body = request.body as { programId?: string | null };
 
@@ -281,7 +286,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.patch('/:id/contact-name', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const { id } = request.params as { id: string };
@@ -292,8 +298,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Nombre manual inválido. Usa solo nombre y apellido (sin etiquetas).' });
     }
 
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId },
       include: { contact: true }
     });
     if (!conversation) {
@@ -325,6 +331,10 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.patch('/:id/no-contact', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
     const { id } = request.params as { id: string };
     const body = request.body as { noContact?: boolean; reason?: string | null };
 
@@ -332,8 +342,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: '"noContact" debe ser boolean' });
     }
 
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId },
       include: { contact: true }
     });
 
@@ -385,12 +395,16 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.post('/:id/messages', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
     const { id } = request.params as { id: string };
     const { text } = request.body as { text: string };
 
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
-      include: { contact: true }
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId },
+      include: { contact: true, phoneLine: true }
     });
 
     if (!conversation || !conversation.contact.waId) {
@@ -411,7 +425,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       }
     }
 
-    const sendResultRaw = await sendWhatsAppText(conversation.contact.waId, text).catch(err => ({
+    const sendResultRaw = await sendWhatsAppText(conversation.contact.waId, text, {
+      phoneNumberId: conversation.phoneLine?.waPhoneNumberId || null
+    }).catch(err => ({
       success: false,
       error: err instanceof Error ? err.message : 'Unknown error'
     }));
@@ -682,15 +698,19 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.post('/:id/send-template', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
     const { id } = request.params as { id: string };
     const body = request.body as { templateName?: string; variables?: string[] };
     if (!body.templateName) {
       return reply.code(400).send({ error: 'templateName es obligatorio' });
     }
 
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
-      include: { contact: true }
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId },
+      include: { contact: true, phoneLine: true }
     });
 
     if (!conversation || !conversation.contact.waId) {
@@ -707,7 +727,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       interviewLocation: conversation.interviewLocation
     });
 
-    const sendResult = await sendWhatsAppTemplate(conversation.contact.waId, body.templateName, finalVariables);
+    const sendResult = await sendWhatsAppTemplate(conversation.contact.waId, body.templateName, finalVariables, {
+      phoneNumberId: conversation.phoneLine?.waPhoneNumberId || null
+    });
     if (!sendResult.success) {
       return reply.code(502).send({ error: sendResult.error || 'Falló el envío de plantilla' });
     }

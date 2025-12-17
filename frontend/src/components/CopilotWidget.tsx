@@ -4,6 +4,14 @@ import { apiClient } from '../api/client';
 type CopilotAction =
   | { type: 'NAVIGATE'; view: 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review'; configTab?: string; label?: string };
 
+type CopilotThreadSummary = {
+  id: string;
+  title?: string | null;
+  updatedAt?: string;
+  lastRunAt?: string | null;
+  lastUserText?: string | null;
+};
+
 type CopilotMessage = {
   id: string;
   role: 'user' | 'assistant';
@@ -22,6 +30,9 @@ export const CopilotWidget: React.FC<{
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
+  const [threads, setThreads] = useState<CopilotThreadSummary[]>([]);
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [threadsLoading, setThreadsLoading] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const selectedConversationId = useMemo(() => {
@@ -38,6 +49,79 @@ export const CopilotWidget: React.FC<{
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [open, messages.length]);
+
+  const loadThreads = async () => {
+    setThreadsLoading(true);
+    try {
+      const res: any = await apiClient.get('/api/copilot/threads');
+      const list: CopilotThreadSummary[] = Array.isArray(res) ? res : [];
+      setThreads(list);
+      const stored = (() => {
+        try {
+          return localStorage.getItem('copilotThreadId');
+        } catch {
+          return null;
+        }
+      })();
+      const preferred = stored && list.some((t) => t.id === stored) ? stored : null;
+      const next = preferred || (list[0]?.id ?? null);
+      if (!threadId && next) setThreadId(next);
+    } catch (err: any) {
+      setThreads([]);
+    } finally {
+      setThreadsLoading(false);
+    }
+  };
+
+  const loadThread = async (id: string) => {
+    try {
+      const detail: any = await apiClient.get(`/api/copilot/threads/${id}`);
+      const runs = Array.isArray(detail?.runs) ? detail.runs : [];
+      const nextMessages: CopilotMessage[] = [];
+      for (const r of runs) {
+        const createdAt = r?.createdAt ? new Date(r.createdAt).getTime() : Date.now();
+        nextMessages.push({
+          id: `run-${r.id}-u`,
+          role: 'user',
+          text: String(r.inputText || ''),
+          createdAt,
+        });
+        if (r.responseText) {
+          nextMessages.push({
+            id: `run-${r.id}-a`,
+            role: 'assistant',
+            text: String(r.responseText || ''),
+            actions: Array.isArray(r.actions) ? r.actions : undefined,
+            createdAt: createdAt + 1,
+          });
+        }
+      }
+      setMessages(nextMessages);
+      setError(null);
+      try {
+        localStorage.setItem('copilotThreadId', id);
+      } catch {
+        // ignore
+      }
+    } catch (err: any) {
+      setError(err.message || 'No se pudo cargar el historial');
+      setMessages([]);
+    }
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    loadThreads().catch(() => {});
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!threadId) {
+      setMessages([]);
+      return;
+    }
+    loadThread(threadId).catch(() => {});
+  }, [open, threadId]);
 
   const pushMessage = (m: Omit<CopilotMessage, 'id' | 'createdAt'>) => {
     setMessages((prev) => [
@@ -62,10 +146,19 @@ export const CopilotWidget: React.FC<{
         text,
         view: currentView,
         conversationId: selectedConversationId,
+        threadId,
       });
       const replyText = typeof res?.reply === 'string' ? res.reply : 'Ok.';
       const actions: CopilotAction[] | undefined = Array.isArray(res?.actions) ? res.actions : undefined;
+      const nextThreadId = typeof res?.threadId === 'string' ? res.threadId : threadId;
       pushMessage({ role: 'assistant', text: replyText, ...(actions ? { actions } : {}) });
+      if (nextThreadId && nextThreadId !== threadId) {
+        setThreadId(nextThreadId);
+      } else if (nextThreadId) {
+        // Refresh thread from server to persist actions/logs.
+        loadThread(nextThreadId).catch(() => {});
+      }
+      loadThreads().catch(() => {});
     } catch (err: any) {
       setError(err.message || 'No se pudo contactar al Copilot');
       pushMessage({
@@ -147,15 +240,55 @@ export const CopilotWidget: React.FC<{
               </div>
               <button
                 onClick={() => {
+                  setThreadId(null);
                   setMessages([]);
                   setError(null);
                 }}
                 style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
-                title="Limpiar chat"
+                title="Nuevo chat"
               >
-                Limpiar
+                Nuevo
               </button>
             </div>
+
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <select
+                value={threadId || ''}
+                onChange={(e) => setThreadId(e.target.value || null)}
+                style={{ padding: '6px 8px', borderRadius: 10, border: '1px solid #ccc', minWidth: 220, maxWidth: 320 }}
+                disabled={threadsLoading}
+                aria-label="Copilot threads"
+              >
+                <option value="">{threadsLoading ? 'Cargando…' : 'Nuevo chat (sin hilo)'}</option>
+                {threads.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {(t.title || t.lastUserText || 'Sin título').slice(0, 42)}
+                  </option>
+                ))}
+              </select>
+              {threadId ? (
+                <button
+                  onClick={async () => {
+                    try {
+                      const detail: any = await apiClient.get(`/api/copilot/threads/${threadId}`);
+                      const blob = new Blob([JSON.stringify(detail, null, 2)], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `copilot-thread-${threadId}.json`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    } catch (err: any) {
+                      setError(err.message || 'No se pudo exportar el hilo');
+                    }
+                  }}
+                  style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                >
+                  Exportar
+                </button>
+              ) : null}
+            </div>
+
             <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
                 onClick={() => {
@@ -244,4 +377,3 @@ export const CopilotWidget: React.FC<{
     </>
   );
 };
-

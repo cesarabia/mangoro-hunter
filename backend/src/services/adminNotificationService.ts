@@ -160,27 +160,43 @@ function buildRecruitSummaryByDetail(params: {
   return truncate(parts.join(' | '), 850);
 }
 
-async function ensureAdminConversation(normalizedAdmin: string) {
+async function ensureAdminConversation(params: { workspaceId: string; phoneLineId: string; normalizedAdmin: string }) {
   let contact = await prisma.contact.findFirst({
-    where: { OR: [{ waId: normalizedAdmin }, { phone: normalizedAdmin }, { phone: `+${normalizedAdmin}` }] }
+    where: {
+      workspaceId: params.workspaceId,
+      OR: [
+        { waId: params.normalizedAdmin },
+        { phone: params.normalizedAdmin },
+        { phone: `+${params.normalizedAdmin}` }
+      ]
+    }
   });
   if (!contact) {
     contact = await prisma.contact.create({
-      data: { waId: normalizedAdmin, phone: `+${normalizedAdmin}`, name: 'Administrador' }
+      data: { workspaceId: params.workspaceId, waId: params.normalizedAdmin, phone: `+${params.normalizedAdmin}`, name: 'Administrador' }
     });
   } else if (!contact.waId) {
     contact = await prisma.contact.update({
       where: { id: contact.id },
-      data: { waId: normalizedAdmin }
+      data: { waId: params.normalizedAdmin }
     });
   }
   let conversation = await prisma.conversation.findFirst({
-    where: { contactId: contact.id, isAdmin: true },
+    where: { contactId: contact.id, isAdmin: true, workspaceId: params.workspaceId, phoneLineId: params.phoneLineId },
     orderBy: { updatedAt: 'desc' }
   });
   if (!conversation) {
+    const adminProgram = await prisma.program
+      .findFirst({
+        where: { workspaceId: params.workspaceId, slug: 'admin', archivedAt: null },
+        select: { id: true }
+      })
+      .catch(() => null);
     conversation = await prisma.conversation.create({
       data: {
+        workspaceId: params.workspaceId,
+        phoneLineId: params.phoneLineId,
+        programId: adminProgram?.id || null,
         contactId: contact.id,
         status: 'OPEN',
         channel: 'admin',
@@ -218,6 +234,8 @@ export async function sendAdminNotification(options: {
   app: FastifyInstance;
   eventType: AdminEventType;
   contact: any;
+  workspaceId?: string | null;
+  phoneLineId?: string | null;
   reservationId?: string | null;
   interviewDay?: string | null;
   interviewTime?: string | null;
@@ -225,9 +243,25 @@ export async function sendAdminNotification(options: {
   summary?: string;
 }): Promise<void> {
   const { app, eventType, contact, reservationId, interviewDay, interviewTime, interviewLocation, summary } = options;
+  const workspaceId = String(options.workspaceId || contact?.workspaceId || 'default');
   const config = await getSystemConfig();
   const adminWaIds = getAdminWaIdAllowlist(config);
   if (adminWaIds.length === 0) return;
+
+  const resolvedPhoneLineId = await (async () => {
+    const explicit = typeof options.phoneLineId === 'string' && options.phoneLineId.trim() ? options.phoneLineId.trim() : null;
+    if (explicit) return explicit;
+    const first = await prisma.phoneLine.findFirst({
+      where: { workspaceId, archivedAt: null, isActive: true },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true }
+    });
+    return first?.id || 'default';
+  })();
+  const phoneLine = await prisma.phoneLine
+    .findFirst({ where: { id: resolvedPhoneLineId, workspaceId }, select: { waPhoneNumberId: true } })
+    .catch(() => null);
+  const phoneNumberId = phoneLine?.waPhoneNumberId || null;
 
   const enabledEventsParsed = safeJsonParse<unknown>(config.adminNotificationEnabledEvents);
   if (Array.isArray(enabledEventsParsed) && enabledEventsParsed.length > 0) {
@@ -361,7 +395,13 @@ export async function sendAdminNotification(options: {
   const textWithRef = normalizeEscapedWhitespace(`${text}\n[REF:${eventKey}]`);
 
   for (const adminWa of adminWaIds) {
-    const { conversation } = await ensureAdminConversation(adminWa);
+    const normalizedAdmin = normalizeWhatsAppId(adminWa);
+    if (!normalizedAdmin) continue;
+    const { conversation } = await ensureAdminConversation({
+      workspaceId,
+      phoneLineId: resolvedPhoneLineId,
+      normalizedAdmin,
+    });
     const existing = await prisma.message.findFirst({
       where: {
         conversationId: conversation.id,
@@ -373,7 +413,7 @@ export async function sendAdminNotification(options: {
     let sendStatus: 'WA_SENT' | 'WA_FAILED' = 'WA_SENT';
     let sendError: string | null = null;
     try {
-      const resp = await sendWhatsAppText(adminWa, textWithRef);
+      const resp = await sendWhatsAppText(adminWa, textWithRef, { phoneNumberId });
       if (!resp.success) {
         sendStatus = 'WA_FAILED';
         sendError = resp.error || 'Unknown error';

@@ -5,14 +5,22 @@ import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { prisma } from '../db/client';
 import { runAutomations } from '../services/automationRunnerService';
 import { piiSanitizeText } from '../services/agent/tools';
+import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 
 type ScenarioStep = {
   inboundText: string;
+  inboundOffsetHours?: number;
   expect?: {
     contactFields?: Array<
       'candidateName' | 'comuna' | 'ciudad' | 'region' | 'rut' | 'email' | 'availabilityText'
     >;
     stage?: string;
+    programIdSet?: boolean;
+    outbound?: {
+      sentDelta?: number;
+      blockedDelta?: number;
+      lastBlockedReasonContains?: string;
+    };
   };
 };
 
@@ -21,6 +29,8 @@ type ScenarioDefinition = {
   name: string;
   description: string;
   programSlug?: string;
+  contactWaId?: string | null;
+  contactNoContact?: boolean;
   steps: ScenarioStep[];
 };
 
@@ -52,6 +62,54 @@ const SCENARIOS: ScenarioDefinition[] = [
       { inboundText: 'Me llamo Pablo Urrutia Rivas', expect: { contactFields: ['candidateName'] } },
     ],
   },
+  {
+    id: 'program_menu_dedupe',
+    name: 'Anti-loop: dedupeKey evita duplicados',
+    description: 'Dispara el menú de selección de Program dos veces y verifica que el segundo envío queda bloqueado.',
+    steps: [
+      { inboundText: 'Hola', expect: { stage: 'PROGRAM_SELECTION', outbound: { sentDelta: 1 } } },
+      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'ANTI_LOOP' } } },
+    ],
+  },
+  {
+    id: 'window_24h_template',
+    name: 'Guardrail 24h: bloquea SESSION_TEXT',
+    description: 'Si la conversación está fuera de 24h, se bloquea SESSION_TEXT (requiere TEMPLATE).',
+    steps: [
+      {
+        inboundText: 'Hola',
+        inboundOffsetHours: -26,
+        expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'OUTSIDE_24H' }, stage: 'PROGRAM_SELECTION' },
+      },
+    ],
+  },
+  {
+    id: 'safe_mode_block',
+    name: 'SAFE MODE: bloquea fuera allowlist',
+    description: 'En ALLOWLIST_ONLY, bloquear envíos a waId fuera de allowlist y dejar blockedReason.',
+    contactWaId: '56900000001',
+    steps: [
+      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'SAFE_OUTBOUND' }, stage: 'PROGRAM_SELECTION' } },
+    ],
+  },
+  {
+    id: 'no_contactar_block',
+    name: 'NO_CONTACTAR: bloquea outbound',
+    description: 'Si el contacto está NO_CONTACTAR, el sistema bloquea cualquier envío.',
+    contactNoContact: true,
+    steps: [
+      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'NO_CONTACTAR' }, stage: 'PROGRAM_SELECTION' } },
+    ],
+  },
+  {
+    id: 'program_select_assign',
+    name: 'Programs: menú y asignación por opción',
+    description: 'Si una conversación no tiene Program y hay varios activos, muestra menú y asigna al elegir 1/2/3.',
+    steps: [
+      { inboundText: 'Hola', expect: { stage: 'PROGRAM_SELECTION', outbound: { sentDelta: 1 } } },
+      { inboundText: '1', expect: { programIdSet: true } },
+    ],
+  },
 ];
 
 function getScenario(id: string): ScenarioDefinition | null {
@@ -60,9 +118,18 @@ function getScenario(id: string): ScenarioDefinition | null {
 }
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
+  const requireWorkspaceAdmin = async (request: any, reply: any) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      reply.code(403).send({ error: 'Forbidden' });
+      return null;
+    }
+    return access;
+  };
+
   // Agent OS Simulator (sandbox workspace; never sends WhatsApp).
   app.get('/scenarios', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (request.user?.role !== 'ADMIN') return reply.code(403).send({ error: 'Forbidden' });
+    if (!(await requireWorkspaceAdmin(request, reply))) return;
     return SCENARIOS.map((s) => ({
       id: s.id,
       name: s.name,
@@ -72,7 +139,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
   });
 
   app.post('/scenario/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (request.user?.role !== 'ADMIN') return reply.code(403).send({ error: 'Forbidden' });
+    if (!(await requireWorkspaceAdmin(request, reply))) return;
     const { id } = request.params as { id: string };
     const scenario = getScenario(id);
     if (!scenario) return reply.code(404).send({ error: 'Scenario no encontrado.' });
@@ -91,8 +158,12 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       data: {
         workspaceId: 'sandbox',
         displayName: sanitize ? `Sandbox Scenario (${scenario.id})` : `Sandbox Scenario (${scenario.id})`,
+        waId: scenario.contactWaId ? String(scenario.contactWaId) : null,
         candidateName: null,
         candidateNameManual: null,
+        noContact: Boolean(scenario.contactNoContact),
+        noContactAt: scenario.contactNoContact ? new Date() : null,
+        noContactReason: scenario.contactNoContact ? `scenario:${scenario.id}` : null,
       } as any,
     });
     const conversation = await prisma.conversation.create({
@@ -114,13 +185,27 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
 
     for (const [idx, step] of scenario.steps.entries()) {
       const inboundText = String(step.inboundText || '').trim();
+      const offsetHours =
+        typeof (step as any).inboundOffsetHours === 'number' && Number.isFinite((step as any).inboundOffsetHours)
+          ? (step as any).inboundOffsetHours
+          : null;
+      const timestamp = offsetHours !== null ? new Date(Date.now() + offsetHours * 60 * 60 * 1000) : new Date();
+
+      const outboundBefore = await prisma.outboundMessageLog.count({
+        where: { conversationId: conversation.id },
+      });
+      const outboundBlockedBefore = await prisma.outboundMessageLog.count({
+        where: { conversationId: conversation.id, blockedReason: { not: null } },
+      });
+      const outboundSentBefore = outboundBefore - outboundBlockedBefore;
+
       const message = await prisma.message.create({
         data: {
           conversationId: conversation.id,
           direction: 'INBOUND',
           text: inboundText,
           rawPayload: JSON.stringify({ simulated: true, sandbox: true, scenario: scenario.id, step: idx }),
-          timestamp: new Date(),
+          timestamp,
           read: false,
         },
       });
@@ -145,6 +230,20 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         include: { contact: true },
       });
 
+      const outboundAfter = await prisma.outboundMessageLog.count({
+        where: { conversationId: conversation.id },
+      });
+      const outboundBlockedAfter = await prisma.outboundMessageLog.count({
+        where: { conversationId: conversation.id, blockedReason: { not: null } },
+      });
+      const outboundSentAfter = outboundAfter - outboundBlockedAfter;
+
+      const lastOutbound = await prisma.outboundMessageLog.findFirst({
+        where: { conversationId: conversation.id },
+        orderBy: { createdAt: 'desc' },
+        select: { blockedReason: true, type: true, dedupeKey: true, createdAt: true },
+      });
+
       const assertions: Array<{ ok: boolean; message: string }> = [];
       const expectedFields = step.expect?.contactFields || [];
       for (const field of expectedFields) {
@@ -156,6 +255,30 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         const pass = String(snap?.conversationStage || '') === String(step.expect.stage);
         assertions.push({ ok: pass, message: pass ? `stage OK (${step.expect.stage})` : `stage mismatch` });
       }
+      if (typeof step.expect?.programIdSet === 'boolean') {
+        const has = Boolean(snap?.programId);
+        const pass = step.expect.programIdSet ? has : !has;
+        assertions.push({ ok: pass, message: pass ? `programIdSet OK (${has})` : `programIdSet mismatch (got ${has})` });
+      }
+      const outboundExp = step.expect?.outbound;
+      if (outboundExp) {
+        if (typeof outboundExp.sentDelta === 'number') {
+          const delta = outboundSentAfter - outboundSentBefore;
+          const pass = delta === outboundExp.sentDelta;
+          assertions.push({ ok: pass, message: pass ? `outbound sent Δ OK (${delta})` : `outbound sent Δ expected ${outboundExp.sentDelta}, got ${delta}` });
+        }
+        if (typeof outboundExp.blockedDelta === 'number') {
+          const delta = outboundBlockedAfter - outboundBlockedBefore;
+          const pass = delta === outboundExp.blockedDelta;
+          assertions.push({ ok: pass, message: pass ? `outbound blocked Δ OK (${delta})` : `outbound blocked Δ expected ${outboundExp.blockedDelta}, got ${delta}` });
+        }
+        if (typeof outboundExp.lastBlockedReasonContains === 'string') {
+          const needle = outboundExp.lastBlockedReasonContains;
+          const hay = String(lastOutbound?.blockedReason || '');
+          const pass = hay.includes(needle);
+          assertions.push({ ok: pass, message: pass ? `blockedReason contains ${needle}` : `blockedReason missing "${needle}" (got "${hay || '—'}")` });
+        }
+      }
 
       const stepOk = assertions.every((a) => a.ok);
       ok = ok && stepOk;
@@ -163,11 +286,21 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         step: idx + 1,
         inboundMessageId: message.id,
         inboundText,
+        inboundTimestamp: message.timestamp.toISOString(),
         assertions,
+        outbound: {
+          sentDelta: outboundSentAfter - outboundSentBefore,
+          blockedDelta: outboundBlockedAfter - outboundBlockedBefore,
+          lastBlockedReason: lastOutbound?.blockedReason || null,
+          lastType: lastOutbound?.type || null,
+          lastDedupeKey: lastOutbound?.dedupeKey || null,
+          lastCreatedAt: lastOutbound?.createdAt ? lastOutbound.createdAt.toISOString() : null,
+        },
         snapshot: snap
           ? {
               status: snap.status,
               stage: snap.conversationStage,
+              programId: snap.programId,
               contact: {
                 candidateName: snap.contact.candidateName,
                 comuna: (snap.contact as any).comuna,
@@ -219,7 +352,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
   });
 
   app.get('/sessions', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (request.user?.role !== 'ADMIN') return reply.code(403).send({ error: 'Forbidden' });
+    if (!(await requireWorkspaceAdmin(request, reply))) return;
     const sessions = await prisma.conversation.findMany({
       where: { workspaceId: 'sandbox', channel: 'sandbox', archivedAt: null },
       orderBy: { createdAt: 'desc' },
@@ -234,7 +367,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
   });
 
   app.get('/sessions/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (request.user?.role !== 'ADMIN') return reply.code(403).send({ error: 'Forbidden' });
+    if (!(await requireWorkspaceAdmin(request, reply))) return;
     const { id } = request.params as { id: string };
     const session = await prisma.conversation.findFirst({
       where: { id, workspaceId: 'sandbox', channel: 'sandbox' },
@@ -269,7 +402,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
   });
 
   app.post('/sessions', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (request.user?.role !== 'ADMIN') return reply.code(403).send({ error: 'Forbidden' });
+    if (!(await requireWorkspaceAdmin(request, reply))) return;
     const body = request.body as { sourceConversationId?: string | null };
     const contact = await prisma.contact.create({
       data: {
@@ -294,7 +427,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
   });
 
   app.post('/run', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (request.user?.role !== 'ADMIN') return reply.code(403).send({ error: 'Forbidden' });
+    if (!(await requireWorkspaceAdmin(request, reply))) return;
     const body = request.body as { sessionId?: string; inboundText?: string };
     const sessionId = String(body.sessionId || '').trim();
     const inboundText = String(body.inboundText || '').trim();
@@ -369,13 +502,14 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
   });
 
   app.post('/replay/:conversationId', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (request.user?.role !== 'ADMIN') return reply.code(403).send({ error: 'Forbidden' });
+    const access = await requireWorkspaceAdmin(request, reply);
+    if (!access) return;
     const { conversationId } = request.params as { conversationId: string };
     const body = request.body as { sanitizePii?: boolean };
     const sanitize = body?.sanitizePii !== false;
 
-    const source = await prisma.conversation.findUnique({
-      where: { id: conversationId },
+    const source = await prisma.conversation.findFirst({
+      where: { id: conversationId, workspaceId: access.workspaceId },
       include: { contact: true, messages: { orderBy: { timestamp: 'asc' } } },
     });
     if (!source) return reply.code(404).send({ error: 'Conversación no encontrada.' });
@@ -432,7 +566,8 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
   });
 
   app.post('/whatsapp', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (request.user?.role !== 'ADMIN') return reply.code(403).send({ error: 'Forbidden' });
+    const access = await requireWorkspaceAdmin(request, reply);
+    if (!access) return;
     const { from, text, media, waMessageId } = request.body as {
       from?: string;
       text?: string;
@@ -469,8 +604,18 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       });
     }
 
+    const phoneLine = await prisma.phoneLine.findFirst({
+      where: { workspaceId: access.workspaceId, archivedAt: null, isActive: true },
+      orderBy: { createdAt: 'asc' },
+      select: { waPhoneNumberId: true },
+    });
+    if (!phoneLine?.waPhoneNumberId) {
+      return reply.code(400).send({ error: 'No hay PhoneLine activa configurada para este workspace.' });
+    }
+
     const result = await handleInboundWhatsAppMessage(app, {
       from: normalizedFrom,
+      waPhoneNumberId: phoneLine.waPhoneNumberId,
       waMessageId: typeof waMessageId === 'string' && waMessageId.trim() ? waMessageId.trim() : undefined,
       text: trimmedText,
       media: hasMedia

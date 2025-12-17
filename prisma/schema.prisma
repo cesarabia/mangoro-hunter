@@ -18,6 +18,7 @@ model User {
   memberships    Membership[]
   conversations  Conversation[] @relation("UserConversations")
   copilotRuns    CopilotRunLog[]
+  copilotThreads CopilotThread[]
   scenarioRuns   ScenarioRunLog[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
@@ -37,6 +38,7 @@ model Workspace {
   agentRuns   AgentRunLog[]
   outboundLogs OutboundMessageLog[]
   copilotRuns CopilotRunLog[]
+  copilotThreads CopilotThread[]
   aiUsageLogs AiUsageLog[]
   scenarioRuns ScenarioRunLog[]
   createdAt   DateTime      @default(now())
@@ -109,7 +111,7 @@ model Contact {
   id            String          @id @default(cuid())
   workspace     Workspace       @relation(fields: [workspaceId], references: [id])
   workspaceId   String          @default("default")
-  waId          String?         @unique
+  waId          String?
   phone         String?
   name          String?
   displayName   String?
@@ -139,6 +141,8 @@ model Contact {
   updatedAt     DateTime        @updatedAt
 
   @@index([workspaceId])
+  @@unique([workspaceId, waId])
+  @@unique([workspaceId, phone])
 }
 
 model Conversation {
@@ -282,12 +286,31 @@ model OutboundMessageLog {
   @@index([dedupeKey])
 }
 
+model CopilotThread {
+  id          String     @id @default(cuid())
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id])
+  workspaceId String     @default("default")
+  user        User?      @relation(fields: [userId], references: [id])
+  userId      String?
+  title       String?
+  archivedAt  DateTime?
+  runs        CopilotRunLog[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
 model CopilotRunLog {
   id            String     @id @default(cuid())
   workspace     Workspace  @relation(fields: [workspaceId], references: [id])
   workspaceId   String     @default("default")
   user          User?      @relation(fields: [userId], references: [id])
   userId        String?
+  thread        CopilotThread? @relation(fields: [threadId], references: [id])
+  threadId      String?
   conversation  Conversation? @relation(fields: [conversationId], references: [id])
   conversationId String?
   view          String?
@@ -300,6 +323,7 @@ model CopilotRunLog {
   createdAt     DateTime   @default(now())
 
   @@index([workspaceId])
+  @@index([threadId])
   @@index([conversationId])
   @@index([createdAt])
 }

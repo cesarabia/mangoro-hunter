@@ -8,7 +8,7 @@ import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceA
 import { serializeJson } from '../utils/json';
 
 const ViewSchema = z.enum(['inbox', 'inactive', 'simulator', 'agenda', 'config', 'review']);
-const ConfigTabSchema = z.enum(['workspace', 'users', 'phoneLines', 'programs', 'automations', 'logs', 'usage']);
+const ConfigTabSchema = z.enum(['workspace', 'integrations', 'users', 'phoneLines', 'programs', 'automations', 'logs', 'usage']);
 
 const CopilotActionSchema = z.discriminatedUnion('type', [
   z.object({
@@ -53,6 +53,7 @@ function inferNavigation(text: string): z.infer<typeof CopilotActionSchema> | nu
     if (/\b(simulador|simulator)\b/i.test(text) || t === 'simulador') return go('simulator', undefined, 'Abrir Simulador');
     if (/\b(agenda|calendario)\b/i.test(text) || t === 'agenda') return go('agenda', undefined, 'Abrir Agenda');
     if (/\b(config|configuracion|settings)\b/i.test(text)) return go('config', undefined, 'Abrir Configuración');
+    if (/\b(integraciones|integracion)\b/i.test(text)) return go('config', 'integrations', 'Ir a Integraciones');
     if (/\b(program|programa|programs)\b/i.test(text)) return go('config', 'programs', 'Ir a Programs');
     if (/\b(automation|automat|regla)\b/i.test(text)) return go('config', 'automations', 'Ir a Automations');
     if (/\b(numeros|numero|whatsapp|phoneline|linea)\b/i.test(text)) return go('config', 'phoneLines', 'Ir a Números WhatsApp');
@@ -76,21 +77,131 @@ function explainBlockedReason(blockedReason: string): string {
 }
 
 export async function registerCopilotRoutes(app: FastifyInstance) {
+  app.get('/threads', { preValidation: [app.authenticate] }, async (request) => {
+    const access = await resolveWorkspaceAccess(request);
+    const userId = request.user?.userId || null;
+    if (!userId) return [];
+
+    const threads = await prisma.copilotThread.findMany({
+      where: { workspaceId: access.workspaceId, userId, archivedAt: null },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        updatedAt: true,
+        runs: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { inputText: true, responseText: true, createdAt: true },
+        },
+      },
+    });
+
+    return threads.map((t) => ({
+      id: t.id,
+      title: t.title,
+      createdAt: t.createdAt.toISOString(),
+      updatedAt: t.updatedAt.toISOString(),
+      lastRunAt: t.runs?.[0]?.createdAt ? t.runs[0].createdAt.toISOString() : null,
+      lastUserText: t.runs?.[0]?.inputText || null,
+      lastAssistantText: t.runs?.[0]?.responseText || null,
+    }));
+  });
+
+  app.post('/threads', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    const userId = request.user?.userId || null;
+    if (!userId) return reply.code(400).send({ error: 'Usuario inválido.' });
+    const body = request.body as { title?: string | null };
+    const title = typeof body?.title === 'string' ? body.title.trim().slice(0, 80) : null;
+
+    const created = await prisma.copilotThread.create({
+      data: { workspaceId: access.workspaceId, userId, title: title || null } as any,
+      select: { id: true, title: true, createdAt: true, updatedAt: true },
+    });
+    return {
+      id: created.id,
+      title: created.title,
+      createdAt: created.createdAt.toISOString(),
+      updatedAt: created.updatedAt.toISOString(),
+    };
+  });
+
+  app.get('/threads/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    const userId = request.user?.userId || null;
+    const { id } = request.params as { id: string };
+    if (!userId) return reply.code(400).send({ error: 'Usuario inválido.' });
+
+    const thread = await prisma.copilotThread.findFirst({
+      where: { id, workspaceId: access.workspaceId, userId, archivedAt: null },
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        updatedAt: true,
+        runs: {
+          orderBy: { createdAt: 'asc' },
+          take: 200,
+          select: { id: true, inputText: true, responseText: true, actionsJson: true, status: true, error: true, createdAt: true },
+        },
+      },
+    });
+    if (!thread) return reply.code(404).send({ error: 'Thread no encontrado.' });
+
+    return {
+      id: thread.id,
+      title: thread.title,
+      createdAt: thread.createdAt.toISOString(),
+      updatedAt: thread.updatedAt.toISOString(),
+      runs: thread.runs.map((r) => ({
+        id: r.id,
+        createdAt: r.createdAt.toISOString(),
+        inputText: r.inputText,
+        responseText: r.responseText,
+        actions: safeJsonParse(r.actionsJson || '') || null,
+        status: r.status,
+        error: r.error,
+      })),
+    };
+  });
+
   app.post('/chat', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const isAdmin = isWorkspaceAdmin(request, access);
-    const body = request.body as { text?: string; conversationId?: string | null; view?: string | null };
+    const body = request.body as { text?: string; conversationId?: string | null; view?: string | null; threadId?: string | null };
     const text = String(body?.text || '').trim();
     const conversationId = body?.conversationId ? String(body.conversationId) : null;
     const view = typeof body?.view === 'string' ? body.view : null;
+    const userId = request.user?.userId || null;
 
     if (!text) return reply.code(400).send({ error: '"text" es obligatorio.' });
+
+    let threadId: string | null = body?.threadId ? String(body.threadId).trim() : null;
+    if (threadId && userId) {
+      const exists = await prisma.copilotThread.findFirst({
+        where: { id: threadId, workspaceId: access.workspaceId, userId, archivedAt: null },
+        select: { id: true },
+      });
+      if (!exists) threadId = null;
+    }
+    if (!threadId && userId) {
+      const title = text.slice(0, 80);
+      const created = await prisma.copilotThread.create({
+        data: { workspaceId: access.workspaceId, userId, title } as any,
+        select: { id: true },
+      });
+      threadId = created.id;
+    }
 
     const run = await prisma.copilotRunLog
       .create({
         data: {
           workspaceId: access.workspaceId,
-          userId: request.user?.userId || null,
+          userId,
+          threadId,
           conversationId,
           view: view || null,
           inputText: text,
@@ -99,9 +210,15 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
       })
       .catch(() => null);
 
+    if (threadId) {
+      await prisma.copilotThread
+        .update({ where: { id: threadId }, data: { updatedAt: new Date() } })
+        .catch(() => {});
+    }
+
     const directNav = inferNavigation(text);
     if (directNav && (!directNav.configTab || isAdmin)) {
-      const response = { reply: `Listo. ${directNav.label || 'Te llevo ahí.'}`, actions: [directNav] };
+      const response = { reply: `Listo. ${directNav.label || 'Te llevo ahí.'}`, actions: [directNav], threadId };
       if (run?.id) {
         await prisma.copilotRunLog.update({
           where: { id: run.id },
@@ -194,7 +311,7 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
           data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
         });
       }
-      return { reply: replyText, actions };
+      return { reply: replyText, actions, threadId };
     }
 
     const client = new OpenAI({ apiKey });
@@ -307,7 +424,7 @@ Tu salida debe ser SOLO un JSON válido con el shape:
           })
           .catch(() => {});
       }
-      return { reply: responseText, actions: actionsJson };
+      return { reply: responseText, actions: actionsJson, threadId };
     }
 
     if (run?.id) {
@@ -332,6 +449,6 @@ Tu salida debe ser SOLO un JSON válido con el shape:
         .catch(() => {});
     }
 
-    return { reply: responseText, actions: actionsJson };
+    return { reply: responseText, actions: actionsJson, threadId };
   });
 }

@@ -20,6 +20,8 @@ export interface CreateAndSendParams {
   sendTemplateNow?: boolean;
   variables?: string[];
   templateNameOverride?: string | null;
+  workspaceId?: string | null;
+  phoneLineId?: string | null;
 }
 
 export interface CreateAndSendResult {
@@ -48,6 +50,7 @@ function normalizeStatus(value?: string | null): Status {
 export async function createConversationAndMaybeSend(
   params: CreateAndSendParams
 ): Promise<CreateAndSendResult> {
+  const workspaceId = typeof params.workspaceId === 'string' && params.workspaceId.trim() ? params.workspaceId.trim() : 'default';
   const waId = normalizeWhatsAppId(params.phoneE164);
   if (!waId) {
     throw new Error('Número inválido');
@@ -60,20 +63,42 @@ export async function createConversationAndMaybeSend(
   const mode = normalizeMode(params.mode);
   const status = normalizeStatus(params.status);
 
+  const phoneLine = await (async () => {
+    const explicit = typeof params.phoneLineId === 'string' && params.phoneLineId.trim() ? params.phoneLineId.trim() : null;
+    if (explicit) {
+      return prisma.phoneLine.findFirst({
+        where: { id: explicit, workspaceId, archivedAt: null, isActive: true },
+        select: { id: true, waPhoneNumberId: true, defaultProgramId: true }
+      });
+    }
+    const first = await prisma.phoneLine.findFirst({
+      where: { workspaceId, archivedAt: null, isActive: true },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, waPhoneNumberId: true, defaultProgramId: true }
+    });
+    return first;
+  })();
+  if (!phoneLine) {
+    throw new Error('No hay un número WhatsApp (PhoneLine) activo configurado para este workspace.');
+  }
+
   const contact = await prisma.contact.upsert({
-    where: { waId },
+    where: { workspaceId_waId: { workspaceId, waId } },
     update: { phone: waId },
-    create: { waId, phone: waId }
+    create: { workspaceId, waId, phone: waId }
   });
 
   let conversation = await prisma.conversation.findFirst({
-    where: { contactId: contact.id, isAdmin: false },
+    where: { workspaceId, phoneLineId: phoneLine.id, contactId: contact.id, isAdmin: false },
     orderBy: { updatedAt: 'desc' }
   });
 
   if (!conversation) {
     conversation = await prisma.conversation.create({
       data: {
+        workspaceId,
+        phoneLineId: phoneLine.id,
+        programId: phoneLine.defaultProgramId || null,
         contactId: contact.id,
         status,
         channel: 'whatsapp',
@@ -84,6 +109,8 @@ export async function createConversationAndMaybeSend(
     conversation = await prisma.conversation.update({
       where: { id: conversation.id },
       data: {
+        phoneLineId: phoneLine.id,
+        programId: conversation.programId || phoneLine.defaultProgramId || null,
         status,
         aiMode: mode,
         updatedAt: new Date()
@@ -108,7 +135,9 @@ export async function createConversationAndMaybeSend(
       interviewLocation: conversation.interviewLocation
     });
 
-    sendResult = await sendWhatsAppTemplate(waId, templateName, finalVariables);
+    sendResult = await sendWhatsAppTemplate(waId, templateName, finalVariables, {
+      phoneNumberId: phoneLine.waPhoneNumberId
+    });
     templateUsed = templateName;
     variablesUsed = finalVariables;
 

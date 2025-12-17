@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 
-type TabKey = 'workspace' | 'users' | 'phoneLines' | 'programs' | 'automations' | 'usage' | 'logs';
+type TabKey = 'workspace' | 'integrations' | 'users' | 'phoneLines' | 'programs' | 'automations' | 'usage' | 'logs';
 type LogsTabKey = 'agentRuns' | 'automationRuns';
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'workspace', label: 'Workspace' },
+  { key: 'integrations', label: 'Integraciones' },
   { key: 'users', label: 'Usuarios' },
   { key: 'phoneLines', label: 'Números WhatsApp' },
   { key: 'programs', label: 'Programs' },
@@ -18,9 +19,16 @@ const triggerOptions = ['INBOUND_MESSAGE', 'INACTIVITY', 'STAGE_CHANGED', 'PROFI
 const conditionFields = [
   'conversation.status',
   'conversation.stage',
+  'conversation.stageTags',
   'conversation.programId',
   'conversation.phoneLineId',
   'contact.noContactar',
+  'contact.hasCandidateName',
+  'contact.hasLocation',
+  'contact.hasRut',
+  'contact.hasEmail',
+  'contact.hasAvailability',
+  'contact.hasExperience',
   'whatsapp.windowStatus',
   'inbound.textContains'
 ];
@@ -55,6 +63,27 @@ export const ConfigPage: React.FC = () => {
   const [outboundAllowlistText, setOutboundAllowlistText] = useState<string>('');
   const [outboundStatus, setOutboundStatus] = useState<string | null>(null);
   const [outboundError, setOutboundError] = useState<string | null>(null);
+
+  const [integrationsAi, setIntegrationsAi] = useState<any | null>(null);
+  const [integrationsAiModel, setIntegrationsAiModel] = useState<string>('');
+  const [integrationsAiKey, setIntegrationsAiKey] = useState<string>('');
+  const [integrationsAiStatus, setIntegrationsAiStatus] = useState<string | null>(null);
+  const [integrationsAiError, setIntegrationsAiError] = useState<string | null>(null);
+  const [integrationsAiTest, setIntegrationsAiTest] = useState<string | null>(null);
+
+  const [integrationsWa, setIntegrationsWa] = useState<any | null>(null);
+  const [integrationsWaBaseUrl, setIntegrationsWaBaseUrl] = useState<string>('');
+  const [integrationsWaPhoneId, setIntegrationsWaPhoneId] = useState<string>('');
+  const [integrationsWaToken, setIntegrationsWaToken] = useState<string>('');
+  const [integrationsWaVerifyToken, setIntegrationsWaVerifyToken] = useState<string>('');
+  const [integrationsWaStatus, setIntegrationsWaStatus] = useState<string | null>(null);
+  const [integrationsWaError, setIntegrationsWaError] = useState<string | null>(null);
+  const [integrationsWaTest, setIntegrationsWaTest] = useState<string | null>(null);
+
+  const [authorizedAdminNumbersText, setAuthorizedAdminNumbersText] = useState<string>('');
+  const [authorizedTestNumbersText, setAuthorizedTestNumbersText] = useState<string>('');
+  const [authorizedNumbersStatus, setAuthorizedNumbersStatus] = useState<string | null>(null);
+  const [authorizedNumbersError, setAuthorizedNumbersError] = useState<string | null>(null);
 
   const [users, setUsers] = useState<any[]>([]);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -142,6 +171,138 @@ export const ConfigPage: React.FC = () => {
     setOutboundPolicy(String(stored));
     const allow = Array.isArray(data?.outboundAllowlist) ? data.outboundAllowlist : [];
     setOutboundAllowlistText(allow.join('\n'));
+  };
+
+  const loadIntegrations = async () => {
+    const [ai, wa, auth] = await Promise.all([
+      apiClient.get('/api/config/ai'),
+      apiClient.get('/api/config/whatsapp'),
+      apiClient.get('/api/config/authorized-numbers'),
+    ]);
+    setIntegrationsAi(ai);
+    setIntegrationsAiModel(typeof ai?.aiModel === 'string' ? ai.aiModel : '');
+    setIntegrationsAiTest(null);
+    setIntegrationsAiStatus(null);
+    setIntegrationsAiError(null);
+
+    setIntegrationsWa(wa);
+    setIntegrationsWaBaseUrl(typeof wa?.whatsappBaseUrl === 'string' ? wa.whatsappBaseUrl : '');
+    setIntegrationsWaPhoneId(typeof wa?.whatsappPhoneId === 'string' ? wa.whatsappPhoneId : '');
+    setIntegrationsWaTest(null);
+    setIntegrationsWaStatus(null);
+    setIntegrationsWaError(null);
+
+    const adminNumbers = Array.isArray(auth?.adminNumbers) ? auth.adminNumbers : [];
+    const testNumbers = Array.isArray(auth?.testNumbers) ? auth.testNumbers : [];
+    setAuthorizedAdminNumbersText(adminNumbers.join('\n'));
+    setAuthorizedTestNumbersText(testNumbers.join('\n'));
+    setAuthorizedNumbersStatus(null);
+    setAuthorizedNumbersError(null);
+  };
+
+  const saveAiIntegration = async () => {
+    setIntegrationsAiStatus(null);
+    setIntegrationsAiError(null);
+    setIntegrationsAiTest(null);
+    try {
+      const payload: any = {};
+      const model = integrationsAiModel.trim();
+      if (model) payload.aiModel = model;
+      const key = integrationsAiKey.trim();
+      if (key) payload.openAiApiKey = key;
+      await apiClient.put('/api/config/ai', payload);
+      setIntegrationsAiKey('');
+      setIntegrationsAiStatus('Guardado.');
+      await loadIntegrations();
+    } catch (err: any) {
+      setIntegrationsAiError(err.message || 'No se pudo guardar');
+    }
+  };
+
+  const clearAiKey = async () => {
+    const ok = window.confirm('¿Eliminar la API Key de OpenAI? (Copilot/Agentes dejarán de funcionar)');
+    if (!ok) return;
+    setIntegrationsAiStatus(null);
+    setIntegrationsAiError(null);
+    setIntegrationsAiTest(null);
+    try {
+      await apiClient.put('/api/config/ai', { openAiApiKey: null });
+      setIntegrationsAiKey('');
+      setIntegrationsAiStatus('API Key eliminada.');
+      await loadIntegrations();
+    } catch (err: any) {
+      setIntegrationsAiError(err.message || 'No se pudo eliminar');
+    }
+  };
+
+  const testAiIntegration = async () => {
+    setIntegrationsAiTest(null);
+    setIntegrationsAiError(null);
+    try {
+      const res: any = await apiClient.post('/api/config/ai/test', {});
+      setIntegrationsAiTest(`OK (${res?.model || 'model'})`);
+    } catch (err: any) {
+      setIntegrationsAiTest(null);
+      setIntegrationsAiError(err.message || 'Test falló');
+    }
+  };
+
+  const saveWhatsAppIntegration = async () => {
+    setIntegrationsWaStatus(null);
+    setIntegrationsWaError(null);
+    setIntegrationsWaTest(null);
+    try {
+      const payload: any = {
+        whatsappBaseUrl: integrationsWaBaseUrl.trim() || null,
+        whatsappPhoneId: integrationsWaPhoneId.trim() || null,
+      };
+      const token = integrationsWaToken.trim();
+      const verifyToken = integrationsWaVerifyToken.trim();
+      if (token) payload.whatsappToken = token;
+      if (verifyToken) payload.whatsappVerifyToken = verifyToken;
+      await apiClient.put('/api/config/whatsapp', payload);
+      setIntegrationsWaToken('');
+      setIntegrationsWaVerifyToken('');
+      setIntegrationsWaStatus('Guardado.');
+      await loadIntegrations();
+    } catch (err: any) {
+      setIntegrationsWaError(err.message || 'No se pudo guardar');
+    }
+  };
+
+  const testWhatsAppIntegration = async () => {
+    setIntegrationsWaTest(null);
+    setIntegrationsWaError(null);
+    try {
+      const payload: any = {};
+      if (integrationsWaPhoneId.trim()) payload.phoneNumberId = integrationsWaPhoneId.trim();
+      const res: any = await apiClient.post('/api/config/whatsapp/test', payload);
+      const label = res?.displayPhoneNumber ? `${res.displayPhoneNumber}` : res?.phoneNumberId ? res.phoneNumberId : 'OK';
+      setIntegrationsWaTest(`OK (${label})`);
+    } catch (err: any) {
+      setIntegrationsWaTest(null);
+      setIntegrationsWaError(err.message || 'Test falló');
+    }
+  };
+
+  const parseNumbersText = (value: string): string[] =>
+    value
+      .split(/[\n,]/g)
+      .map((v) => v.trim())
+      .filter(Boolean);
+
+  const saveAuthorizedNumbers = async () => {
+    setAuthorizedNumbersStatus(null);
+    setAuthorizedNumbersError(null);
+    try {
+      const adminNumbers = parseNumbersText(authorizedAdminNumbersText);
+      const testNumbers = parseNumbersText(authorizedTestNumbersText);
+      await apiClient.put('/api/config/authorized-numbers', { adminNumbers, testNumbers });
+      setAuthorizedNumbersStatus('Guardado.');
+      await loadIntegrations();
+    } catch (err: any) {
+      setAuthorizedNumbersError(err.message || 'No se pudo guardar');
+    }
   };
 
   const applyPricingToState = (data: any) => {
@@ -262,6 +423,7 @@ export const ConfigPage: React.FC = () => {
     if (tab === 'automations') loadAutomations().catch(() => {});
     if (tab === 'programs') loadPrograms().catch(() => {});
     if (tab === 'phoneLines') loadPhoneLines().catch(() => {});
+    if (tab === 'integrations') loadIntegrations().catch(() => {});
     if (tab === 'usage') loadUsage().catch(() => {});
   }, [tab]);
 
@@ -550,6 +712,176 @@ export const ConfigPage: React.FC = () => {
               </button>
               {outboundStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{outboundStatus}</div> : null}
               {outboundError ? <div style={{ fontSize: 12, color: '#b93800' }}>{outboundError}</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === 'integrations' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 820 }}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>Integraciones</div>
+          <div style={{ fontSize: 12, color: '#666' }}>
+            Configura credenciales de IA y WhatsApp. Solo OWNER/ADMIN puede editar. Los secretos se muestran enmascarados.
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>OpenAI / LLM</div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+              Estado: {integrationsAi?.hasOpenAiKey ? <span style={{ color: '#1a7f37' }}>✅ API Key configurada</span> : <span style={{ color: '#b93800' }}>⚠️ Sin API Key</span>}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'start' }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Default model</div>
+                <input
+                  value={integrationsAiModel}
+                  onChange={(e) => setIntegrationsAiModel(e.target.value)}
+                  placeholder="Ej: gpt-4.1-mini"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>API Key (masked)</div>
+                <input
+                  value={integrationsAiKey}
+                  onChange={(e) => setIntegrationsAiKey(e.target.value)}
+                  placeholder="Pegga aquí para actualizar (dejar vacío = no cambia)"
+                  type="password"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => saveAiIntegration().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                Guardar
+              </button>
+              <button
+                onClick={() => testAiIntegration().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff' }}
+              >
+                Test conexión
+              </button>
+              <button
+                onClick={() => clearAiKey().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', color: '#b93800' }}
+              >
+                Eliminar API Key
+              </button>
+              {integrationsAiStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{integrationsAiStatus}</div> : null}
+              {integrationsAiTest ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{integrationsAiTest}</div> : null}
+              {integrationsAiError ? <div style={{ fontSize: 12, color: '#b93800' }}>{integrationsAiError}</div> : null}
+            </div>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>WhatsApp Cloud API</div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+              Estado: {integrationsWa?.hasToken ? <span style={{ color: '#1a7f37' }}>✅ Token configurado</span> : <span style={{ color: '#b93800' }}>⚠️ Sin token</span>} ·{' '}
+              {integrationsWa?.hasVerifyToken ? <span style={{ color: '#1a7f37' }}>✅ Verify token</span> : <span style={{ color: '#b93800' }}>⚠️ Sin verify token</span>}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Base URL</div>
+                <input
+                  value={integrationsWaBaseUrl}
+                  onChange={(e) => setIntegrationsWaBaseUrl(e.target.value)}
+                  placeholder="https://graph.facebook.com/v20.0"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Default phone_number_id (legacy)</div>
+                <input
+                  value={integrationsWaPhoneId}
+                  onChange={(e) => setIntegrationsWaPhoneId(e.target.value)}
+                  placeholder="1511895116748404"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Access token (masked)</div>
+                <input
+                  value={integrationsWaToken}
+                  onChange={(e) => setIntegrationsWaToken(e.target.value)}
+                  placeholder="Pegga aquí para actualizar (dejar vacío = no cambia)"
+                  type="password"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Verify token (masked)</div>
+                <input
+                  value={integrationsWaVerifyToken}
+                  onChange={(e) => setIntegrationsWaVerifyToken(e.target.value)}
+                  placeholder="Pegga aquí para actualizar (dejar vacío = no cambia)"
+                  type="password"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>
+              Webhook URL:{' '}
+              <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                {typeof window !== 'undefined' ? `${window.location.origin}/whatsapp/webhook` : '/whatsapp/webhook'}
+              </span>
+            </div>
+
+            <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => saveWhatsAppIntegration().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                Guardar
+              </button>
+              <button
+                onClick={() => testWhatsAppIntegration().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff' }}
+              >
+                Test token
+              </button>
+              {integrationsWaStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{integrationsWaStatus}</div> : null}
+              {integrationsWaTest ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{integrationsWaTest}</div> : null}
+              {integrationsWaError ? <div style={{ fontSize: 12, color: '#b93800' }}>{integrationsWaError}</div> : null}
+            </div>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Números autorizados (roles)</div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+              Estos números se consideran ADMIN o TEST para guardrails y simulación. En DEV, mantén solo los autorizados.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Admin numbers (E.164 sin +)</div>
+                <textarea
+                  value={authorizedAdminNumbersText}
+                  onChange={(e) => setAuthorizedAdminNumbersText(e.target.value)}
+                  rows={4}
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Test numbers (E.164 sin +)</div>
+                <textarea
+                  value={authorizedTestNumbersText}
+                  onChange={(e) => setAuthorizedTestNumbersText(e.target.value)}
+                  rows={4}
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => saveAuthorizedNumbers().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                Guardar
+              </button>
+              {authorizedNumbersStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{authorizedNumbersStatus}</div> : null}
+              {authorizedNumbersError ? <div style={{ fontSize: 12, color: '#b93800' }}>{authorizedNumbersError}</div> : null}
             </div>
           </div>
         </div>
@@ -909,7 +1241,17 @@ export const ConfigPage: React.FC = () => {
                     <td style={{ padding: 10, fontSize: 13 }}>{r.name}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>{r.trigger}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>
-                      {(r.scopePhoneLineId ? `Line:${r.scopePhoneLineId}` : 'Any') + ' / ' + (r.scopeProgramId ? `Program:${r.scopeProgramId}` : 'Any')}
+                      {(() => {
+                        const line = r.scopePhoneLineId
+                          ? phoneLines.find((l) => String(l.id) === String(r.scopePhoneLineId))
+                          : null;
+                        const prog = r.scopeProgramId
+                          ? programs.find((p) => String(p.id) === String(r.scopeProgramId))
+                          : null;
+                        const lineLabel = r.scopePhoneLineId ? (line?.alias ? `Line:${line.alias}` : `Line:${r.scopePhoneLineId}`) : 'Any';
+                        const progLabel = r.scopeProgramId ? (prog?.name ? `Program:${prog.name}` : `Program:${r.scopeProgramId}`) : 'Any';
+                        return `${lineLabel} / ${progLabel}`;
+                      })()}
                     </td>
                     <td style={{ padding: 10, fontSize: 13 }}>{r.priority}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>{r.lastRunStatus || '—'}</td>
@@ -992,11 +1334,55 @@ export const ConfigPage: React.FC = () => {
                         </option>
                       ))}
                     </select>
-                    <input value={row.value ?? ''} onChange={(e) => {
-                      const next = [...automationEditor.conditions];
-                      next[idx] = { ...row, value: e.target.value };
-                      setAutomationEditor({ ...automationEditor, conditions: next });
-                    }} style={{ padding: 6, borderRadius: 8, border: '1px solid #ddd' }} />
+                    {(() => {
+                      const field = String(row.field || '');
+                      const value = typeof row.value === 'undefined' || row.value === null ? '' : String(row.value);
+                      const setValue = (nextValue: any) => {
+                        const next = [...automationEditor.conditions];
+                        next[idx] = { ...row, value: nextValue };
+                        setAutomationEditor({ ...automationEditor, conditions: next });
+                      };
+                      const style: React.CSSProperties = { padding: 6, borderRadius: 8, border: '1px solid #ddd' };
+
+                      if (field === 'conversation.status') {
+                        return (
+                          <select value={value || 'NEW'} onChange={(e) => setValue(e.target.value)} style={style}>
+                            {['NEW', 'OPEN', 'CLOSED'].map((s) => (
+                              <option key={s} value={s}>
+                                {s}
+                              </option>
+                            ))}
+                          </select>
+                        );
+                      }
+                      if (field === 'whatsapp.windowStatus') {
+                        return (
+                          <select value={value || 'IN_24H'} onChange={(e) => setValue(e.target.value)} style={style}>
+                            {['IN_24H', 'OUTSIDE_24H'].map((s) => (
+                              <option key={s} value={s}>
+                                {s}
+                              </option>
+                            ))}
+                          </select>
+                        );
+                      }
+                      if (field === 'contact.noContactar' || field.startsWith('contact.has')) {
+                        return (
+                          <select value={value || 'false'} onChange={(e) => setValue(e.target.value)} style={style}>
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        );
+                      }
+
+                      return (
+                        <input
+                          value={value}
+                          onChange={(e) => setValue(e.target.value)}
+                          style={style}
+                        />
+                      );
+                    })()}
                     <button onClick={() => {
                       const next = (automationEditor.conditions || []).filter((_r: any, i: number) => i !== idx);
                       setAutomationEditor({ ...automationEditor, conditions: next });
@@ -1029,6 +1415,68 @@ export const ConfigPage: React.FC = () => {
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#555' }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean((automationEditor.actions || []).find((a: any) => a.type === 'SET_STATUS'))}
+                      onChange={(e) => {
+                        const enabled = e.target.checked;
+                        const rest = (automationEditor.actions || []).filter((a: any) => a.type !== 'SET_STATUS');
+                        const next = enabled ? [...rest, { type: 'SET_STATUS', status: 'OPEN' }] : rest;
+                        setAutomationEditor({ ...automationEditor, actions: next });
+                      }}
+                    />
+                    SET_STATUS
+                  </label>
+                  {(automationEditor.actions || []).find((a: any) => a.type === 'SET_STATUS') ? (
+                    <select
+                      value={(automationEditor.actions || []).find((a: any) => a.type === 'SET_STATUS')?.status || 'OPEN'}
+                      onChange={(e) => {
+                        const rest = (automationEditor.actions || []).filter((a: any) => a.type !== 'SET_STATUS');
+                        const next = [...rest, { type: 'SET_STATUS', status: e.target.value }];
+                        setAutomationEditor({ ...automationEditor, actions: next });
+                      }}
+                      style={{ padding: 6, borderRadius: 8, border: '1px solid #ddd' }}
+                    >
+                      {['NEW', 'OPEN', 'CLOSED'].map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#555' }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean((automationEditor.actions || []).find((a: any) => a.type === 'ADD_NOTE'))}
+                      onChange={(e) => {
+                        const enabled = e.target.checked;
+                        const rest = (automationEditor.actions || []).filter((a: any) => a.type !== 'ADD_NOTE');
+                        const next = enabled ? [...rest, { type: 'ADD_NOTE', note: 'Nota del sistema' }] : rest;
+                        setAutomationEditor({ ...automationEditor, actions: next });
+                      }}
+                    />
+                    ADD_NOTE
+                  </label>
+                  {(automationEditor.actions || []).find((a: any) => a.type === 'ADD_NOTE') ? (
+                    <textarea
+                      value={(automationEditor.actions || []).find((a: any) => a.type === 'ADD_NOTE')?.note || ''}
+                      onChange={(e) => {
+                        const rest = (automationEditor.actions || []).filter((a: any) => a.type !== 'ADD_NOTE');
+                        const next = [...rest, { type: 'ADD_NOTE', note: e.target.value }];
+                        setAutomationEditor({ ...automationEditor, actions: next });
+                      }}
+                      rows={3}
+                      style={{ width: '100%', marginTop: 6, padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                      placeholder="Nota visible como mensaje SYSTEM en la conversación (CRM)."
+                    />
+                  ) : null}
                 </div>
               </div>
 
