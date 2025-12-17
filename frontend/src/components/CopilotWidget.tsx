@@ -4,6 +4,22 @@ import { apiClient } from '../api/client';
 type CopilotAction =
   | { type: 'NAVIGATE'; view: 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review'; configTab?: string; label?: string };
 
+type CopilotCommand =
+  | { type: 'CREATE_PROGRAM'; name: string; description?: string | null; agentSystemPrompt: string; ref?: string | null; slug?: string | null }
+  | { type: 'CREATE_AUTOMATION'; name: string; trigger: string; scopeProgramRef?: string | null; scopeProgramSlug?: string | null; scopeProgramId?: string | null }
+  | { type: 'TEMP_OFF_OUTBOUND'; minutes: number }
+  | { type: 'RUN_SMOKE_SCENARIOS'; scenarioIds?: string[]; sanitizePii?: boolean }
+  | { type: 'DOWNLOAD_REVIEW_PACK' }
+  | { type: 'CREATE_PHONE_LINE'; alias: string; waPhoneNumberId: string }
+  | { type: 'SET_PHONE_LINE_DEFAULT_PROGRAM'; phoneLineId?: string | null; waPhoneNumberId?: string | null; programId?: string | null; programSlug?: string | null };
+
+type CopilotProposal = {
+  id: string;
+  title: string;
+  summary?: string | null;
+  commands: CopilotCommand[];
+};
+
 type DockSide = 'left' | 'right';
 type SizePreset = 'S' | 'M' | 'L';
 
@@ -20,6 +36,9 @@ type CopilotMessage = {
   role: 'user' | 'assistant';
   text: string;
   actions?: CopilotAction[];
+  proposals?: CopilotProposal[];
+  runId?: string | null;
+  status?: string | null;
   createdAt: number;
 };
 
@@ -50,19 +69,20 @@ export const CopilotWidget: React.FC<{
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionBusyRunId, setActionBusyRunId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [threads, setThreads] = useState<CopilotThreadSummary[]>([]);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [threadsLoading, setThreadsLoading] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  const selectedConversationId = useMemo(() => {
+  const selectedConversationId = (() => {
     try {
       return localStorage.getItem('selectedConversationId');
     } catch {
       return null;
     }
-  }, [currentView]);
+  })();
 
   useEffect(() => {
     const update = () => {
@@ -158,6 +178,9 @@ export const CopilotWidget: React.FC<{
             role: 'assistant',
             text: String(r.responseText || ''),
             actions: Array.isArray(r.actions) ? r.actions : undefined,
+            proposals: Array.isArray(r.proposals) ? r.proposals : undefined,
+            runId: typeof r.id === 'string' ? r.id : null,
+            status: typeof r.status === 'string' ? r.status : null,
             createdAt: createdAt + 1,
           });
         }
@@ -200,6 +223,81 @@ export const CopilotWidget: React.FC<{
     ]);
   };
 
+  const downloadWithAuth = async (url: string) => {
+    const token = localStorage.getItem('token');
+    const workspaceId = localStorage.getItem('workspaceId') || 'default';
+    if (!token) throw new Error('No hay sesión.');
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-Workspace-Id': workspaceId,
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const dispo = res.headers.get('Content-Disposition') || '';
+    const match = dispo.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = match?.[1] || 'download.zip';
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  const handleAutoNavigate = (res: any, actions: CopilotAction[] | undefined) => {
+    if (!res?.autoNavigate) return;
+    const first = actions?.[0];
+    if (!first) return;
+    onNavigate(first, { conversationId: selectedConversationId });
+  };
+
+  const confirmProposal = async (runId: string, proposalId: string) => {
+    if (!runId || actionBusyRunId) return;
+    setActionBusyRunId(runId);
+    setError(null);
+    try {
+      const res: any = await apiClient.post(`/api/copilot/runs/${runId}/confirm`, { proposalId });
+      const actions: CopilotAction[] | undefined = Array.isArray(res?.actions) ? res.actions : undefined;
+      const resultItems = res?.results?.results;
+      const download = Array.isArray(resultItems)
+        ? resultItems.find((r: any) => r && r.ok && r.type === 'DOWNLOAD_REVIEW_PACK' && r.downloadUrl)
+        : null;
+      if (download?.downloadUrl) {
+        await downloadWithAuth(String(download.downloadUrl));
+      }
+      const nextThreadId = typeof res?.threadId === 'string' ? res.threadId : threadId;
+      if (nextThreadId) await loadThread(nextThreadId);
+      handleAutoNavigate(res, actions);
+      await loadThreads();
+    } catch (err: any) {
+      setError(err.message || 'No se pudo confirmar la acción');
+    } finally {
+      setActionBusyRunId(null);
+    }
+  };
+
+  const cancelProposal = async (runId: string) => {
+    if (!runId || actionBusyRunId) return;
+    setActionBusyRunId(runId);
+    setError(null);
+    try {
+      const res: any = await apiClient.post(`/api/copilot/runs/${runId}/cancel`, {});
+      const nextThreadId = typeof res?.threadId === 'string' ? res.threadId : threadId;
+      if (nextThreadId) await loadThread(nextThreadId);
+      await loadThreads();
+    } catch (err: any) {
+      setError(err.message || 'No se pudo cancelar la acción');
+    } finally {
+      setActionBusyRunId(null);
+    }
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || loading) return;
@@ -216,8 +314,16 @@ export const CopilotWidget: React.FC<{
       });
       const replyText = typeof res?.reply === 'string' ? res.reply : 'Ok.';
       const actions: CopilotAction[] | undefined = Array.isArray(res?.actions) ? res.actions : undefined;
+      const proposals: CopilotProposal[] | undefined = Array.isArray(res?.proposals) ? res.proposals : undefined;
+      const runId = typeof res?.runId === 'string' ? res.runId : null;
       const nextThreadId = typeof res?.threadId === 'string' ? res.threadId : threadId;
-      pushMessage({ role: 'assistant', text: replyText, ...(actions ? { actions } : {}) });
+      pushMessage({
+        role: 'assistant',
+        text: replyText,
+        ...(actions ? { actions } : {}),
+        ...(proposals ? { proposals } : {}),
+        runId,
+      });
       if (nextThreadId && nextThreadId !== threadId) {
         setThreadId(nextThreadId);
         setShowHistory(false);
@@ -225,6 +331,7 @@ export const CopilotWidget: React.FC<{
         // Refresh thread from server to persist actions/logs.
         loadThread(nextThreadId).catch(() => {});
       }
+      handleAutoNavigate(res, actions);
       loadThreads().catch(() => {});
     } catch (err: any) {
       setError(err.message || 'No se pudo contactar al Copilot');
@@ -584,6 +691,51 @@ export const CopilotWidget: React.FC<{
                           >
                             {a.label || `Ir a ${a.view}`}
                           </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    {isAdmin && m.role === 'assistant' && m.proposals && m.proposals.length > 0 && m.runId ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: 'min(560px, 92vw)' }}>
+                        {m.proposals.map((p) => (
+                          <div key={`${m.id}-p-${p.id}`} style={{ border: '1px solid #e5e5e5', borderRadius: 12, padding: 10, background: '#fff' }}>
+                            <div style={{ fontWeight: 900, fontSize: 13 }}>{p.title}</div>
+                            {p.summary ? <div style={{ marginTop: 6, fontSize: 12, color: '#555', whiteSpace: 'pre-wrap' }}>{p.summary}</div> : null}
+                            <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                              Comandos: {(Array.isArray(p.commands) ? p.commands : []).map((c) => c.type).join(', ') || '—'}
+                            </div>
+                            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <button
+                                onClick={() => confirmProposal(m.runId || '', p.id).catch(() => {})}
+                                disabled={Boolean(actionBusyRunId)}
+                                style={{
+                                  padding: '6px 10px',
+                                  borderRadius: 10,
+                                  border: '1px solid #111',
+                                  background: '#111',
+                                  color: '#fff',
+                                  fontSize: 12,
+                                  fontWeight: 800,
+                                  cursor: actionBusyRunId ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                {actionBusyRunId === m.runId ? 'Confirmando…' : 'Confirmar'}
+                              </button>
+                              <button
+                                onClick={() => cancelProposal(m.runId || '').catch(() => {})}
+                                disabled={Boolean(actionBusyRunId)}
+                                style={{
+                                  padding: '6px 10px',
+                                  borderRadius: 10,
+                                  border: '1px solid #ccc',
+                                  background: '#fff',
+                                  fontSize: 12,
+                                  cursor: actionBusyRunId ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </div>
                         ))}
                       </div>
                     ) : null}

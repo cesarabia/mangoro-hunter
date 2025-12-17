@@ -334,8 +334,12 @@ model CopilotRunLog {
   inputText     String
   responseText  String?
   actionsJson   String?
+  proposalsJson String?
+  resultsJson   String?
   status        String     @default("SUCCESS")
   error         String?
+  confirmedAt   DateTime?
+  confirmedByUserId String?
   aiUsage       AiUsageLog[]
   createdAt     DateTime   @default(now())
 
