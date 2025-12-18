@@ -55,6 +55,9 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         archivedAt: true,
         createdAt: true,
         createdByUserId: true,
+        acceptedByUserId: true,
+        createdBy: { select: { id: true, email: true, name: true } },
+        acceptedBy: { select: { id: true, email: true, name: true } },
       },
     });
     return invites.map((i) => ({
@@ -67,6 +70,9 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       archivedAt: i.archivedAt ? i.archivedAt.toISOString() : null,
       createdAt: i.createdAt.toISOString(),
       createdByUserId: i.createdByUserId || null,
+      acceptedByUserId: i.acceptedByUserId || null,
+      createdBy: i.createdBy ? { id: i.createdBy.id, email: i.createdBy.email, name: i.createdBy.name } : null,
+      acceptedBy: i.acceptedBy ? { id: i.acceptedBy.id, email: i.acceptedBy.email, name: i.acceptedBy.name } : null,
     }));
   });
 

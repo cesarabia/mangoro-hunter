@@ -4,6 +4,30 @@ import { apiClient } from '../api/client';
 type TabKey = 'workspace' | 'integrations' | 'users' | 'phoneLines' | 'programs' | 'automations' | 'usage' | 'logs';
 type LogsTabKey = 'agentRuns' | 'automationRuns';
 
+const looksLikeSecretOrToken = (value: string): boolean => {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  if (/^EAAB/i.test(raw)) return true;
+  if (/[A-Za-z]/.test(raw)) return true;
+  if (raw.length >= 30 && /[A-Za-z0-9_-]{30,}/.test(raw)) return true;
+  return false;
+};
+
+const normalizeChilePhoneE164 = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  let raw = value.trim();
+  if (!raw) return null;
+  if (looksLikeSecretOrToken(raw)) {
+    throw new Error('phoneE164 parece un token/credencial. Debe ser un número en formato E.164 (ej: +56994830202).');
+  }
+  raw = raw.replace(/[()\s-]+/g, '');
+  if (/^\d+$/.test(raw)) raw = `+${raw}`;
+  if (!/^\+56\d{9}$/.test(raw)) {
+    throw new Error('phoneE164 inválido. Usa formato E.164 Chile: +56 seguido de 9 dígitos (ej: +56994830202).');
+  }
+  return raw;
+};
+
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'workspace', label: 'Workspace' },
   { key: 'integrations', label: 'Integraciones' },
@@ -99,6 +123,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     [workspaces]
   );
 
+  const [cloneSourceWorkspaceId, setCloneSourceWorkspaceId] = useState<string>('');
+  const [clonePrograms, setClonePrograms] = useState<boolean>(true);
+  const [cloneAutomations, setCloneAutomations] = useState<boolean>(true);
+  const [cloneConnectors, setCloneConnectors] = useState<boolean>(true);
+  const [cloneStatus, setCloneStatus] = useState<string | null>(null);
+  const [cloneError, setCloneError] = useState<string | null>(null);
+  const [cloneResult, setCloneResult] = useState<any | null>(null);
+
   const [outboundSafety, setOutboundSafety] = useState<any | null>(null);
   const [outboundPolicy, setOutboundPolicy] = useState<string>('ALLOWLIST_ONLY');
   const [outboundAllowlistText, setOutboundAllowlistText] = useState<string>('');
@@ -159,7 +191,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [inviteUrlById, setInviteUrlById] = useState<Record<string, string>>({});
 
   const [phoneLines, setPhoneLines] = useState<any[]>([]);
+  const [phoneLinesIncludeArchived, setPhoneLinesIncludeArchived] = useState(false);
+  const [phoneLinesStatus, setPhoneLinesStatus] = useState<string | null>(null);
+  const [phoneLinesError, setPhoneLinesError] = useState<string | null>(null);
   const [phoneLineEditor, setPhoneLineEditor] = useState<any | null>(null);
+  const [phoneLineSaveStatus, setPhoneLineSaveStatus] = useState<string | null>(null);
+  const [phoneLineSaveError, setPhoneLineSaveError] = useState<string | null>(null);
 
   const [programs, setPrograms] = useState<any[]>([]);
   const [programEditor, setProgramEditor] = useState<any | null>(null);
@@ -246,9 +283,17 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setInvitesError(err.message || 'No se pudieron cargar invitaciones');
     }
   };
-  const loadPhoneLines = async () => {
-    const data = await apiClient.get('/api/phone-lines');
-    setPhoneLines(Array.isArray(data) ? data : []);
+  const loadPhoneLines = async (opts?: { includeArchived?: boolean }) => {
+    setPhoneLinesError(null);
+    try {
+      const includeArchived =
+        typeof opts?.includeArchived === 'boolean' ? opts.includeArchived : phoneLinesIncludeArchived;
+      const data = await apiClient.get(includeArchived ? '/api/phone-lines?includeArchived=1' : '/api/phone-lines');
+      setPhoneLines(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setPhoneLines([]);
+      setPhoneLinesError(err.message || 'No se pudieron cargar números WhatsApp');
+    }
   };
   const loadPrograms = async () => {
     const data = await apiClient.get('/api/programs');
@@ -825,6 +870,28 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     downloadJson(`workspace-${workspaceId}-config.json`, { phoneLines: lines, programs: progs, automations: autos });
   };
 
+  const cloneFromWorkspace = async () => {
+    setCloneStatus(null);
+    setCloneError(null);
+    setCloneResult(null);
+    try {
+      const sourceWorkspaceId = String(cloneSourceWorkspaceId || '').trim();
+      if (!sourceWorkspaceId) throw new Error('Selecciona un workspace origen.');
+      const res: any = await apiClient.post('/api/workspaces/clone-from', {
+        sourceWorkspaceId,
+        clonePrograms: Boolean(clonePrograms),
+        cloneAutomations: Boolean(cloneAutomations),
+        cloneConnectors: Boolean(cloneConnectors)
+      });
+      setCloneResult(res);
+      setCloneStatus('Clonado. Revisa Programs/Automations/Integraciones.');
+      await Promise.all([loadPrograms(), loadAutomations(), loadPhoneLines()]);
+      loadIntegrations().catch(() => {});
+    } catch (err: any) {
+      setCloneError(err.message || 'No se pudo clonar');
+    }
+  };
+
   const saveUserRole = async (membershipId: string, role: string) => {
     await apiClient.patch(`/api/users/${membershipId}`, { role });
     await loadUsers();
@@ -958,21 +1025,54 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
   const savePhoneLine = async () => {
     if (!phoneLineEditor) return;
-    const payload = {
-      alias: phoneLineEditor.alias,
-      phoneE164: phoneLineEditor.phoneE164 || null,
-      waPhoneNumberId: phoneLineEditor.waPhoneNumberId,
-      wabaId: phoneLineEditor.wabaId || null,
-      defaultProgramId: phoneLineEditor.defaultProgramId || null,
-      isActive: Boolean(phoneLineEditor.isActive)
-    };
-    if (phoneLineEditor.id) {
-      await apiClient.patch(`/api/phone-lines/${phoneLineEditor.id}`, payload);
-    } else {
-      await apiClient.post('/api/phone-lines', payload);
+    setPhoneLineSaveStatus(null);
+    setPhoneLineSaveError(null);
+    try {
+      const normalizedPhone = normalizeChilePhoneE164(phoneLineEditor.phoneE164 || '');
+      const payload = {
+        alias: String(phoneLineEditor.alias || '').trim(),
+        phoneE164: normalizedPhone,
+        waPhoneNumberId: String(phoneLineEditor.waPhoneNumberId || '').trim(),
+        wabaId: phoneLineEditor.wabaId ? String(phoneLineEditor.wabaId).trim() : null,
+        defaultProgramId: phoneLineEditor.defaultProgramId ? String(phoneLineEditor.defaultProgramId).trim() : null,
+        isActive: Boolean(phoneLineEditor.isActive)
+      };
+      if (!payload.alias) throw new Error('alias es requerido');
+      if (!payload.waPhoneNumberId) throw new Error('waPhoneNumberId es requerido');
+
+      if (phoneLineEditor.id) {
+        await apiClient.patch(`/api/phone-lines/${phoneLineEditor.id}`, payload);
+      } else {
+        await apiClient.post('/api/phone-lines', payload);
+      }
+      setPhoneLineSaveStatus('Guardado.');
+      setPhoneLineEditor(null);
+      await loadPhoneLines();
+    } catch (err: any) {
+      setPhoneLineSaveError(err.message || 'No se pudo guardar');
     }
-    setPhoneLineEditor(null);
-    await loadPhoneLines();
+  };
+
+  const patchPhoneLine = async (phoneLineId: string, patch: any) => {
+    setPhoneLinesStatus(null);
+    setPhoneLinesError(null);
+    try {
+      await apiClient.patch(`/api/phone-lines/${phoneLineId}`, patch);
+      setPhoneLinesStatus('Actualizado.');
+      await loadPhoneLines();
+    } catch (err: any) {
+      setPhoneLinesError(err.message || 'No se pudo actualizar');
+    }
+  };
+
+  const archivePhoneLine = async (phoneLineId: string, archived: boolean) => {
+    const ok = window.confirm(
+      archived
+        ? `¿Archivar este número?\n\nEsto NO borra data. Se desactivará y quedará oculto por defecto.`
+        : `¿Restaurar este número archivado?`
+    );
+    if (!ok) return;
+    await patchPhoneLine(phoneLineId, { archived });
   };
 
   const saveProgram = async () => {
@@ -1309,6 +1409,54 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
           >
             Exportar configuración
           </button>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Clonar desde otro workspace (template/copy)</div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+              Copia configuración al workspace actual: Programs, Automations y Connectors. <b>No copia secretos/tokens</b>: deberás re‑ingresarlos en Integraciones.
+            </div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <select
+                value={cloneSourceWorkspaceId}
+                onChange={(e) => setCloneSourceWorkspaceId(e.target.value)}
+                style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #ccc', minWidth: 240 }}
+              >
+                <option value="">Selecciona workspace origen…</option>
+                {workspaces
+                  .filter((w) => String(w.id) !== String(localStorage.getItem('workspaceId') || 'default'))
+                  .map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name} ({w.role})
+                    </option>
+                  ))}
+              </select>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
+                <input type="checkbox" checked={clonePrograms} onChange={(e) => setClonePrograms(e.target.checked)} />
+                Programs
+              </label>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
+                <input type="checkbox" checked={cloneAutomations} onChange={(e) => setCloneAutomations(e.target.checked)} />
+                Automations
+              </label>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
+                <input type="checkbox" checked={cloneConnectors} onChange={(e) => setCloneConnectors(e.target.checked)} />
+                Connectors
+              </label>
+              <button
+                onClick={() => cloneFromWorkspace().catch(() => {})}
+                style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+              >
+                Clonar
+              </button>
+            </div>
+            {cloneStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{cloneStatus}</div> : null}
+            {cloneError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{cloneError}</div> : null}
+            {cloneResult ? (
+              <pre style={{ marginTop: 10, fontSize: 11, background: '#fafafa', border: '1px solid #eee', borderRadius: 10, padding: 10, overflowX: 'auto' }}>
+                {JSON.stringify(cloneResult, null, 2)}
+              </pre>
+            ) : null}
+          </div>
 
           <div style={{ marginTop: 14, borderTop: '1px solid #eee', paddingTop: 14 }}>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>SAFE OUTBOUND MODE</div>
@@ -2102,7 +2250,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Role</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Scope</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Expires</th>
-                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Accepted</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Accepted at</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Accepted by</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Estado</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
                   </tr>
@@ -2110,7 +2259,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 <tbody>
                   {(invites || []).length === 0 ? (
                     <tr>
-                      <td colSpan={7} style={{ padding: 10, fontSize: 13, color: '#666' }}>
+                      <td colSpan={8} style={{ padding: 10, fontSize: 13, color: '#666' }}>
                         — Sin invitaciones.
                       </td>
                     </tr>
@@ -2123,7 +2272,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                           {String(i.role || '').toUpperCase() === 'MEMBER' && i.assignedOnly ? 'Solo asignadas' : '—'}
                         </td>
                         <td style={{ padding: 10, fontSize: 13 }}>{i.expiresAt ? String(i.expiresAt).slice(0, 19).replace('T', ' ') : '—'}</td>
-                        <td style={{ padding: 10, fontSize: 13 }}>{i.acceptedAt ? '✅' : '—'}</td>
+                        <td style={{ padding: 10, fontSize: 13 }}>{i.acceptedAt ? String(i.acceptedAt).slice(0, 19).replace('T', ' ') : '—'}</td>
+                        <td style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                          {i.acceptedBy?.email ? String(i.acceptedBy.email) : '—'}
+                        </td>
                         <td style={{ padding: 10, fontSize: 12, color: i.archivedAt ? '#b93800' : '#1a7f37' }}>
                           {(() => {
                             const expired = i.expiresAt ? new Date(String(i.expiresAt)).getTime() <= Date.now() : false;
@@ -2176,15 +2328,44 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
       {tab === 'phoneLines' ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>Números WhatsApp</div>
-            <button
-              onClick={() => setPhoneLineEditor({ alias: '', phoneE164: '', waPhoneNumberId: '', wabaId: '', defaultProgramId: '', isActive: true })}
-              style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
-            >
-              + Agregar número
-            </button>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>Números WhatsApp</div>
+              <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                Tip: <span style={{ fontFamily: 'monospace' }}>phoneE164</span> es solo el número (ej: <span style={{ fontFamily: 'monospace' }}>+56994830202</span>). Nunca pegues tokens/credenciales aquí.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
+                <input
+                  type="checkbox"
+                  checked={phoneLinesIncludeArchived}
+                  onChange={(e) => {
+                    setPhoneLinesIncludeArchived(e.target.checked);
+                    loadPhoneLines({ includeArchived: e.target.checked }).catch(() => {});
+                  }}
+                />
+                Mostrar archivados
+              </label>
+              <button
+                onClick={() => loadPhoneLines().catch(() => {})}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+              >
+                Refresh
+              </button>
+              <button
+                onClick={() =>
+                  setPhoneLineEditor({ alias: '', phoneE164: '', waPhoneNumberId: '', wabaId: '', defaultProgramId: '', isActive: true })
+                }
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                + Agregar número
+              </button>
+            </div>
           </div>
+
+          {phoneLinesError ? <div style={{ fontSize: 12, color: '#b93800' }}>{phoneLinesError}</div> : null}
+          {phoneLinesStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{phoneLinesStatus}</div> : null}
 
           <div style={{ border: '1px solid #eee', borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -2204,6 +2385,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               <tbody>
                 {phoneLines.map((l) => (
                   <tr key={l.id} style={{ borderTop: '1px solid #f0f0f0' }}>
+                    {(() => {
+                      const isArchived = Boolean(l.archivedAt);
+                      const isActive = Boolean(l.isActive) && !isArchived;
+                      const statusLabel = isArchived ? 'Archived' : isActive ? 'Active' : 'Inactive';
+                      return (
+                        <>
                     <td style={{ padding: 10, fontSize: 13 }}>{l.alias}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>{l.phoneE164 || '—'}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>
@@ -2219,7 +2406,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     <td style={{ padding: 10, fontSize: 13 }}>
                       <select
                         value={l.defaultProgramId || ''}
-                        onChange={(e) => apiClient.patch(`/api/phone-lines/${l.id}`, { defaultProgramId: e.target.value || null }).then(loadPhoneLines)}
+                        disabled={isArchived}
+                        onChange={(e) => patchPhoneLine(String(l.id), { defaultProgramId: e.target.value || null }).catch(() => {})}
                         style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
                       >
                         <option value="">—</option>
@@ -2234,11 +2422,17 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                       <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <input
                           type="checkbox"
-                          checked={Boolean(l.isActive)}
-                          onChange={(e) => apiClient.patch(`/api/phone-lines/${l.id}`, { isActive: e.target.checked }).then(loadPhoneLines)}
+                          disabled={isArchived}
+                          checked={isActive}
+                          onChange={(e) => patchPhoneLine(String(l.id), { isActive: e.target.checked }).catch(() => {})}
                         />
-                        {l.isActive ? 'Active' : 'Inactive'}
+                        {statusLabel}
                       </label>
+                      {isArchived && l.archivedAt ? (
+                        <div style={{ marginTop: 4, fontSize: 11, color: '#666' }}>
+                          Archivado: {String(l.archivedAt).slice(0, 19).replace('T', ' ')}
+                        </div>
+                      ) : null}
                     </td>
                     <td style={{ padding: 10, fontSize: 13 }}>{l.lastInboundAt || '—'}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>{l.lastOutboundAt || '—'}</td>
@@ -2250,12 +2444,15 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                         Editar
                       </button>
                       <button
-                        onClick={() => apiClient.patch(`/api/phone-lines/${l.id}`, { isActive: false }).then(loadPhoneLines)}
+                        onClick={() => archivePhoneLine(String(l.id), !isArchived).catch(() => {})}
                         style={{ marginLeft: 8, padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
                       >
-                        Desactivar
+                        {isArchived ? 'Restaurar' : 'Archivar'}
                       </button>
                     </td>
+                        </>
+                      );
+                    })()}
                   </tr>
                 ))}
               </tbody>
@@ -2267,7 +2464,16 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               <div style={{ fontWeight: 700, marginBottom: 8 }}>{phoneLineEditor.id ? 'Editar número' : 'Agregar número'}</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <input value={phoneLineEditor.alias} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, alias: e.target.value })} placeholder="alias (required)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
-                <input value={phoneLineEditor.phoneE164 || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, phoneE164: e.target.value })} placeholder="phoneE164" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                <input
+                  value={phoneLineEditor.phoneE164 || ''}
+                  onChange={(e) => {
+                    setPhoneLineSaveError(null);
+                    setPhoneLineSaveStatus(null);
+                    setPhoneLineEditor({ ...phoneLineEditor, phoneE164: e.target.value });
+                  }}
+                  placeholder="phoneE164 (E.164 Chile, ej: +56994830202)"
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                />
                 <input value={phoneLineEditor.waPhoneNumberId} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, waPhoneNumberId: e.target.value })} placeholder="waPhoneNumberId (required)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
                 <input value={phoneLineEditor.wabaId || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, wabaId: e.target.value })} placeholder="wabaId" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
                 <select value={phoneLineEditor.defaultProgramId || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, defaultProgramId: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
@@ -2283,6 +2489,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   Active
                 </label>
               </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                Regla: no reutilices el mismo <span style={{ fontFamily: 'monospace' }}>waPhoneNumberId</span> en dos workspaces activos a la vez.
+                Si necesitas mover la línea a otro workspace, primero desactívala/archívala en el workspace anterior.
+              </div>
               <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
                 <button onClick={() => savePhoneLine().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}>
                   Guardar
@@ -2291,6 +2501,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   Cancelar
                 </button>
               </div>
+              {phoneLineSaveStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{phoneLineSaveStatus}</div> : null}
+              {phoneLineSaveError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{phoneLineSaveError}</div> : null}
             </div>
           ) : null}
         </div>

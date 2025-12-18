@@ -134,6 +134,79 @@ export const ReviewPage: React.FC<{
     onGoConfig();
   };
 
+  const getDodHelp = (id: string): { steps: string[]; actions: Array<{ label: string; onClick: () => void }> } => {
+    switch (id) {
+      case 'safeMode':
+        return {
+          steps: [
+            'Ir a Configuración → Workspace.',
+            'Ver “SAFE OUTBOUND MODE”: policy = ALLOWLIST_ONLY y allowlist efectiva solo admin/test.',
+            'En logs, un intento a número fuera allowlist debe quedar como bloqueado (blockedReason).'
+          ],
+          actions: [
+            { label: 'Abrir Workspace', onClick: () => openConfigTab('workspace') },
+            { label: 'Abrir Logs', onClick: () => setLogTab('outbound') }
+          ]
+        };
+      case 'smokeScenarios':
+        return {
+          steps: ['Ir a QA → Smoke Scenarios.', 'Ejecutar “Run Smoke Scenarios”.', 'Ver PASS/FAIL y revisar asserts si falla.'],
+          actions: [{ label: 'Abrir Simulator', onClick: () => onGoSimulator() }]
+        };
+      case 'reviewPack':
+        return {
+          steps: ['Ir a QA → Review Pack.', 'Click “Download Review Pack (zip)”.', 'El zip debe contener docs + logs + scenarios.'],
+          actions: [{ label: 'Ir a QA', onClick: () => setActiveTab('qa') }]
+        };
+      case 'programConsistency':
+        return {
+          steps: [
+            'Ir a Inbox y abrir una conversación.',
+            'Cambiar Program en Detalles.',
+            'Click “Sugerir” y/o enviar “hola” por WhatsApp test: debe usar el Program elegido.',
+            'Ver en Logs que el run registra programSlug/programId correcto.'
+          ],
+          actions: [
+            { label: 'Abrir Inbox', onClick: onGoInbox },
+            { label: 'Abrir Programs', onClick: () => openConfigTab('programs') },
+            { label: 'Abrir Logs', onClick: () => setLogTab('agentRuns') }
+          ]
+        };
+      case 'inboxUx':
+        return {
+          steps: [
+            'Abrir Inbox, seleccionar una conversación.',
+            'Redimensionar ventana: no debe perderse la conversación ni el draft.',
+            'No debe haber scroll horizontal; el input queda fijo abajo.'
+          ],
+          actions: [{ label: 'Abrir Inbox', onClick: onGoInbox }]
+        };
+      case 'copilotLv2':
+        return {
+          steps: [
+            'Abrir Copilot.',
+            'Pedir “Crea un Program …” y confirmar.',
+            'La tarjeta debe pasar a ✅ Ejecutado (sin quedar colgada) y quedar auditado en Copilot Runs.'
+          ],
+          actions: [
+            { label: 'Abrir Inbox', onClick: onGoInbox },
+            { label: 'Ver Copilot Runs', onClick: () => setLogTab('copilotRuns') }
+          ]
+        };
+      case 'programsPro':
+        return {
+          steps: [
+            'Ir a Configuración → Programs.',
+            'Editar un Program y agregar Knowledge Pack (links/texto).',
+            'Probar “Generar/Mejorar instrucciones con IA” y guardar.'
+          ],
+          actions: [{ label: 'Abrir Programs', onClick: () => openConfigTab('programs') }]
+        };
+      default:
+        return { steps: [], actions: [] };
+    }
+  };
+
   const refreshHealth = async () => {
     setHealthError(null);
     try {
@@ -1107,31 +1180,57 @@ export const ReviewPage: React.FC<{
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {DOD_ITEMS.map((item) => {
                   const status: DodStatus = releaseDod?.[item.id] || 'PENDING';
+                  const help = getDodHelp(item.id);
                   return (
-                    <label key={item.id} style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12 }}>
-                      {item.kind === 'manual' ? (
-                        <select
-                          value={status}
-                          onChange={(e) => {
-                            const next = normalizeDodStatus(e.target.value) || 'PENDING';
-                            setReleaseDod((prev) => ({ ...(prev || {}), [item.id]: next }));
-                          }}
-                          style={{ padding: '6px 8px', borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }}
-                        >
-                          <option value="PASS">PASS</option>
-                          <option value="PENDING">PENDIENTE</option>
-                          <option value="FAIL">FAIL</option>
-                        </select>
-                      ) : (
-                        <div style={{ width: 88, textAlign: 'center', padding: '6px 8px', borderRadius: 10, border: '1px solid #eee', background: '#fafafa', fontSize: 12 }}>
-                          Auto
+                    <div key={item.id} style={{ border: '1px solid #f0f0f0', borderRadius: 12, padding: 10, background: '#fff' }}>
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12, flexWrap: 'wrap' }}>
+                        {item.kind === 'manual' ? (
+                          <select
+                            value={status}
+                            onChange={(e) => {
+                              const next = normalizeDodStatus(e.target.value) || 'PENDING';
+                              setReleaseDod((prev) => ({ ...(prev || {}), [item.id]: next }));
+                            }}
+                            style={{ padding: '6px 8px', borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }}
+                          >
+                            <option value="PASS">PASS</option>
+                            <option value="PENDING">PENDIENTE</option>
+                            <option value="FAIL">FAIL</option>
+                          </select>
+                        ) : (
+                          <div style={{ width: 88, textAlign: 'center', padding: '6px 8px', borderRadius: 10, border: '1px solid #eee', background: '#fafafa', fontSize: 12 }}>
+                            Auto
+                          </div>
+                        )}
+                        <span style={{ fontWeight: 800, color: dodColor(status), width: 70 }}>
+                          {status === 'PENDING' ? 'PEND.' : status}
+                        </span>
+                        <span style={{ color: '#111', fontWeight: 700 }}>{item.label}</span>
+                      </div>
+                      {help.steps.length > 0 ? (
+                        <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                          <div style={{ fontWeight: 800, marginBottom: 4 }}>Cómo validar</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {help.steps.map((s) => (
+                              <div key={s}>• {s}</div>
+                            ))}
+                          </div>
+                          {help.actions.length > 0 ? (
+                            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              {help.actions.map((a) => (
+                                <button
+                                  key={a.label}
+                                  onClick={a.onClick}
+                                  style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                                >
+                                  {a.label}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
-                      )}
-                      <span style={{ fontWeight: 800, color: dodColor(status), width: 70 }}>
-                        {status === 'PENDING' ? 'PEND.' : status}
-                      </span>
-                      <span style={{ color: '#111' }}>{item.label}</span>
-                    </label>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>
