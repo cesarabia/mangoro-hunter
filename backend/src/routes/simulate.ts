@@ -398,6 +398,47 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
               assertions.push({ ok: Boolean(inTarget) && String(inTarget?.role || '').toUpperCase() === 'OWNER', message: inTarget ? `owner role in ${targetWorkspaceId}: ${inTarget.role}` : `owner membership in ${targetWorkspaceId} missing` });
             }
           }
+
+          const assignmentFlow = (wsSetup as any)?.assignmentFlow;
+          if (assignmentFlow && typeof assignmentFlow === 'object') {
+            const memberEmail = String((assignmentFlow as any)?.memberEmail || '').trim().toLowerCase();
+            if (!memberEmail) {
+              assertions.push({ ok: false, message: 'assignmentFlow.memberEmail missing' });
+            } else {
+              const memberUser = await prisma.user.findUnique({ where: { email: memberEmail }, select: { id: true, email: true } }).catch(() => null);
+              if (!memberUser?.id) {
+                assertions.push({ ok: false, message: `assignmentFlow: user ${memberEmail} missing (acepta la invitación)` });
+              } else {
+                const memberMembership = await prisma.membership
+                  .findFirst({
+                    where: { workspaceId: targetWorkspaceId, userId: memberUser.id, archivedAt: null },
+                    select: { id: true, role: true, assignedOnly: true as any },
+                  })
+                  .catch(() => null);
+                const membershipOk =
+                  Boolean(memberMembership?.id) &&
+                  String(memberMembership?.role || '').toUpperCase() === 'MEMBER' &&
+                  Boolean((memberMembership as any)?.assignedOnly);
+                assertions.push({
+                  ok: membershipOk,
+                  message: membershipOk
+                    ? `assignmentFlow: membership MEMBER assignedOnly OK (${memberEmail})`
+                    : `assignmentFlow: membership missing/invalid (role=${memberMembership?.role || '—'}, assignedOnly=${Boolean((memberMembership as any)?.assignedOnly)})`,
+                });
+
+                const phoneLine = await prisma.phoneLine
+                  .findFirst({
+                    where: { workspaceId: targetWorkspaceId, archivedAt: null, isActive: true },
+                    select: { id: true },
+                  })
+                  .catch(() => null);
+                assertions.push({
+                  ok: Boolean(phoneLine?.id),
+                  message: phoneLine?.id ? 'assignmentFlow: phoneLine OK' : 'assignmentFlow: no active phoneLine in workspace',
+                });
+              }
+            }
+          }
         }
       }
 

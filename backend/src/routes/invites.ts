@@ -290,10 +290,20 @@ export async function registerInviteRoutes(app: FastifyInstance) {
     if (!raw) return reply.code(404).send({ error: 'Invite no encontrado.' });
 
     const invite = await prisma.workspaceInvite.findFirst({
-      where: { token: raw, archivedAt: null },
+      where: { token: raw },
       include: { workspace: { select: { id: true, name: true } } },
     });
     if (!invite) return reply.code(404).send({ error: 'Invite no encontrado.' });
+
+    const userExists = await prisma.user
+      .findUnique({ where: { email: invite.email }, select: { id: true } })
+      .then((u) => Boolean(u?.id))
+      .catch(() => false);
+
+    const expired = invite.expiresAt.getTime() <= Date.now();
+    const archived = Boolean(invite.archivedAt);
+    const accepted = Boolean(invite.acceptedAt);
+    const status = archived ? 'ARCHIVED' : accepted ? 'ACCEPTED' : expired ? 'EXPIRED' : 'PENDING';
 
     return {
       ok: true,
@@ -304,7 +314,11 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       assignedOnly: Boolean((invite as any).assignedOnly),
       expiresAt: invite.expiresAt.toISOString(),
       acceptedAt: invite.acceptedAt ? invite.acceptedAt.toISOString() : null,
-      expired: invite.expiresAt.getTime() <= Date.now(),
+      archivedAt: invite.archivedAt ? invite.archivedAt.toISOString() : null,
+      expired,
+      archived,
+      status,
+      userExists,
     };
   });
 
@@ -329,17 +343,20 @@ export async function registerInviteRoutes(app: FastifyInstance) {
     const passwordHash = await hashPassword(password);
     const email = invite.email;
 
-    const user = await prisma.user.upsert({
-      where: { email },
-      create: {
+    const existingUser = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+    if (existingUser?.id) {
+      return reply.code(409).send({
+        error: 'Este email ya tiene acceso. Inicia sesión y acepta la invitación desde tu cuenta.',
+        code: 'USER_EXISTS',
+      });
+    }
+
+    const user = await prisma.user.create({
+      data: {
         email,
         name: name || email.split('@')[0],
         passwordHash,
         role: 'AGENT',
-      },
-      update: {
-        name: name || undefined,
-        passwordHash,
       },
       select: { id: true, role: true },
     });
@@ -360,5 +377,48 @@ export async function registerInviteRoutes(app: FastifyInstance) {
     const jwt = (app as any).jwt;
     const signed = jwt.sign({ userId: user.id, role: user.role });
     return { ok: true, token: signed, workspaceId: invite.workspaceId };
+  });
+
+  // Accept invite for an existing user (no password reset). Requires login.
+  app.post('/:token/accept-existing', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const { token } = request.params as { token: string };
+    const raw = String(token || '').trim();
+    if (!raw) return reply.code(404).send({ error: 'Invite no encontrado.' });
+
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+    if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+    const invite = await prisma.workspaceInvite.findFirst({
+      where: { token: raw, archivedAt: null },
+      include: { workspace: { select: { id: true, name: true } } },
+    });
+    if (!invite) return reply.code(404).send({ error: 'Invite no encontrado.' });
+    if (invite.acceptedAt) return reply.code(409).send({ error: 'Invite ya fue usado.' });
+    if (invite.expiresAt.getTime() <= Date.now()) return reply.code(410).send({ error: 'Invite expiró.' });
+
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, role: true } });
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' });
+
+    if (normalizeEmail(user.email) !== normalizeEmail(invite.email)) {
+      return reply.code(409).send({
+        error: `Esta invitación es para ${invite.email}. Estás logueado como ${user.email}.`,
+        code: 'EMAIL_MISMATCH',
+      });
+    }
+
+    const role = normalizeRole(invite.role) || 'MEMBER';
+    const assignedOnly = role === 'MEMBER' && Boolean((invite as any).assignedOnly);
+    await prisma.membership.upsert({
+      where: { userId_workspaceId: { userId: user.id, workspaceId: invite.workspaceId } },
+      create: { userId: user.id, workspaceId: invite.workspaceId, role, assignedOnly, archivedAt: null } as any,
+      update: { role, assignedOnly, archivedAt: null } as any,
+    });
+
+    await prisma.workspaceInvite.update({
+      where: { id: invite.id },
+      data: { acceptedAt: new Date(), acceptedByUserId: user.id },
+    });
+
+    return { ok: true, workspaceId: invite.workspaceId };
   });
 }

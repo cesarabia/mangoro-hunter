@@ -71,6 +71,13 @@ export const ReviewPage: React.FC<{
   onGoConfig: () => void;
   onGoPlatform?: () => void;
 }> = ({ onGoInbox, onGoInactive, onGoSimulator, onGoAgenda, onGoConfig, onGoPlatform }) => {
+  const currentWorkspaceId = useMemo(() => {
+    try {
+      return localStorage.getItem('workspaceId') || 'default';
+    } catch {
+      return 'default';
+    }
+  }, []);
   const [activeTab, setActiveTab] = useState<PageTab>('help');
   const [helpSearch, setHelpSearch] = useState('');
 
@@ -319,6 +326,18 @@ export const ReviewPage: React.FC<{
 
   const phoneLineOk = useMemo(() => (phoneLines || []).some((l: any) => Boolean(l?.isActive) && l?.waPhoneNumberId), [phoneLines]);
   const programsOk = useMemo(() => (programs || []).some((p: any) => Boolean(p?.isActive) && !p?.archivedAt), [programs]);
+  const ssclinicalWorkspaceOk = currentWorkspaceId === 'ssclinical';
+  const ssclinicalProgramsOk = useMemo(() => {
+    if (!ssclinicalWorkspaceOk) return false;
+    const required = [
+      'coordinadora-salud-suero-hidratante-y-terapia',
+      'enfermera-lider-coordinadora',
+      'enfermera-domicilio',
+      'medico-orden-medica',
+    ];
+    const set = new Set((programs || []).filter((p: any) => !p?.archivedAt).map((p: any) => String(p?.slug || '').trim()));
+    return required.every((slug) => set.has(slug));
+  }, [programs, ssclinicalWorkspaceOk]);
   const medilinkOk = useMemo(() => {
     const med = (workspaceConnectors || []).find((c: any) => String(c?.slug || '').toLowerCase() === 'medilink') || null;
     return Boolean(med?.hasToken) && Boolean(String(med?.baseUrl || '').trim());
@@ -1202,6 +1221,19 @@ export const ReviewPage: React.FC<{
             <div style={{ fontWeight: 800, marginBottom: 10 }}>Pilot SSClinical (MVP) — checklist</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 10, alignItems: 'center' }}>
               <div>
+                <span style={{ color: ssclinicalWorkspaceOk ? '#1a7f37' : '#b93800' }}>{ssclinicalWorkspaceOk ? '✅' : '⚠️'}</span>{' '}
+                Estás en el workspace <strong>SSClinical</strong> (usa el selector arriba para cambiar).
+              </div>
+              <button
+                onClick={() => {
+                  window.alert('Usa el selector de Workspace en la barra superior (arriba a la izquierda).');
+                }}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+              >
+                Cómo cambiar
+              </button>
+
+              <div>
                 <span style={{ color: safeModeOk ? '#1a7f37' : '#b93800' }}>{safeModeOk ? '✅' : '⚠️'}</span> SAFE MODE allowlist-only (solo admin/test).
               </div>
               <button onClick={() => openConfigTab('workspace')} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
@@ -1216,12 +1248,85 @@ export const ReviewPage: React.FC<{
               </button>
 
               <div>
+                <span style={{ color: ssclinicalProgramsOk ? '#1a7f37' : '#b93800' }}>{ssclinicalProgramsOk ? '✅' : '⚠️'}</span>{' '}
+                Programs SSClinical seed (coordinadora / enfermera líder / enfermera domicilio / médico).
+              </div>
+              <button onClick={() => openConfigTab('programs')} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Ver Programs
+              </button>
+
+              <div>
                 <span style={{ color: medilinkOk ? '#1a7f37' : '#b93800' }}>{medilinkOk ? '✅' : '⚠️'}</span> Medilink API configurada (base URL + token).
               </div>
               <button onClick={() => openConfigTab('integrations')} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
                 Ver Integraciones
               </button>
+
+              <div>
+                <span style={{ color: '#666' }}>🧭</span> Owner/Admin: asigna conversaciones desde Inbox → Detalles → “Asignado a”.
+              </div>
+              <button onClick={onGoInbox} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Abrir Inbox
+              </button>
+
+              <div>
+                <span style={{ color: '#666' }}>🧪</span> MEMBER assignedOnly: debería ver <strong>solo</strong> conversaciones asignadas (validación manual + scenario).
+              </div>
+              <button onClick={() => openConfigTab('users')} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Ver Usuarios
+              </button>
             </div>
+            <div style={{ marginTop: 10, fontSize: 12, color: '#666', lineHeight: 1.35 }}>
+              Recomendado: corre “Run Smoke Scenarios” y verifica que <strong>ssclinical_onboarding</strong> y <strong>ssclinical_assignment_flow</strong> estén en PASS.
+            </div>
+            <details style={{ marginTop: 10, border: '1px solid #f0f0f0', borderRadius: 10, padding: 10, background: '#fafafa' }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Checklist por rol (click-only)</summary>
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: '#333' }}>
+                <div>
+                  <div style={{ fontWeight: 800 }}>OWNER (csarabia@ssclinical.cl)</div>
+                  <div style={{ fontSize: 12, color: '#666', marginTop: 4, lineHeight: 1.35 }}>
+                    1) Config → Usuarios: verifica invites y roles (MEMBER con assignedOnly).<br />
+                    2) Inbox: abre una conversación real, abre Detalles y asigna a “contacto@ssclinical.cl”.<br />
+                    3) QA → Logs: filtra por conversationId y revisa AgentRuns / Outbound blockedReason.
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button onClick={() => openConfigTab('users')} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                      Abrir Usuarios
+                    </button>
+                    <button onClick={onGoInbox} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                      Abrir Inbox
+                    </button>
+                    <button onClick={() => { setLogTab('agentRuns'); setActiveTab('qa'); }} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                      Abrir Logs (QA)
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 800 }}>ADMIN (gestion.ejecutivos.ventas@gmail.com)</div>
+                  <div style={{ fontSize: 12, color: '#666', marginTop: 4, lineHeight: 1.35 }}>
+                    1) Inbox: ver conversaciones y usar “Sugerir” respetando Program.<br />
+                    2) QA: revisar errores y bloqueos (SAFE MODE / OUTSIDE_24H / NO_CONTACTAR).
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button onClick={onGoInbox} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                      Abrir Inbox
+                    </button>
+                    <button onClick={() => setActiveTab('qa')} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                      Abrir QA
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 800 }}>MEMBER assignedOnly (contacto@ssclinical.cl)</div>
+                  <div style={{ fontSize: 12, color: '#666', marginTop: 4, lineHeight: 1.35 }}>
+                    1) Inicia sesión y confirma que ves SOLO conversaciones asignadas.<br />
+                    2) Si no ves nada, pídele al OWNER que asigne una conversación desde Detalles.
+                  </div>
+                </div>
+              </div>
+            </details>
             {workspaceConnectorsError ? <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>{workspaceConnectorsError}</div> : null}
           </div>
 

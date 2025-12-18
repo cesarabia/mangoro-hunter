@@ -28,6 +28,9 @@ export type ScenarioStep = {
       invites?: Array<{ email: string; role: string; assignedOnly?: boolean }>;
       ownerEmail?: string;
       ownerOnlyThisWorkspace?: boolean;
+      assignmentFlow?: {
+        memberEmail: string;
+      };
     };
   };
 };
@@ -212,6 +215,24 @@ export const SCENARIOS: ScenarioDefinition[] = [
             ],
             ownerEmail: 'csarabia@ssclinical.cl',
             ownerOnlyThisWorkspace: true,
+          },
+        },
+      },
+    ],
+  },
+  {
+    id: 'ssclinical_assignment_flow',
+    name: 'SSClinical: assignedOnly + asignación (setup)',
+    description:
+      'Valida que el usuario MEMBER assignedOnly exista (post-aceptación) y que el workspace soporte el flujo de asignación.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check ssclinical assignment',
+        expect: {
+          workspaceSetup: {
+            workspaceId: 'ssclinical',
+            assignmentFlow: { memberEmail: 'contacto@ssclinical.cl' },
           },
         },
       },

@@ -74,6 +74,22 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   });
   const [focusedProgramId, setFocusedProgramId] = useState<string | null>(null);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('configSelectedTab', tab);
+    } catch {
+      // ignore
+    }
+    try {
+      const desired = tab ? `/config/${encodeURIComponent(tab)}` : '/config';
+      if (typeof window !== 'undefined' && window.location.pathname !== desired) {
+        window.history.replaceState({}, '', desired);
+      }
+    } catch {
+      // ignore
+    }
+  }, [tab]);
+
   const workspaceId = useMemo(() => localStorage.getItem('workspaceId') || 'default', []);
   const isDev = typeof import.meta !== 'undefined' ? import.meta.env.MODE !== 'production' : true;
 
@@ -199,7 +215,6 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       } else if (!keys.has(tab)) {
         setTab(isOwner ? 'workspace' : 'programs');
       }
-      localStorage.removeItem('configSelectedTab');
     } catch {
       // ignore
     }
@@ -885,8 +900,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       `1) Abre este link:`,
       params.inviteUrl,
       '',
-      `2) Define tu nombre y contraseña (mínimo 8 caracteres).`,
-      `3) Entra al CRM y selecciona el workspace.`,
+      `2) Si ya tienes cuenta: inicia sesión con tu email y acepta la invitación.`,
+      `   Si NO tienes cuenta: crea tu acceso (nombre + contraseña).`,
+      `3) Entra al CRM y confirma que estás en el workspace correcto.`,
     ].join('\n');
   };
 
@@ -1936,6 +1952,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               Invitar usuario
             </button>
           </div>
+          <div style={{ fontSize: 12, color: '#666' }}>
+            Todas las acciones aquí aplican <strong>solo a este workspace</strong>. No se borra ninguna cuenta global ni historial.
+          </div>
 
           <div style={{ border: '1px solid #eee', borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1988,8 +2007,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                           const nextArchived = !u.archivedAt;
                           const ok = window.confirm(
                             nextArchived
-                              ? `¿Desactivar a ${u.email}?\n\nEsto NO borra datos. El usuario no podrá acceder a este workspace hasta reactivarlo.`
-                              : `¿Reactivar a ${u.email} en este workspace?`
+                              ? `¿Desactivar a ${u.email} en este workspace?\n\nEsto NO borra datos. El usuario no podrá acceder a ESTE workspace hasta reactivarlo.`
+                              : `¿Reactivar a ${u.email} en este workspace?\n\nEsto solo afecta ESTE workspace.`
                           );
                           if (!ok) return;
                           toggleUserArchived(u.membershipId, nextArchived).catch(() => {});
@@ -2106,7 +2125,13 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                         <td style={{ padding: 10, fontSize: 13 }}>{i.expiresAt ? String(i.expiresAt).slice(0, 19).replace('T', ' ') : '—'}</td>
                         <td style={{ padding: 10, fontSize: 13 }}>{i.acceptedAt ? '✅' : '—'}</td>
                         <td style={{ padding: 10, fontSize: 12, color: i.archivedAt ? '#b93800' : '#1a7f37' }}>
-                          {i.archivedAt ? 'Archivada' : 'Activa'}
+                          {(() => {
+                            const expired = i.expiresAt ? new Date(String(i.expiresAt)).getTime() <= Date.now() : false;
+                            if (i.archivedAt) return 'Archivada';
+                            if (i.acceptedAt) return 'Aceptada';
+                            if (expired) return 'Expirada';
+                            return 'Pendiente';
+                          })()}
                         </td>
                         <td style={{ padding: 10, fontSize: 13 }}>
                           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

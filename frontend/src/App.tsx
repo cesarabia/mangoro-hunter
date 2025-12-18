@@ -15,6 +15,58 @@ import { GuideOverlay, GuideSpec } from './components/GuideOverlay';
 
 type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review' | 'platform';
 
+const CONFIG_TABS = new Set([
+  'workspace',
+  'integrations',
+  'users',
+  'phoneLines',
+  'programs',
+  'automations',
+  'usage',
+  'logs',
+]);
+
+const parseRouteFromPath = (pathname: string): { view: View; configTab?: string | null } => {
+  const clean = String(pathname || '/').trim();
+  const path = clean.replace(/\/+$/g, '') || '/';
+
+  if (path === '/' || path === '/inbox') return { view: 'inbox' };
+  if (path === '/inactive') return { view: 'inactive' };
+  if (path === '/simulator') return { view: 'simulator' };
+  if (path === '/agenda') return { view: 'agenda' };
+  if (path === '/review') return { view: 'review' };
+  if (path === '/platform') return { view: 'platform' };
+
+  if (path === '/config') return { view: 'config' };
+  if (path.startsWith('/config/')) {
+    const parts = path.split('/').filter(Boolean);
+    const tab = parts[1] ? decodeURIComponent(parts[1]) : null;
+    if (tab && CONFIG_TABS.has(tab)) return { view: 'config', configTab: tab };
+    return { view: 'config' };
+  }
+
+  return { view: 'inbox' };
+};
+
+const pathForView = (view: View): string => {
+  if (view === 'inbox') return '/';
+  if (view === 'inactive') return '/inactive';
+  if (view === 'simulator') return '/simulator';
+  if (view === 'agenda') return '/agenda';
+  if (view === 'review') return '/review';
+  if (view === 'platform') return '/platform';
+  if (view === 'config') {
+    try {
+      const stored = localStorage.getItem('configSelectedTab');
+      const tab = stored && CONFIG_TABS.has(stored) ? stored : null;
+      return tab ? `/config/${encodeURIComponent(tab)}` : '/config';
+    } catch {
+      return '/config';
+    }
+  }
+  return '/';
+};
+
 const decodeUserRole = (token: string | null): string | null => {
   if (!token) return null;
   try {
@@ -30,12 +82,16 @@ const decodeUserRole = (token: string | null): string | null => {
 export const App: React.FC = () => {
   const [hydrated, setHydrated] = useState(false);
   const [token, setToken] = useState<string | null>(null);
-  const [view, setView] = useState<View>('inbox');
+  const [view, setView] = useState<View>(() => {
+    if (typeof window === 'undefined') return 'inbox';
+    return parseRouteFromPath(window.location.pathname).view;
+  });
   const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string; isSandbox?: boolean; role?: string | null }>>([]);
   const [workspaceId, setWorkspaceId] = useState<string>('default');
   const [outboundPolicy, setOutboundPolicy] = useState<string | null>(null);
   const [versionInfo, setVersionInfo] = useState<any | null>(null);
   const [platformOwner, setPlatformOwner] = useState<boolean>(false);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
 
   useEffect(() => {
@@ -53,6 +109,43 @@ export const App: React.FC = () => {
       setToken(null);
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const parsed = parseRouteFromPath(window.location.pathname);
+    if (parsed.view === 'config' && parsed.configTab) {
+      try {
+        localStorage.setItem('configSelectedTab', parsed.configTab);
+      } catch {
+        // ignore
+      }
+    }
+
+    const onPopState = () => {
+      const next = parseRouteFromPath(window.location.pathname);
+      if (next.view === 'config' && next.configTab) {
+        try {
+          localStorage.setItem('configSelectedTab', next.configTab);
+        } catch {
+          // ignore
+        }
+      }
+      setView(next.view);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (typeof window === 'undefined') return;
+    const current = window.location.pathname || '/';
+    if (current.startsWith('/privacy') || current.startsWith('/invite/')) return;
+    const desired = pathForView(view);
+    if (desired && current !== desired) {
+      window.history.pushState({}, '', desired);
+    }
+  }, [view, hydrated]);
 
   useEffect(() => {
     apiClient
@@ -127,9 +220,22 @@ export const App: React.FC = () => {
     }
     apiClient
       .get('/api/platform/me')
-      .then((data: any) => setPlatformOwner(Boolean(data?.platformOwner)))
+      .then((data: any) => setPlatformOwner(Boolean(data?.platformAdmin ?? data?.platformOwner)))
       .catch(() => setPlatformOwner(false));
   }, [token]);
+
+  useEffect(() => {
+    if (!token) {
+      setCurrentUserEmail(null);
+      return;
+    }
+    apiClient
+      .get('/api/auth/me')
+      .then((data: any) => {
+        setCurrentUserEmail(typeof data?.user?.email === 'string' ? data.user.email : null);
+      })
+      .catch(() => setCurrentUserEmail(null));
+  }, [token, workspaceId]);
 
   const handleReplayInSimulator = useCallback(
     async (conversationId: string) => {
@@ -167,7 +273,8 @@ export const App: React.FC = () => {
       localStorage.setItem('workspaceId', 'default');
       setWorkspaceId('default');
     }
-    setView('inbox');
+    const parsed = parseRouteFromPath(window.location.pathname || '/');
+    setView(parsed.view);
   };
 
   const handleLogout = () => {
@@ -203,6 +310,8 @@ export const App: React.FC = () => {
         setWorkspaceId={setWorkspaceId}
         outboundPolicy={outboundPolicy}
         versionInfo={versionInfo}
+        userEmail={currentUserEmail}
+        workspaceRole={workspaceRoleUpper}
       >
         <AgendaPage onBack={() => setView('inbox')} />
       </Layout>
@@ -226,6 +335,8 @@ export const App: React.FC = () => {
         setWorkspaceId={setWorkspaceId}
         outboundPolicy={outboundPolicy}
         versionInfo={versionInfo}
+        userEmail={currentUserEmail}
+        workspaceRole={workspaceRoleUpper}
       >
         <ConfigPage workspaceRole={workspaceRoleUpper} isOwner={isOwner} />
       </Layout>
@@ -249,6 +360,8 @@ export const App: React.FC = () => {
         setWorkspaceId={setWorkspaceId}
         outboundPolicy={outboundPolicy}
         versionInfo={versionInfo}
+        userEmail={currentUserEmail}
+        workspaceRole={workspaceRoleUpper}
       >
         <SimulatorPage onOpenConversation={(id) => setView('inbox')} />
       </Layout>
@@ -272,6 +385,8 @@ export const App: React.FC = () => {
         setWorkspaceId={setWorkspaceId}
         outboundPolicy={outboundPolicy}
         versionInfo={versionInfo}
+        userEmail={currentUserEmail}
+        workspaceRole={workspaceRoleUpper}
       >
         <ReviewPage
           onGoInbox={() => setView('inbox')}
@@ -309,6 +424,8 @@ export const App: React.FC = () => {
         setWorkspaceId={setWorkspaceId}
         outboundPolicy={outboundPolicy}
         versionInfo={versionInfo}
+        userEmail={currentUserEmail}
+        workspaceRole={workspaceRoleUpper}
       >
         <PlatformPage />
       </Layout>
@@ -331,6 +448,8 @@ export const App: React.FC = () => {
       setWorkspaceId={setWorkspaceId}
       outboundPolicy={outboundPolicy}
       versionInfo={versionInfo}
+      userEmail={currentUserEmail}
+      workspaceRole={workspaceRoleUpper}
     >
       <InboxPage
         mode={view === 'inactive' ? 'INACTIVE' : 'INBOX'}
@@ -360,8 +479,10 @@ const Layout: React.FC<{
   setWorkspaceId: (id: string) => void;
   outboundPolicy?: string | null;
   versionInfo?: any | null;
+  userEmail?: string | null;
+  workspaceRole?: string | null;
   children: React.ReactNode;
-}> = ({ view, setView, onLogout, isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, canAccessPlatform, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, children }) => {
+}> = ({ view, setView, onLogout, isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, canAccessPlatform, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, userEmail, workspaceRole, children }) => {
   const [isNarrow, setIsNarrow] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 980;
@@ -446,6 +567,14 @@ const Layout: React.FC<{
     };
   }, [versionInfo]);
 
+  const identityLabel = useMemo(() => {
+    const email = typeof userEmail === 'string' ? userEmail.trim() : '';
+    const role = typeof workspaceRole === 'string' ? workspaceRole.trim().toUpperCase() : '';
+    if (!email && !role) return null;
+    if (email && role) return `${email} · ${role}`;
+    return email || role || null;
+  }, [userEmail, workspaceRole]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minHeight: 0 }}>
       <header
@@ -522,6 +651,26 @@ const Layout: React.FC<{
           ) : null}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {identityLabel ? (
+            <div
+              style={{
+                padding: '4px 8px',
+                borderRadius: 10,
+                border: '1px solid #eee',
+                background: '#fff',
+                color: '#111',
+                fontSize: 12,
+                fontWeight: 700,
+                maxWidth: 'min(380px, 60vw)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              title={identityLabel}
+            >
+              {identityLabel}
+            </div>
+          ) : null}
           {!isNarrow ? (
             <>
               {navButton('inbox', 'Inbox')}
@@ -619,6 +768,11 @@ const Layout: React.FC<{
                     <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
                       Workspace: <strong>{workspaceOptions.find((w) => w.id === workspaceId)?.name || workspaceId}</strong>
                     </div>
+                    {identityLabel ? (
+                      <div style={{ fontSize: 12, color: '#666' }}>
+                        Sesión: <strong>{identityLabel}</strong>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

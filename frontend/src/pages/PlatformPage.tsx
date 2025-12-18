@@ -121,9 +121,9 @@ export const PlatformPage: React.FC = () => {
 
   return (
     <div style={{ padding: 16, maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ fontSize: 22, fontWeight: 900 }}>Admin Console — Clientes (Workspaces)</div>
+      <div style={{ fontSize: 22, fontWeight: 900 }}>Plataforma — Clientes (Workspaces)</div>
       <div style={{ marginTop: 6, fontSize: 13, color: '#666' }}>
-        Crea y administra clientes (multi-tenant). Solo Platform Owner / ADMIN.
+        Crea y administra clientes (multi-tenant). Visible solo para Platform Admin.
       </div>
       <div
         style={{
@@ -137,7 +137,13 @@ export const PlatformPage: React.FC = () => {
           lineHeight: 1.35,
         }}
       >
-        <strong>Modo Plataforma:</strong> aquí creas/archivas workspaces y generas invitaciones. Los roles de workspace (OWNER/ADMIN/MEMBER/VIEWER) aplican dentro de cada cliente.
+        <strong>Modo Plataforma:</strong> aquí administras <strong>clientes</strong>.
+        <div style={{ marginTop: 6 }}>
+          <div>• <strong>Cliente</strong> = <strong>Workspace</strong> (contenedor aislado de datos).</div>
+          <div>• Los roles <strong>OWNER/ADMIN/MEMBER/VIEWER</strong> aplican <strong>dentro</strong> de cada Workspace.</div>
+          <div>• Al crear un Workspace, se genera un <strong>invite</strong> para el Owner inicial (no mezcla cuentas).</div>
+          <div>• Archivar = ocultar (no borra data).</div>
+        </div>
       </div>
 
       <div style={{ marginTop: 14, border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fff' }}>

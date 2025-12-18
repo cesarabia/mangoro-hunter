@@ -113,6 +113,9 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
   - `assignedOnly`: si `true` y rol=MEMBER, el usuario solo ve/gestiona conversaciones asignadas (`Conversation.assignedToId`).  
 - **WorkspaceInvite** (archive-only): invitación expirable por email+rol para entrar a un workspace.  
   - Token **no** se loguea; solo se expone al OWNER vía “Copiar link”.  
+  - Aceptación (sin fricción y sin reset de password):
+    - **Usuario nuevo**: define nombre+password y se crea la cuenta al aceptar.
+    - **Usuario existente**: debe **iniciar sesión** y aceptar (endpoint `accept-existing`), sin cambiar credenciales.
 
 ### 5.2 Canales y conversaciones
 - **PhoneLine**: alias + `waPhoneNumberId` + defaultProgram  
