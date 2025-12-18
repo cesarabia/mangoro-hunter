@@ -138,6 +138,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       }
 
       const action = String((step as any).action || 'INBOUND_MESSAGE').toUpperCase();
+      const isWorkspaceCheck = action === 'WORKSPACE_CHECK';
       const inboundText = String(step.inboundText || '').trim();
       const offsetHours =
         typeof (step as any).inboundOffsetHours === 'number' && Number.isFinite((step as any).inboundOffsetHours)
@@ -154,7 +155,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const outboundSentBefore = outboundBefore - outboundBlockedBefore;
 
       const message =
-        action === 'AI_SUGGEST'
+        action === 'AI_SUGGEST' || isWorkspaceCheck
           ? null
           : await prisma.message.create({
               data: {
@@ -185,6 +186,8 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           // swallow; assertion below will detect error via AgentRunLog
           app.log.warn({ err, scenario: scenario.id, step: idx }, 'Scenario AI_SUGGEST failed');
         }
+      } else if (isWorkspaceCheck) {
+        // No-op: assertions below can validate real workspace setup without running automations.
       } else {
         await runAutomations({
           app,
@@ -312,6 +315,88 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             if (!needle) continue;
             const pass = !lastOutboundTextNorm.includes(needle);
             assertions.push({ ok: pass, message: pass ? `outbound text avoids "${needle}"` : `outbound text contains "${needle}" (got "${lastOutboundTextRaw || '—'}")` });
+          }
+        }
+      }
+
+      const wsSetup = (step.expect as any)?.workspaceSetup;
+      if (wsSetup && typeof wsSetup === 'object') {
+        const targetWorkspaceId = String(wsSetup.workspaceId || '').trim();
+        if (!targetWorkspaceId) {
+          assertions.push({ ok: false, message: 'workspaceSetup.workspaceId missing' });
+        } else {
+          const workspace = await prisma.workspace
+            .findUnique({ where: { id: targetWorkspaceId }, select: { id: true, archivedAt: true } as any })
+            .catch(() => null);
+          assertions.push({
+            ok: Boolean(workspace) && !workspace?.archivedAt,
+            message: workspace ? (workspace.archivedAt ? `workspace ${targetWorkspaceId} is archived` : `workspace ${targetWorkspaceId} exists`) : `workspace ${targetWorkspaceId} missing`,
+          });
+
+          const programsSlugs = Array.isArray(wsSetup.programsSlugs) ? wsSetup.programsSlugs.map((s: any) => String(s || '').trim()).filter(Boolean) : [];
+          if (programsSlugs.length > 0) {
+            const found = await prisma.program.findMany({
+              where: { workspaceId: targetWorkspaceId, slug: { in: programsSlugs }, archivedAt: null },
+              select: { slug: true },
+            });
+            const foundSet = new Set(found.map((p) => p.slug));
+            for (const slug of programsSlugs) {
+              assertions.push({ ok: foundSet.has(slug), message: foundSet.has(slug) ? `program ${slug} OK` : `program ${slug} missing` });
+            }
+          }
+
+          if (wsSetup.inboundRunAgentEnabled) {
+            const rules = await prisma.automationRule.findMany({
+              where: { workspaceId: targetWorkspaceId, trigger: 'INBOUND_MESSAGE', archivedAt: null, enabled: true },
+              select: { actionsJson: true },
+            });
+            const hasRunAgent = rules.some((r) => {
+              try {
+                const parsed = JSON.parse(String((r as any).actionsJson || '[]'));
+                if (!Array.isArray(parsed)) return false;
+                return parsed.some((a: any) => String(a?.type || '').toUpperCase() === 'RUN_AGENT');
+              } catch {
+                return String((r as any).actionsJson || '').toUpperCase().includes('RUN_AGENT');
+              }
+            });
+            assertions.push({ ok: hasRunAgent, message: hasRunAgent ? 'inbound RUN_AGENT rule OK' : 'missing inbound RUN_AGENT rule' });
+          }
+
+          const invites = Array.isArray(wsSetup.invites) ? wsSetup.invites : [];
+          for (const inv of invites) {
+            const email = String((inv as any)?.email || '').trim().toLowerCase();
+            const role = String((inv as any)?.role || '').trim().toUpperCase();
+            const assignedOnly = Boolean((inv as any)?.assignedOnly) && role === 'MEMBER';
+            if (!email || !role) continue;
+            const found = await prisma.workspaceInvite.findFirst({
+              where: { workspaceId: targetWorkspaceId, email, role, assignedOnly, archivedAt: null } as any,
+              select: { id: true },
+            });
+            assertions.push({
+              ok: Boolean(found),
+              message: found ? `invite ${email} (${role}${assignedOnly ? ', assignedOnly' : ''}) OK` : `invite ${email} (${role}${assignedOnly ? ', assignedOnly' : ''}) missing`,
+            });
+          }
+
+          if (wsSetup.ownerEmail && wsSetup.ownerOnlyThisWorkspace) {
+            const email = String(wsSetup.ownerEmail || '').trim().toLowerCase();
+            const user = await prisma.user.findUnique({ where: { email }, select: { id: true } }).catch(() => null);
+            if (!user?.id) {
+              assertions.push({ ok: false, message: `owner user ${email} missing` });
+            } else {
+              const memberships = await prisma.membership.findMany({
+                where: { userId: user.id, archivedAt: null },
+                select: { workspaceId: true, role: true },
+              });
+              const activeWs = new Set(memberships.map((m) => m.workspaceId));
+              const onlyTarget = memberships.length > 0 && memberships.every((m) => String(m.workspaceId) === targetWorkspaceId);
+              assertions.push({
+                ok: onlyTarget,
+                message: onlyTarget ? `owner memberships scoped to ${targetWorkspaceId}` : `owner has active memberships: ${Array.from(activeWs).join(', ') || '—'}`,
+              });
+              const inTarget = memberships.find((m) => String(m.workspaceId) === targetWorkspaceId);
+              assertions.push({ ok: Boolean(inTarget) && String(inTarget?.role || '').toUpperCase() === 'OWNER', message: inTarget ? `owner role in ${targetWorkspaceId}: ${inTarget.role}` : `owner membership in ${targetWorkspaceId} missing` });
+            }
           }
         }
       }

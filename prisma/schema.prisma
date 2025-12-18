@@ -32,6 +32,7 @@ model Workspace {
   id          String        @id @default(cuid())
   name        String
   isSandbox   Boolean       @default(false)
+  archivedAt  DateTime?
   memberships Membership[]
   invites     WorkspaceInvite[]
   phoneLines  PhoneLine[]
@@ -92,6 +93,7 @@ model WorkspaceInvite {
   workspaceId     String
   email           String
   role            String
+  assignedOnly    Boolean   @default(false)
   token           String    @unique
   expiresAt       DateTime
   createdBy       User?     @relation("InviteCreatedBy", fields: [createdByUserId], references: [id])

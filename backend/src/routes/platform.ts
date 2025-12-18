@@ -2,7 +2,6 @@ import { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { prisma } from '../db/client';
 import { serializeJson } from '../utils/json';
-import { resolveWorkspaceAccess } from '../services/workspaceAuthService';
 
 function slugifyWorkspaceId(value: string): string {
   return String(value || '')
@@ -29,7 +28,22 @@ function buildInviteUrl(token: string): string {
   return `${base.replace(/\/+$/g, '')}/invite/${token}`;
 }
 
-async function isPlatformOwner(request: any): Promise<boolean> {
+function safeJsonParse(value: any): any | null {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function actionsIncludeRunAgent(actionsJson: string | null | undefined): boolean {
+  const actions = safeJsonParse(actionsJson) ?? [];
+  if (!Array.isArray(actions)) return false;
+  return actions.some((a: any) => String(a?.type || '').toUpperCase() === 'RUN_AGENT');
+}
+
+async function isPlatformAdmin(request: any): Promise<boolean> {
   const userId = request.user?.userId ? String(request.user.userId) : null;
   if (!userId) return false;
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, role: true } });
@@ -44,15 +58,17 @@ async function isPlatformOwner(request: any): Promise<boolean> {
 
 export async function registerPlatformRoutes(app: FastifyInstance) {
   app.get('/me', { preValidation: [app.authenticate] }, async (request, reply) => {
-    return { platformOwner: await isPlatformOwner(request) };
+    const platformAdmin = await isPlatformAdmin(request);
+    // Backwards-compatible key.
+    return { platformAdmin, platformOwner: platformAdmin };
   });
 
   app.get('/workspaces', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!(await isPlatformOwner(request))) return reply.code(403).send({ error: 'Forbidden' });
+    if (!(await isPlatformAdmin(request))) return reply.code(403).send({ error: 'Forbidden' });
 
     const workspaces = await prisma.workspace.findMany({
       orderBy: { createdAt: 'asc' },
-      select: { id: true, name: true, isSandbox: true, createdAt: true },
+      select: { id: true, name: true, isSandbox: true, createdAt: true, archivedAt: true },
     });
     const ids = workspaces.map((w) => w.id);
 
@@ -87,14 +103,14 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
       name: w.name,
       isSandbox: w.isSandbox,
       createdAt: w.createdAt.toISOString(),
+      archivedAt: w.archivedAt ? w.archivedAt.toISOString() : null,
       owners: ownersByWorkspaceId[w.id] || [],
       membersCount: countByWorkspaceId[w.id] || 0,
     }));
   });
 
   app.post('/workspaces', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!(await isPlatformOwner(request))) return reply.code(403).send({ error: 'Forbidden' });
-    const access = await resolveWorkspaceAccess(request);
+    if (!(await isPlatformAdmin(request))) return reply.code(403).send({ error: 'Forbidden' });
     const userId = request.user?.userId ? String(request.user.userId) : null;
 
     const body = request.body as { name?: string; slug?: string; ownerEmail?: string; isSandbox?: boolean };
@@ -112,19 +128,8 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
 
     const created = await prisma.workspace.create({
       data: { id: slug, name, isSandbox: Boolean(body?.isSandbox) },
-      select: { id: true, name: true, isSandbox: true, createdAt: true },
+      select: { id: true, name: true, isSandbox: true, createdAt: true, archivedAt: true },
     });
-
-    // Ensure creator has access to manage the workspace.
-    if (userId) {
-      await prisma.membership
-        .upsert({
-          where: { userId_workspaceId: { userId, workspaceId: created.id } },
-          create: { userId, workspaceId: created.id, role: 'OWNER', archivedAt: null },
-          update: { role: 'OWNER', archivedAt: null },
-        })
-        .catch(() => {});
-    }
 
     const ownerUser = await prisma.user.findUnique({ where: { email: ownerEmail }, select: { id: true } }).catch(() => null);
     if (ownerUser?.id) {
@@ -155,7 +160,7 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
     await prisma.configChangeLog
       .create({
         data: {
-          workspaceId: access.workspaceId,
+          workspaceId: 'default',
           userId,
           type: 'WORKSPACE_CREATED',
           beforeJson: null,
@@ -171,16 +176,62 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
         name: created.name,
         isSandbox: created.isSandbox,
         createdAt: created.createdAt.toISOString(),
+        archivedAt: created.archivedAt ? created.archivedAt.toISOString() : null,
       },
       owner: { email: ownerEmail },
       invite: { id: invite.id, expiresAt: invite.expiresAt.toISOString(), inviteUrl: buildInviteUrl(invite.token) },
     };
   });
 
+  app.patch('/workspaces/:workspaceId', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!(await isPlatformAdmin(request))) return reply.code(403).send({ error: 'Forbidden' });
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+
+    const { workspaceId } = request.params as { workspaceId: string };
+    const wsId = String(workspaceId || '').trim();
+    if (!wsId) return reply.code(400).send({ error: 'workspaceId requerido.' });
+    if (wsId === 'default' || wsId === 'sandbox') return reply.code(400).send({ error: 'Workspace reservado.' });
+
+    const body = request.body as { archived?: boolean };
+    if (typeof body?.archived !== 'boolean') return reply.code(400).send({ error: '"archived" requerido (boolean).' });
+
+    const existing = await prisma.workspace.findUnique({ where: { id: wsId } });
+    if (!existing) return reply.code(404).send({ error: 'Workspace no encontrado.' });
+
+    const nextArchivedAt = body.archived ? new Date() : null;
+    const updated = await prisma.workspace.update({
+      where: { id: wsId },
+      data: { archivedAt: nextArchivedAt },
+      select: { id: true, name: true, isSandbox: true, createdAt: true, archivedAt: true },
+    });
+
+    await prisma.configChangeLog
+      .create({
+        data: {
+          workspaceId: 'default',
+          userId,
+          type: body.archived ? 'WORKSPACE_ARCHIVED' : 'WORKSPACE_RESTORED',
+          beforeJson: serializeJson({ workspaceId: existing.id, archivedAt: existing.archivedAt ? existing.archivedAt.toISOString() : null }),
+          afterJson: serializeJson({ workspaceId: updated.id, archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null }),
+        },
+      })
+      .catch(() => {});
+
+    return {
+      ok: true,
+      workspace: {
+        id: updated.id,
+        name: updated.name,
+        isSandbox: updated.isSandbox,
+        createdAt: updated.createdAt.toISOString(),
+        archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null,
+      },
+    };
+  });
+
   // Seed SSClinical pilot pack (Programs + default inbound automation + Medilink connector scaffold).
   app.post('/workspaces/:workspaceId/seed-ssclinical', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!(await isPlatformOwner(request))) return reply.code(403).send({ error: 'Forbidden' });
-    const access = await resolveWorkspaceAccess(request);
+    if (!(await isPlatformAdmin(request))) return reply.code(403).send({ error: 'Forbidden' });
     const userId = request.user?.userId ? String(request.user.userId) : null;
 
     const { workspaceId } = request.params as { workspaceId: string };
@@ -251,11 +302,13 @@ Reglas: no entregar diagnóstico; solo requisitos y próximos pasos.
       createdPrograms.push(p.slug);
     }
 
-    const existingRule = await prisma.automationRule.findFirst({
-      where: { workspaceId: wsId, trigger: 'INBOUND_MESSAGE', archivedAt: null, enabled: true },
+    const inboundRules = await prisma.automationRule.findMany({
+      where: { workspaceId: wsId, trigger: 'INBOUND_MESSAGE', archivedAt: null },
+      select: { id: true, enabled: true, actionsJson: true, name: true },
       orderBy: { createdAt: 'asc' },
     });
-    if (!existingRule) {
+    const hasEnabledRunAgent = inboundRules.some((r) => Boolean(r.enabled) && actionsIncludeRunAgent(r.actionsJson));
+    if (!hasEnabledRunAgent) {
       await prisma.automationRule.create({
         data: {
           workspaceId: wsId,
@@ -292,18 +345,84 @@ Reglas: no entregar diagnóstico; solo requisitos y próximos pasos.
         .catch(() => {});
     }
 
+    const pilotOwnerEmail = normalizeEmail('csarabia@ssclinical.cl');
+    const pilotMemberEmail = normalizeEmail('contacto@ssclinical.cl');
+
+    const ensuredInvites: Array<{ email: string; role: string; assignedOnly: boolean; inviteUrl: string }> = [];
+    const ensureInvite = async (params: { email: string; role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'; assignedOnly?: boolean }) => {
+      const email = normalizeEmail(params.email);
+      const role = params.role;
+      const assignedOnly = role === 'MEMBER' ? Boolean(params.assignedOnly) : false;
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+      const existing = await prisma.workspaceInvite.findFirst({
+        where: {
+          workspaceId: wsId,
+          email,
+          role,
+          assignedOnly,
+          archivedAt: null,
+          acceptedAt: null,
+          expiresAt: { gt: now },
+        } as any,
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, token: true },
+      });
+      const invite = existing
+        ? existing
+        : await prisma.workspaceInvite.create({
+            data: {
+              workspaceId: wsId,
+              email,
+              role,
+              assignedOnly,
+              token: buildInviteToken(),
+              expiresAt,
+              createdByUserId: userId,
+            } as any,
+            select: { id: true, token: true },
+          });
+      ensuredInvites.push({ email, role, assignedOnly, inviteUrl: buildInviteUrl(invite.token) });
+      return invite;
+    };
+
+    await ensureInvite({ email: pilotOwnerEmail, role: 'OWNER' });
+    await ensureInvite({ email: pilotMemberEmail, role: 'MEMBER', assignedOnly: true });
+
+    // Ensure owner membership is scoped to SSClinical only (archive other workspaces) to reduce pilot confusion.
+    const ownerUser = await prisma.user.findUnique({ where: { email: pilotOwnerEmail }, select: { id: true } }).catch(() => null);
+    const archivedMemberships: Array<{ workspaceId: string }> = [];
+    if (ownerUser?.id) {
+      await prisma.membership
+        .upsert({
+          where: { userId_workspaceId: { userId: ownerUser.id, workspaceId: wsId } },
+          create: { userId: ownerUser.id, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+          update: { role: 'OWNER', archivedAt: null } as any,
+        })
+        .catch(() => {});
+      const others = await prisma.membership.findMany({
+        where: { userId: ownerUser.id, workspaceId: { not: wsId }, archivedAt: null },
+        select: { id: true, workspaceId: true },
+      });
+      for (const m of others) {
+        await prisma.membership.update({ where: { id: m.id }, data: { archivedAt: new Date() } }).catch(() => {});
+        archivedMemberships.push({ workspaceId: m.workspaceId });
+      }
+    }
+
     await prisma.configChangeLog
       .create({
         data: {
-          workspaceId: access.workspaceId,
+          workspaceId: 'default',
           userId,
           type: 'PLATFORM_SEED_SSCLINICAL',
           beforeJson: null,
-          afterJson: serializeJson({ targetWorkspaceId: wsId, createdPrograms }),
+          afterJson: serializeJson({ targetWorkspaceId: wsId, createdPrograms, ensuredInvites: ensuredInvites.map((i) => ({ email: i.email, role: i.role, assignedOnly: i.assignedOnly })), archivedMemberships }),
         },
       })
       .catch(() => {});
 
-    return { ok: true, workspaceId: wsId, createdPrograms, ensuredAutomation: true, ensuredConnector: true };
+    return { ok: true, workspaceId: wsId, createdPrograms, ensuredAutomation: true, ensuredConnector: true, ensuredInvites, archivedMemberships };
   });
 }

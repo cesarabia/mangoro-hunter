@@ -278,6 +278,7 @@ export const App: React.FC = () => {
           onGoInactive={() => setView('inactive')}
           onGoAgenda={() => setView('agenda')}
           onGoConfig={() => setView('config')}
+          onGoPlatform={canAccessPlatform ? () => setView('platform') : undefined}
           onGoSimulator={(sessionId?: string) => {
             try {
               if (sessionId) localStorage.setItem('simulatorSelectedSessionId', String(sessionId));
@@ -367,6 +368,7 @@ const Layout: React.FC<{
   });
   const [menuOpen, setMenuOpen] = useState(false);
   const [guide, setGuide] = useState<GuideSpec | null>(null);
+  const [workspaceToast, setWorkspaceToast] = useState<string | null>(null);
 
   useEffect(() => {
     const onResize = () => setIsNarrow(window.innerWidth < 980);
@@ -383,6 +385,9 @@ const Layout: React.FC<{
   const handleWorkspaceChange = (next: string) => {
     localStorage.setItem('workspaceId', next);
     setWorkspaceId(next);
+    const label = workspaceOptions.find((w) => String(w.id) === String(next))?.name || next;
+    setWorkspaceToast(`Workspace cambiado: ${label}`);
+    setTimeout(() => setWorkspaceToast(null), 3500);
   };
 
   const navButton = (target: View, label: string) => (
@@ -623,9 +628,33 @@ const Layout: React.FC<{
       </header>
       <div style={{ flex: 1, minHeight: 0 }}>
         <ErrorBoundary title="No se pudo renderizar la vista">
-          {children}
+          <div key={`ws:${workspaceId}`} style={{ height: '100%', minHeight: 0 }}>
+            {children}
+          </div>
         </ErrorBoundary>
       </div>
+      {workspaceToast ? (
+        <div
+          style={{
+            position: 'fixed',
+            left: '50%',
+            bottom: 18,
+            transform: 'translateX(-50%)',
+            background: '#111',
+            color: '#fff',
+            padding: '10px 12px',
+            borderRadius: 12,
+            fontSize: 13,
+            fontWeight: 700,
+            zIndex: 120,
+            boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+            maxWidth: 'min(760px, 92vw)',
+            textAlign: 'center',
+          }}
+        >
+          {workspaceToast}
+        </div>
+      ) : null}
       <GuideOverlay guide={guide} onClose={() => setGuide(null)} />
       <CopilotWidget
         currentView={view}

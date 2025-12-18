@@ -7,7 +7,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
     const memberships = await prisma.membership.findMany({
-      where: { userId, archivedAt: null },
+      where: { userId, archivedAt: null, workspace: { archivedAt: null } },
       include: { workspace: true },
       orderBy: { createdAt: 'asc' },
     });

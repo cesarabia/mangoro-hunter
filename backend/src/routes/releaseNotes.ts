@@ -173,6 +173,7 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'location_loop_rm',
       'safe_mode_block',
       'program_switch_suggest_and_inbound',
+      'ssclinical_onboarding',
     ];
 
     const scenarioRuns = await prisma.scenarioRunLog

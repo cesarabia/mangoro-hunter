@@ -42,7 +42,7 @@ const splitLines = (text: string) =>
 type DodItem = { id: string; label: string; kind: 'auto' | 'manual' };
 const DOD_ITEMS: DodItem[] = [
   { id: 'safeMode', label: 'SAFE MODE: default ALLOWLIST_ONLY + allowlist efectiva solo admin/test', kind: 'auto' },
-  { id: 'smokeScenarios', label: 'Simulator/Smoke Scenarios: PASS (admin/test/loop/safe_mode/program_switch)', kind: 'auto' },
+  { id: 'smokeScenarios', label: 'Simulator/Smoke Scenarios: PASS (admin/test/loop/safe_mode/program_switch/ssclinical)', kind: 'auto' },
   { id: 'reviewPack', label: 'Review Pack ZIP: descarga OK y contiene docs + logs + scenarios', kind: 'auto' },
   { id: 'programConsistency', label: 'Program consistency: Sugerir + RUN_AGENT + Automations usan Program correcto', kind: 'auto' },
   { id: 'inboxUx', label: 'Inbox UX: chat-first + responsive sin perder estado', kind: 'manual' },
@@ -69,7 +69,8 @@ export const ReviewPage: React.FC<{
   onGoSimulator: (sessionId?: string) => void;
   onGoAgenda: () => void;
   onGoConfig: () => void;
-}> = ({ onGoInbox, onGoInactive, onGoSimulator, onGoAgenda, onGoConfig }) => {
+  onGoPlatform?: () => void;
+}> = ({ onGoInbox, onGoInactive, onGoSimulator, onGoAgenda, onGoConfig, onGoPlatform }) => {
   const [activeTab, setActiveTab] = useState<PageTab>('help');
   const [helpSearch, setHelpSearch] = useState('');
 
@@ -1186,6 +1187,14 @@ export const ReviewPage: React.FC<{
               <button onClick={onGoConfig} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
                 Abrir Config
               </button>
+              {onGoPlatform ? (
+                <>
+                  <div>Clientes (Plataforma) abre y permite crear/archivar workspaces.</div>
+                  <button onClick={onGoPlatform} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                    Abrir Clientes
+                  </button>
+                </>
+              ) : null}
             </div>
           </div>
 

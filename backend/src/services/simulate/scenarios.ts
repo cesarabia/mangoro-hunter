@@ -1,7 +1,7 @@
 export type ScenarioStep = {
   inboundText: string;
   inboundOffsetHours?: number;
-  action?: 'INBOUND_MESSAGE' | 'AI_SUGGEST';
+  action?: 'INBOUND_MESSAGE' | 'AI_SUGGEST' | 'WORKSPACE_CHECK';
   setProgramSlug?: string;
   expect?: {
     contactFields?: Array<
@@ -20,6 +20,14 @@ export type ScenarioStep = {
       lastBlockedReasonContains?: string;
       lastTextContains?: string[];
       lastTextNotContains?: string[];
+    };
+    workspaceSetup?: {
+      workspaceId: string;
+      programsSlugs?: string[];
+      inboundRunAgentEnabled?: boolean;
+      invites?: Array<{ email: string; role: string; assignedOnly?: boolean }>;
+      ownerEmail?: string;
+      ownerOnlyThisWorkspace?: boolean;
     };
   };
 };
@@ -177,6 +185,36 @@ export const SCENARIOS: ScenarioDefinition[] = [
         expect: { agentRun: { eventType: 'AI_SUGGEST', programSlug: 'sales' } },
       },
       { inboundText: 'Hola', expect: { agentRun: { eventType: 'INBOUND_MESSAGE', programSlug: 'sales' } } },
+    ],
+  },
+  {
+    id: 'ssclinical_onboarding',
+    name: 'SSClinical: setup onboarding (multi-cliente)',
+    description:
+      'Valida que SSClinical esté sembrado (Programs + inbound RUN_AGENT) y que existan invitaciones piloto.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check ssclinical',
+        expect: {
+          workspaceSetup: {
+            workspaceId: 'ssclinical',
+            programsSlugs: [
+              'coordinadora-salud-suero-hidratante-y-terapia',
+              'enfermera-lider-coordinadora',
+              'enfermera-domicilio',
+              'medico-orden-medica',
+            ],
+            inboundRunAgentEnabled: true,
+            invites: [
+              { email: 'csarabia@ssclinical.cl', role: 'OWNER' },
+              { email: 'contacto@ssclinical.cl', role: 'MEMBER', assignedOnly: true },
+            ],
+            ownerEmail: 'csarabia@ssclinical.cl',
+            ownerOnlyThisWorkspace: true,
+          },
+        },
+      },
     ],
   },
 ];

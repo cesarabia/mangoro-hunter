@@ -17,6 +17,10 @@ function normalizeRole(value: unknown): 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' 
   return null;
 }
 
+function normalizeAssignedOnly(value: unknown): boolean {
+  return value === true;
+}
+
 function generateInviteToken(): string {
   return crypto.randomBytes(18).toString('base64url');
 }
@@ -31,16 +35,24 @@ export async function registerInviteRoutes(app: FastifyInstance) {
     const access = await resolveWorkspaceAccess(request);
     if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
 
+    const includeArchivedRaw = (request.query as any)?.includeArchived;
+    const includeArchived =
+      includeArchivedRaw === true ||
+      includeArchivedRaw === '1' ||
+      includeArchivedRaw === 'true';
+
     const invites = await prisma.workspaceInvite.findMany({
-      where: { workspaceId: access.workspaceId, archivedAt: null },
+      where: { workspaceId: access.workspaceId, ...(includeArchived ? {} : { archivedAt: null }) },
       orderBy: { createdAt: 'desc' },
       take: 100,
       select: {
         id: true,
         email: true,
         role: true,
+        assignedOnly: true as any,
         expiresAt: true,
         acceptedAt: true,
+        archivedAt: true,
         createdAt: true,
         createdByUserId: true,
       },
@@ -49,8 +61,10 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       id: i.id,
       email: i.email,
       role: i.role,
+      assignedOnly: Boolean((i as any).assignedOnly),
       expiresAt: i.expiresAt.toISOString(),
       acceptedAt: i.acceptedAt ? i.acceptedAt.toISOString() : null,
+      archivedAt: i.archivedAt ? i.archivedAt.toISOString() : null,
       createdAt: i.createdAt.toISOString(),
       createdByUserId: i.createdByUserId || null,
     }));
@@ -61,10 +75,11 @@ export async function registerInviteRoutes(app: FastifyInstance) {
     if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
     const userId = request.user?.userId ? String(request.user.userId) : null;
 
-    const body = request.body as { email?: string; role?: string; expiresDays?: number };
+    const body = request.body as { email?: string; role?: string; expiresDays?: number; assignedOnly?: boolean };
     const email = normalizeEmail(body?.email);
     if (!email || !email.includes('@')) return reply.code(400).send({ error: '"email" inválido.' });
     const role = normalizeRole(body?.role) || 'MEMBER';
+    const assignedOnly = role === 'MEMBER' ? normalizeAssignedOnly(body?.assignedOnly) : false;
     const expiresDaysRaw = typeof body?.expiresDays === 'number' ? body.expiresDays : 7;
     const expiresDays = Number.isFinite(expiresDaysRaw) ? Math.max(1, Math.min(30, Math.floor(expiresDaysRaw))) : 7;
     const now = new Date();
@@ -75,6 +90,7 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         workspaceId: access.workspaceId,
         email,
         role,
+        assignedOnly,
         archivedAt: null,
         acceptedAt: null,
         expiresAt: { gt: now },
@@ -88,6 +104,7 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         inviteId: existing.id,
         email,
         role,
+        assignedOnly,
         expiresAt: existing.expiresAt.toISOString(),
         createdAt: existing.createdAt.toISOString(),
         inviteUrl: buildInviteUrl(existing.token),
@@ -101,6 +118,7 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         workspaceId: access.workspaceId,
         email,
         role,
+        assignedOnly,
         token,
         expiresAt,
         createdByUserId: userId,
@@ -125,6 +143,119 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       inviteId: created.id,
       email,
       role,
+      assignedOnly,
+      expiresAt: created.expiresAt.toISOString(),
+      createdAt: created.createdAt.toISOString(),
+      inviteUrl: buildInviteUrl(created.token),
+    };
+  });
+
+  app.patch('/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+
+    const { id } = request.params as { id: string };
+    const body = request.body as { archived?: boolean };
+    if (typeof body?.archived !== 'boolean') return reply.code(400).send({ error: '"archived" requerido (boolean).' });
+
+    const invite = await prisma.workspaceInvite.findFirst({
+      where: { id, workspaceId: access.workspaceId },
+      select: { id: true, archivedAt: true, email: true, role: true, expiresAt: true, assignedOnly: true as any },
+    });
+    if (!invite) return reply.code(404).send({ error: 'Invite no encontrado.' });
+
+    const nextArchivedAt = body.archived ? new Date() : null;
+    const updated = await prisma.workspaceInvite.update({
+      where: { id: invite.id },
+      data: { archivedAt: nextArchivedAt },
+      select: { id: true, email: true, role: true, expiresAt: true, acceptedAt: true, archivedAt: true, assignedOnly: true as any, createdAt: true },
+    });
+
+    await prisma.configChangeLog
+      .create({
+        data: {
+          workspaceId: access.workspaceId,
+          userId,
+          type: body.archived ? 'INVITE_ARCHIVED' : 'INVITE_RESTORED',
+          beforeJson: serializeJson({ inviteId: invite.id, email: invite.email, role: invite.role, archivedAt: invite.archivedAt ? invite.archivedAt.toISOString() : null }),
+          afterJson: serializeJson({ inviteId: updated.id, archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null }),
+        },
+      })
+      .catch(() => {});
+
+    return {
+      ok: true,
+      invite: {
+        id: updated.id,
+        email: updated.email,
+        role: updated.role,
+        assignedOnly: Boolean((updated as any).assignedOnly),
+        expiresAt: updated.expiresAt.toISOString(),
+        acceptedAt: updated.acceptedAt ? updated.acceptedAt.toISOString() : null,
+        archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null,
+        createdAt: updated.createdAt.toISOString(),
+      },
+    };
+  });
+
+  app.post('/:id/reissue', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+
+    const { id } = request.params as { id: string };
+    const body = request.body as { expiresDays?: number };
+    const expiresDaysRaw = typeof body?.expiresDays === 'number' ? body.expiresDays : 7;
+    const expiresDays = Number.isFinite(expiresDaysRaw) ? Math.max(1, Math.min(30, Math.floor(expiresDaysRaw))) : 7;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + expiresDays * 24 * 60 * 60 * 1000);
+
+    const existing = await prisma.workspaceInvite.findFirst({
+      where: { id, workspaceId: access.workspaceId, archivedAt: null },
+      select: { id: true, email: true, role: true, assignedOnly: true as any },
+    });
+    if (!existing) return reply.code(404).send({ error: 'Invite no encontrado.' });
+
+    // Archive current invite (keeps audit trail).
+    await prisma.workspaceInvite
+      .update({
+        where: { id: existing.id },
+        data: { archivedAt: new Date() },
+      })
+      .catch(() => {});
+
+    const created = await prisma.workspaceInvite.create({
+      data: {
+        workspaceId: access.workspaceId,
+        email: existing.email,
+        role: existing.role,
+        assignedOnly: Boolean((existing as any).assignedOnly),
+        token: generateInviteToken(),
+        expiresAt,
+        createdByUserId: userId,
+      },
+      select: { id: true, token: true, expiresAt: true, createdAt: true, email: true, role: true, assignedOnly: true as any },
+    });
+
+    await prisma.configChangeLog
+      .create({
+        data: {
+          workspaceId: access.workspaceId,
+          userId,
+          type: 'INVITE_REISSUED',
+          beforeJson: serializeJson({ inviteId: existing.id }),
+          afterJson: serializeJson({ inviteId: created.id, email: created.email, role: created.role }),
+        },
+      })
+      .catch(() => {});
+
+    return {
+      ok: true,
+      inviteId: created.id,
+      email: created.email,
+      role: created.role,
+      assignedOnly: Boolean((created as any).assignedOnly),
       expiresAt: created.expiresAt.toISOString(),
       createdAt: created.createdAt.toISOString(),
       inviteUrl: buildInviteUrl(created.token),
@@ -138,7 +269,7 @@ export async function registerInviteRoutes(app: FastifyInstance) {
 
     const invite = await prisma.workspaceInvite.findFirst({
       where: { id, workspaceId: access.workspaceId, archivedAt: null },
-      select: { id: true, token: true, email: true, role: true, expiresAt: true, acceptedAt: true },
+      select: { id: true, token: true, email: true, role: true, assignedOnly: true as any, expiresAt: true, acceptedAt: true },
     });
     if (!invite) return reply.code(404).send({ error: 'Invite no encontrado.' });
     return {
@@ -146,6 +277,7 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       inviteId: invite.id,
       email: invite.email,
       role: invite.role,
+      assignedOnly: Boolean((invite as any).assignedOnly),
       expiresAt: invite.expiresAt.toISOString(),
       acceptedAt: invite.acceptedAt ? invite.acceptedAt.toISOString() : null,
       inviteUrl: buildInviteUrl(invite.token),
@@ -169,6 +301,7 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       workspaceName: invite.workspace?.name || invite.workspaceId,
       email: invite.email,
       role: invite.role,
+      assignedOnly: Boolean((invite as any).assignedOnly),
       expiresAt: invite.expiresAt.toISOString(),
       acceptedAt: invite.acceptedAt ? invite.acceptedAt.toISOString() : null,
       expired: invite.expiresAt.getTime() <= Date.now(),
@@ -212,10 +345,11 @@ export async function registerInviteRoutes(app: FastifyInstance) {
     });
 
     const role = normalizeRole(invite.role) || 'MEMBER';
+    const assignedOnly = role === 'MEMBER' && Boolean((invite as any).assignedOnly);
     await prisma.membership.upsert({
       where: { userId_workspaceId: { userId: user.id, workspaceId: invite.workspaceId } },
-      create: { userId: user.id, workspaceId: invite.workspaceId, role, archivedAt: null },
-      update: { role, archivedAt: null },
+      create: { userId: user.id, workspaceId: invite.workspaceId, role, assignedOnly, archivedAt: null } as any,
+      update: { role, assignedOnly, archivedAt: null } as any,
     });
 
     await prisma.workspaceInvite.update({

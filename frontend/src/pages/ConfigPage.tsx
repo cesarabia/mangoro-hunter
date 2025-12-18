@@ -134,9 +134,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('MEMBER');
+  const [inviteAssignedOnly, setInviteAssignedOnly] = useState(false);
   const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [invites, setInvites] = useState<any[]>([]);
+  const [invitesIncludeArchived, setInvitesIncludeArchived] = useState(false);
   const [invitesError, setInvitesError] = useState<string | null>(null);
   const [inviteUrlById, setInviteUrlById] = useState<Record<string, string>>({});
 
@@ -218,10 +220,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     const data = await apiClient.get('/api/users');
     setUsers(Array.isArray(data) ? data : []);
   };
-  const loadInvites = async () => {
+  const loadInvites = async (opts?: { includeArchived?: boolean }) => {
     setInvitesError(null);
     try {
-      const data = await apiClient.get('/api/invites');
+      const includeArchived = typeof opts?.includeArchived === 'boolean' ? opts.includeArchived : invitesIncludeArchived;
+      const data = await apiClient.get(includeArchived ? '/api/invites?includeArchived=1' : '/api/invites');
       setInvites(Array.isArray(data) ? data : []);
     } catch (err: any) {
       setInvites([]);
@@ -824,7 +827,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setInviteStatus(null);
     setInviteError(null);
     try {
-      const res: any = await apiClient.post('/api/invites', { email: inviteEmail, role: inviteRole });
+      const payload: any = { email: inviteEmail, role: inviteRole };
+      if (String(inviteRole).toUpperCase() === 'MEMBER') {
+        payload.assignedOnly = Boolean(inviteAssignedOnly);
+      }
+      const res: any = await apiClient.post('/api/invites', payload);
       const url = typeof res?.inviteUrl === 'string' ? res.inviteUrl : null;
       if (url) {
         try {
@@ -838,6 +845,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       }
       setInviteEmail('');
       setInviteOpen(false);
+      setInviteAssignedOnly(false);
       await loadUsers();
       await loadInvites();
     } catch (err: any) {
@@ -859,6 +867,76 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       }
     } catch (err: any) {
       setInviteUrlById((prev) => ({ ...prev, [inviteId]: err.message || 'Error' }));
+    }
+  };
+
+  const buildInviteInstructions = (params: { workspaceName: string; inviteUrl: string; email: string; role: string; assignedOnly?: boolean }) => {
+    const roleUpper = String(params.role || '').toUpperCase();
+    const scope =
+      roleUpper === 'MEMBER' && params.assignedOnly
+        ? 'Scope: solo conversaciones asignadas.'
+        : null;
+    return [
+      `Te invitaron a Hunter CRM.`,
+      `Workspace: ${params.workspaceName}`,
+      `Email: ${params.email}`,
+      `Rol: ${roleUpper}${scope ? ` (${scope})` : ''}`,
+      '',
+      `1) Abre este link:`,
+      params.inviteUrl,
+      '',
+      `2) Define tu nombre y contraseña (mínimo 8 caracteres).`,
+      `3) Entra al CRM y selecciona el workspace.`,
+    ].join('\n');
+  };
+
+  const copyInviteInstructions = async (invite: any) => {
+    const inviteId = String(invite?.id || '').trim();
+    if (!inviteId) return;
+    try {
+      const res: any = await apiClient.post(`/api/invites/${inviteId}/url`, {});
+      const url = typeof res?.inviteUrl === 'string' ? res.inviteUrl : null;
+      if (!url) throw new Error('No se pudo obtener el link.');
+      const text = buildInviteInstructions({
+        workspaceName: currentWorkspace?.name || workspaceId,
+        inviteUrl: url,
+        email: String(invite?.email || ''),
+        role: String(invite?.role || ''),
+        assignedOnly: Boolean(res?.assignedOnly ?? invite?.assignedOnly),
+      });
+      await navigator.clipboard.writeText(text);
+      setInviteUrlById((prev) => ({ ...prev, [inviteId]: '✅ Instrucciones copiadas' }));
+    } catch (err: any) {
+      setInviteUrlById((prev) => ({ ...prev, [inviteId]: err.message || 'Error' }));
+    }
+  };
+
+  const archiveInvite = async (inviteId: string, archived: boolean) => {
+    const ok = window.confirm(
+      archived
+        ? `¿Archivar esta invitación?\n\nEsto NO borra historial. Puedes re-emitir una nueva invitación si corresponde.`
+        : `¿Restaurar esta invitación?`
+    );
+    if (!ok) return;
+    await apiClient.patch(`/api/invites/${inviteId}`, { archived });
+    await loadInvites();
+  };
+
+  const reissueInvite = async (inviteId: string) => {
+    const ok = window.confirm(
+      `¿Re-emitir link de invitación?\n\nSe archivará el invite actual y se creará uno nuevo con link distinto.`
+    );
+    if (!ok) return;
+    const res: any = await apiClient.post(`/api/invites/${inviteId}/reissue`, {});
+    const url = typeof res?.inviteUrl === 'string' ? res.inviteUrl : null;
+    await loadInvites();
+    if (url) {
+      try {
+        await navigator.clipboard.writeText(url);
+        setInviteUrlById((prev) => ({ ...prev, [String(res?.inviteId || inviteId)]: '✅ Nuevo link copiado' }));
+      } catch {
+        setInviteUrlById((prev) => ({ ...prev, [String(res?.inviteId || inviteId)]: url }));
+      }
     }
   };
 
@@ -1906,7 +1984,16 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     <td style={{ padding: 10, fontSize: 13 }}>{u.addedAt}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>
                       <button
-                        onClick={() => toggleUserArchived(u.membershipId, !u.archivedAt).catch(() => {})}
+                        onClick={() => {
+                          const nextArchived = !u.archivedAt;
+                          const ok = window.confirm(
+                            nextArchived
+                              ? `¿Desactivar a ${u.email}?\n\nEsto NO borra datos. El usuario no podrá acceder a este workspace hasta reactivarlo.`
+                              : `¿Reactivar a ${u.email} en este workspace?`
+                          );
+                          if (!ok) return;
+                          toggleUserArchived(u.membershipId, nextArchived).catch(() => {});
+                        }}
                         style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
                       >
                         {u.archivedAt ? 'Reactivar' : 'Desactivar'}
@@ -1928,7 +2015,15 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   placeholder="email@dominio.com"
                   style={{ flex: 1, padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
                 />
-                <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
+                <select
+                  value={inviteRole}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setInviteRole(next);
+                    if (String(next).toUpperCase() !== 'MEMBER') setInviteAssignedOnly(false);
+                  }}
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                >
                   {['OWNER', 'ADMIN', 'MEMBER', 'VIEWER'].map((r) => (
                     <option key={r} value={r}>
                       {r}
@@ -1936,6 +2031,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   ))}
                 </select>
               </div>
+              {String(inviteRole).toUpperCase() === 'MEMBER' ? (
+                <label style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
+                  <input type="checkbox" checked={inviteAssignedOnly} onChange={(e) => setInviteAssignedOnly(e.target.checked)} />
+                  Solo conversaciones asignadas (assignedOnly)
+                </label>
+              ) : null}
               <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
                 <button onClick={() => inviteUser().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}>
                   Guardar
@@ -1952,7 +2053,26 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
           <div style={{ marginTop: 12, border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
             <div style={{ fontWeight: 800, marginBottom: 6 }}>Invitaciones (links)</div>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
-              Para invitar a alguien, comparte el link. No se borra: se archiva/expira.
+              Para invitar a alguien, comparte el link. No se borra: se archiva/expira y puedes re-emitir un link nuevo.
+            </div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
+                <input
+                  type="checkbox"
+                  checked={invitesIncludeArchived}
+                  onChange={(e) => {
+                    setInvitesIncludeArchived(e.target.checked);
+                    loadInvites({ includeArchived: e.target.checked }).catch(() => {});
+                  }}
+                />
+                Mostrar archivadas
+              </label>
+              <button
+                onClick={() => loadInvites().catch(() => {})}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+              >
+                Refresh
+              </button>
             </div>
             {invitesError ? <div style={{ marginBottom: 8, fontSize: 12, color: '#b93800' }}>{invitesError}</div> : null}
             <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
@@ -1961,15 +2081,17 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   <tr style={{ background: '#fafafa', textAlign: 'left' }}>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Email</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Role</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Scope</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Expires</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Accepted</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Estado</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(invites || []).length === 0 ? (
                     <tr>
-                      <td colSpan={5} style={{ padding: 10, fontSize: 13, color: '#666' }}>
+                      <td colSpan={7} style={{ padding: 10, fontSize: 13, color: '#666' }}>
                         — Sin invitaciones.
                       </td>
                     </tr>
@@ -1978,8 +2100,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                       <tr key={i.id} style={{ borderTop: '1px solid #f0f0f0' }}>
                         <td style={{ padding: 10, fontSize: 13 }}>{i.email}</td>
                         <td style={{ padding: 10, fontSize: 13 }}>{i.role}</td>
+                        <td style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                          {String(i.role || '').toUpperCase() === 'MEMBER' && i.assignedOnly ? 'Solo asignadas' : '—'}
+                        </td>
                         <td style={{ padding: 10, fontSize: 13 }}>{i.expiresAt ? String(i.expiresAt).slice(0, 19).replace('T', ' ') : '—'}</td>
                         <td style={{ padding: 10, fontSize: 13 }}>{i.acceptedAt ? '✅' : '—'}</td>
+                        <td style={{ padding: 10, fontSize: 12, color: i.archivedAt ? '#b93800' : '#1a7f37' }}>
+                          {i.archivedAt ? 'Archivada' : 'Activa'}
+                        </td>
                         <td style={{ padding: 10, fontSize: 13 }}>
                           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                             <button
@@ -1987,6 +2115,26 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                               style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
                             >
                               Copiar link
+                            </button>
+                            <button
+                              onClick={() => copyInviteInstructions(i).catch(() => {})}
+                              style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                            >
+                              Copiar instrucciones
+                            </button>
+                            {!i.archivedAt ? (
+                              <button
+                                onClick={() => reissueInvite(i.id).catch(() => {})}
+                                style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                              >
+                                Re-emitir link
+                              </button>
+                            ) : null}
+                            <button
+                              onClick={() => archiveInvite(i.id, !i.archivedAt).catch(() => {})}
+                              style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                            >
+                              {i.archivedAt ? 'Restaurar' : 'Archivar'}
                             </button>
                             {inviteUrlById[i.id] ? <span style={{ fontSize: 12, color: '#666' }}>{inviteUrlById[i.id]}</span> : null}
                           </div>
