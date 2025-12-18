@@ -16,11 +16,11 @@ async function ensureWorkspace(id: string, name: string, isSandbox: boolean) {
 }
 
 async function ensureMembership(userId: string, workspaceId: string, role: string) {
-  const existing = await prisma.membership.findFirst({
-    where: { userId, workspaceId, archivedAt: null }
+  return prisma.membership.upsert({
+    where: { userId_workspaceId: { userId, workspaceId } },
+    create: { userId, workspaceId, role, archivedAt: null } as any,
+    update: { role, archivedAt: null } as any,
   });
-  if (existing) return existing;
-  return prisma.membership.create({ data: { userId, workspaceId, role } });
 }
 
 async function ensurePhoneLine(params: {
