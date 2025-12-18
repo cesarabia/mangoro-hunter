@@ -18,6 +18,8 @@ export type ScenarioStep = {
       sentDelta?: number;
       blockedDelta?: number;
       lastBlockedReasonContains?: string;
+      lastTextContains?: string[];
+      lastTextNotContains?: string[];
     };
   };
 };
@@ -60,10 +62,20 @@ export const SCENARIOS: ScenarioDefinition[] = [
     steps: [
       {
         inboundText: '✅ PUENTE ALTO / REGION METROPOLITANA / RUT 12.345.678-9',
-        expect: { contactFields: ['comuna', 'ciudad'] },
+        expect: {
+          outbound: {
+            lastTextContains: ['puente alto'],
+            lastTextNotContains: ['comuna/ciudad', 'comuna y ciudad'],
+          },
+        },
       },
       {
         inboundText: 'Tengo disponibilidad inmediata',
+        expect: {
+          outbound: {
+            lastTextNotContains: ['comuna/ciudad', 'comuna y ciudad'],
+          },
+        },
       },
     ],
   },

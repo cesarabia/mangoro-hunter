@@ -10,6 +10,14 @@ import { SCENARIOS, getScenario, ScenarioDefinition, ScenarioStep } from '../ser
 import { runAgent } from '../services/agent/agentRuntimeService';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
+  const normalizeForContains = (value: string): string =>
+    String(value || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
   const requireWorkspaceAdmin = async (request: any, reply: any) => {
     const access = await resolveWorkspaceAccess(request);
     if (!isWorkspaceAdmin(request, access)) {
@@ -221,6 +229,15 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         orderBy: { createdAt: 'desc' },
         select: { blockedReason: true, type: true, dedupeKey: true, createdAt: true },
       });
+      const lastOutboundMsg = await prisma.message
+        .findFirst({
+          where: { conversationId: conversation.id, direction: 'OUTBOUND' },
+          orderBy: { timestamp: 'desc' },
+          select: { text: true, transcriptText: true },
+        })
+        .catch(() => null);
+      const lastOutboundTextRaw = String(lastOutboundMsg?.transcriptText || lastOutboundMsg?.text || '').trim();
+      const lastOutboundTextNorm = normalizeForContains(lastOutboundTextRaw);
 
       const assertions: Array<{ ok: boolean; message: string }> = [];
       const expectedFields = step.expect?.contactFields || [];
@@ -278,6 +295,24 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           const hay = String(lastOutbound?.blockedReason || '');
           const pass = hay.includes(needle);
           assertions.push({ ok: pass, message: pass ? `blockedReason contains ${needle}` : `blockedReason missing "${needle}" (got "${hay || '—'}")` });
+        }
+        if (Array.isArray((outboundExp as any).lastTextContains)) {
+          const needles = (outboundExp as any).lastTextContains as any[];
+          for (const rawNeedle of needles) {
+            const needle = normalizeForContains(String(rawNeedle || ''));
+            if (!needle) continue;
+            const pass = lastOutboundTextNorm.includes(needle);
+            assertions.push({ ok: pass, message: pass ? `outbound text contains "${needle}"` : `outbound text missing "${needle}" (got "${lastOutboundTextRaw || '—'}")` });
+          }
+        }
+        if (Array.isArray((outboundExp as any).lastTextNotContains)) {
+          const needles = (outboundExp as any).lastTextNotContains as any[];
+          for (const rawNeedle of needles) {
+            const needle = normalizeForContains(String(rawNeedle || ''));
+            if (!needle) continue;
+            const pass = !lastOutboundTextNorm.includes(needle);
+            assertions.push({ ok: pass, message: pass ? `outbound text avoids "${needle}"` : `outbound text contains "${needle}" (got "${lastOutboundTextRaw || '—'}")` });
+          }
         }
       }
 
