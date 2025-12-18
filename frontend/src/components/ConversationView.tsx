@@ -103,6 +103,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   draftText,
   onDraftChange
 }) => {
+  const isAdmin = Boolean(conversation?.isAdmin);
   const [loadingSend, setLoadingSend] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
@@ -486,7 +487,6 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   };
 
   const hasConversation = Boolean(conversation);
-  const isAdmin = Boolean(conversation?.isAdmin);
   const waId = conversation?.contact?.waId || conversation?.contact?.phone || '';
   const manualName = !isAdmin ? (conversation?.contact?.candidateNameManual || '').trim() : '';
   const candidateRaw = conversation?.contact?.candidateName || null;
