@@ -46,18 +46,46 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         })
       : null;
 
-    const contact = await prisma.contact.create({
-      data: {
+    const scenarioWaId = scenario.contactWaId ? String(scenario.contactWaId) : null;
+    const contact = await (async () => {
+      const baseData = {
         workspaceId: 'sandbox',
         displayName: sanitize ? `Sandbox Scenario (${scenario.id})` : `Sandbox Scenario (${scenario.id})`,
-        waId: scenario.contactWaId ? String(scenario.contactWaId) : null,
+        waId: scenarioWaId,
         candidateName: null,
         candidateNameManual: null,
+        email: null,
+        rut: null,
+        comuna: null,
+        ciudad: null,
+        region: null,
+        experienceYears: null,
+        terrainExperience: null,
+        availabilityText: null,
         noContact: Boolean(scenario.contactNoContact),
         noContactAt: scenario.contactNoContact ? new Date() : null,
         noContactReason: scenario.contactNoContact ? `scenario:${scenario.id}` : null,
-      } as any,
-    });
+        archivedAt: null,
+      } as any;
+
+      // Reuse sandbox contacts by waId to avoid unique constraint collisions across scenario runs.
+      if (scenarioWaId) {
+        const existing = await prisma.contact
+          .findFirst({
+            where: { workspaceId: 'sandbox', waId: scenarioWaId },
+            select: { id: true },
+          })
+          .catch(() => null);
+        if (existing?.id) {
+          return prisma.contact.update({
+            where: { id: existing.id },
+            data: baseData,
+          });
+        }
+      }
+
+      return prisma.contact.create({ data: baseData });
+    })();
     const conversation = await prisma.conversation.create({
       data: {
         workspaceId: 'sandbox',
