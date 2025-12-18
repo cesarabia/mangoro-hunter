@@ -24,6 +24,7 @@ import { registerCopilotRoutes } from './routes/copilot';
 import { registerReviewPackRoutes } from './routes/reviewPack';
 import { registerConnectorRoutes } from './routes/connectors';
 import { registerInviteRoutes } from './routes/invites';
+import { registerPlatformRoutes } from './routes/platform';
 import { isWorkspaceAdmin, isWorkspaceOwner, resolveWorkspaceAccess } from './services/workspaceAuthService';
 import { checkRateLimit } from './services/rateLimitService';
 
@@ -128,6 +129,7 @@ export async function buildServer() {
   app.register(registerAgendaRoutes, { prefix: '/api/agenda' });
   app.register(registerSimulationRoutes, { prefix: '/api/simulate' });
   app.register(registerMessageRoutes, { prefix: '/api/messages' });
+  app.register(registerPlatformRoutes, { prefix: '/api/platform' });
   registerWhatsAppWebhookRoutes(app);
 
   return app;

@@ -342,6 +342,27 @@ export const ReviewPage: React.FC<{
     setFirstStepsEvaluatedAt(new Date().toISOString());
   };
 
+  const [ensuringAutomation, setEnsuringAutomation] = useState(false);
+  const [ensureAutomationStatus, setEnsureAutomationStatus] = useState<string | null>(null);
+  const [ensureAutomationError, setEnsureAutomationError] = useState<string | null>(null);
+
+  const ensureDefaultInboundAutomation = async () => {
+    setEnsuringAutomation(true);
+    setEnsureAutomationStatus(null);
+    setEnsureAutomationError(null);
+    try {
+      const res: any = await apiClient.post('/api/automations/ensure-default', {});
+      const created = res?.existing === false;
+      setEnsureAutomationStatus(created ? 'Automation creada.' : 'Ya existía una automation inbound → RUN_AGENT.');
+      await refreshSetup();
+      setFirstStepsEvaluatedAt(new Date().toISOString());
+    } catch (err: any) {
+      setEnsureAutomationError(err.message || 'No se pudo crear/asegurar la automation');
+    } finally {
+      setEnsuringAutomation(false);
+    }
+  };
+
   const runAllScenarios = async () => {
     setRunningScenarios(true);
     setScenarioResults([]);
@@ -379,6 +400,15 @@ export const ReviewPage: React.FC<{
       setRunningScenarios(false);
     }
   };
+
+  const startedAtLabel = useMemo(() => {
+    const iso = typeof (health as any)?.startedAt === 'string' ? String((health as any).startedAt) : '';
+    if (!iso) return { local: '—', utc: '—', iso: '' };
+    const d = new Date(iso);
+    const local = Number.isNaN(d.getTime()) ? iso : d.toLocaleString('es-CL');
+    const utc = Number.isNaN(d.getTime()) ? iso : d.toISOString();
+    return { local, utc, iso };
+  }, [health?.startedAt]);
 
   const downloadReviewPack = async () => {
     setReviewPackLoading(true);
@@ -876,9 +906,26 @@ export const ReviewPage: React.FC<{
                     </div>
                     <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>{s.detail}</div>
                   </div>
-                  <button onClick={s.action} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
-                    {s.actionLabel}
-                  </button>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {s.title.includes('Paso 4') && !automationsOk ? (
+                      <button
+                        onClick={() => ensureDefaultInboundAutomation().catch(() => {})}
+                        disabled={ensuringAutomation}
+                        style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+                      >
+                        {ensuringAutomation ? 'Creando…' : 'Crear automation RUN_AGENT'}
+                      </button>
+                    ) : null}
+                    <button onClick={s.action} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
+                      {s.actionLabel}
+                    </button>
+                    {s.title.includes('Paso 4') && !automationsOk && ensureAutomationStatus ? (
+                      <span style={{ fontSize: 12, color: '#1a7f37' }}>{ensureAutomationStatus}</span>
+                    ) : null}
+                    {s.title.includes('Paso 4') && !automationsOk && ensureAutomationError ? (
+                      <span style={{ fontSize: 12, color: '#b93800' }}>{ensureAutomationError}</span>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </div>
@@ -939,6 +986,10 @@ export const ReviewPage: React.FC<{
                   startedAt: <strong>{health?.startedAt || '—'}</strong>
                 </div>
                 <div>
+                  startedAt (local):{' '}
+                  <strong title={startedAtLabel.iso ? `UTC: ${startedAtLabel.utc}` : ''}>{startedAtLabel.local}</strong>
+                </div>
+                <div>
                   repoDirty: <strong>{typeof health?.repoDirty === 'boolean' ? String(health.repoDirty) : '—'}</strong>
                 </div>
                 <div>
@@ -986,7 +1037,7 @@ export const ReviewPage: React.FC<{
           <div style={{ marginTop: 14, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
             <div style={{ fontWeight: 900, marginBottom: 6 }}>Release Notes (DEV)</div>
             <div style={{ fontSize: 12, color: '#666' }}>
-              Build: <strong>{health?.gitSha || '—'}</strong> · startedAt: <strong>{health?.startedAt || '—'}</strong>
+              Build: <strong>{health?.gitSha || '—'}</strong> · startedAt: <strong title={startedAtLabel.iso || ''}>{startedAtLabel.local}</strong>
             </div>
             {releaseError ? <div style={{ marginTop: 8, color: '#b93800' }}>{releaseError}</div> : null}
             <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>

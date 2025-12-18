@@ -8,11 +8,12 @@ import { AgendaPage } from './pages/AgendaPage';
 import { ConfigPage } from './pages/ConfigPage';
 import { SimulatorPage } from './pages/SimulatorPage';
 import { ReviewPage } from './pages/ReviewPage';
+import { PlatformPage } from './pages/PlatformPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CopilotWidget } from './components/CopilotWidget';
 import { GuideOverlay, GuideSpec } from './components/GuideOverlay';
 
-type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review';
+type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review' | 'platform';
 
 const decodeUserRole = (token: string | null): string | null => {
   if (!token) return null;
@@ -34,6 +35,7 @@ export const App: React.FC = () => {
   const [workspaceId, setWorkspaceId] = useState<string>('default');
   const [outboundPolicy, setOutboundPolicy] = useState<string | null>(null);
   const [versionInfo, setVersionInfo] = useState<any | null>(null);
+  const [platformOwner, setPlatformOwner] = useState<boolean>(false);
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
 
   useEffect(() => {
@@ -71,13 +73,15 @@ export const App: React.FC = () => {
   const canAccessConfig = isAdmin;
   const canAccessReview = isAdmin;
   const canAccessSimulator = isAdmin;
+  const canAccessPlatform = platformOwner;
 
   useEffect(() => {
     if (view === 'config' && !canAccessConfig) setView('inbox');
     if (view === 'agenda' && !canAccessAgenda) setView('inbox');
     if (view === 'simulator' && !canAccessSimulator) setView('inbox');
     if (view === 'review' && !canAccessReview) setView('inbox');
-  }, [view, canAccessConfig, canAccessAgenda, canAccessSimulator, canAccessReview]);
+    if (view === 'platform' && !canAccessPlatform) setView('inbox');
+  }, [view, canAccessConfig, canAccessAgenda, canAccessSimulator, canAccessReview, canAccessPlatform]);
 
   const loadWorkspaces = useCallback(async () => {
     if (!token) return;
@@ -115,6 +119,17 @@ export const App: React.FC = () => {
       .then((data: any) => setOutboundPolicy(data?.outboundPolicy || null))
       .catch(() => setOutboundPolicy(null));
   }, [token, isAdmin, view]);
+
+  useEffect(() => {
+    if (!token) {
+      setPlatformOwner(false);
+      return;
+    }
+    apiClient
+      .get('/api/platform/me')
+      .then((data: any) => setPlatformOwner(Boolean(data?.platformOwner)))
+      .catch(() => setPlatformOwner(false));
+  }, [token]);
 
   const handleReplayInSimulator = useCallback(
     async (conversationId: string) => {
@@ -182,6 +197,7 @@ export const App: React.FC = () => {
         canAccessConfig={canAccessConfig}
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
+        canAccessPlatform={canAccessPlatform}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -204,6 +220,7 @@ export const App: React.FC = () => {
         canAccessConfig={canAccessConfig}
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
+        canAccessPlatform={canAccessPlatform}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -226,6 +243,7 @@ export const App: React.FC = () => {
         canAccessConfig={canAccessConfig}
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
+        canAccessPlatform={canAccessPlatform}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -248,6 +266,7 @@ export const App: React.FC = () => {
         canAccessConfig={canAccessConfig}
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
+        canAccessPlatform={canAccessPlatform}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -272,6 +291,29 @@ export const App: React.FC = () => {
     );
   }
 
+  if (view === 'platform' && canAccessPlatform) {
+    return (
+      <Layout
+        view={view}
+        setView={setView}
+        onLogout={handleLogout}
+        isAdmin={isAdmin}
+        canAccessAgenda={canAccessAgenda}
+        canAccessConfig={canAccessConfig}
+        canAccessReview={canAccessReview}
+        canAccessSimulator={canAccessSimulator}
+        canAccessPlatform={canAccessPlatform}
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        setWorkspaceId={setWorkspaceId}
+        outboundPolicy={outboundPolicy}
+        versionInfo={versionInfo}
+      >
+        <PlatformPage />
+      </Layout>
+    );
+  }
+
   return (
     <Layout
       view={view}
@@ -282,6 +324,7 @@ export const App: React.FC = () => {
       canAccessConfig={canAccessConfig}
       canAccessReview={canAccessReview}
       canAccessSimulator={canAccessSimulator}
+      canAccessPlatform={canAccessPlatform}
       workspaces={workspaces}
       workspaceId={workspaceId}
       setWorkspaceId={setWorkspaceId}
@@ -310,13 +353,14 @@ const Layout: React.FC<{
   canAccessConfig: boolean;
   canAccessReview: boolean;
   canAccessSimulator: boolean;
+  canAccessPlatform: boolean;
   workspaces: Array<{ id: string; name: string; isSandbox?: boolean; role?: string | null }>;
   workspaceId: string;
   setWorkspaceId: (id: string) => void;
   outboundPolicy?: string | null;
   versionInfo?: any | null;
   children: React.ReactNode;
-}> = ({ view, setView, onLogout, isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, children }) => {
+}> = ({ view, setView, onLogout, isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, canAccessPlatform, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, children }) => {
   const [isNarrow, setIsNarrow] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 980;
@@ -364,6 +408,7 @@ const Layout: React.FC<{
       { view: 'review', label: 'Ayuda / QA', adminOnly: true },
       { view: 'simulator', label: 'Simulador', adminOnly: true },
       { view: 'agenda', label: 'Agenda', adminOnly: true },
+      { view: 'platform', label: 'Clientes', adminOnly: true },
       { view: 'config', label: 'Configuración', adminOnly: true },
       { label: 'Salir', action: onLogout },
     ];
@@ -373,9 +418,10 @@ const Layout: React.FC<{
       if (i.view === 'config') return canAccessConfig;
       if (i.view === 'review') return canAccessReview;
       if (i.view === 'simulator') return canAccessSimulator;
+      if (i.view === 'platform') return canAccessPlatform;
       return !i.adminOnly || isAdmin;
     });
-  }, [isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, onLogout]);
+  }, [isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, canAccessPlatform, onLogout]);
 
   const versionStamp = useMemo(() => {
     const sha = typeof versionInfo?.gitSha === 'string' ? versionInfo.gitSha : null;
@@ -478,6 +524,7 @@ const Layout: React.FC<{
               {canAccessReview && navButton('review', 'Ayuda / QA')}
               {canAccessSimulator && navButton('simulator', 'Simulador')}
               {canAccessAgenda && navButton('agenda', 'Agenda')}
+              {canAccessPlatform && navButton('platform', 'Clientes')}
               {canAccessConfig && navButton('config', 'Configuración')}
               <button
                 onClick={onLogout}

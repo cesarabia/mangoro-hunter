@@ -55,6 +55,68 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
     }));
   });
 
+  // Ensure there is at least one basic inbound -> RUN_AGENT rule (idempotent).
+  app.post('/ensure-default', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+
+    const rules = await prisma.automationRule.findMany({
+      where: { workspaceId: access.workspaceId, archivedAt: null },
+      orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true, enabled: true, trigger: true, actionsJson: true, name: true },
+    });
+
+    const hasRunAgent = (actionsJson: string | null | undefined) => {
+      const actions = safeJsonParse(actionsJson) ?? [];
+      if (!Array.isArray(actions)) return false;
+      return actions.some((a: any) => String(a?.type || '').toUpperCase() === 'RUN_AGENT');
+    };
+
+    const existing = rules.find(
+      (r) =>
+        Boolean(r.enabled) &&
+        String(r.trigger || '').toUpperCase() === 'INBOUND_MESSAGE' &&
+        hasRunAgent(r.actionsJson),
+    );
+
+    if (existing) {
+      return { ok: true, existing: true, ruleId: existing.id, name: existing.name };
+    }
+
+    const created = await prisma.automationRule.create({
+      data: {
+        workspaceId: access.workspaceId,
+        name: 'Automation básica RUN_AGENT INBOUND_MESSAGE',
+        enabled: true,
+        priority: 100,
+        trigger: 'INBOUND_MESSAGE',
+        scopePhoneLineId: null,
+        scopeProgramId: null,
+        conditionsJson: serializeJson([]),
+        actionsJson: serializeJson([{ type: 'RUN_AGENT', agent: 'program_default' }]),
+      },
+      select: { id: true, name: true },
+    });
+
+    await prisma.configChangeLog
+      .create({
+        data: {
+          workspaceId: access.workspaceId,
+          userId,
+          type: 'AUTOMATION_CREATED',
+          beforeJson: null,
+          afterJson: serializeJson({ automationRuleId: created.id, name: created.name, trigger: 'INBOUND_MESSAGE' }),
+        },
+      })
+      .catch(() => {});
+
+    return { ok: true, existing: false, ruleId: created.id, name: created.name };
+  });
+
   app.post('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     if (!isWorkspaceAdmin(request, access)) {

@@ -58,6 +58,25 @@ function normalizeUrl(value: unknown): string | null | undefined {
   }
 }
 
+function normalizeTestMethod(value: unknown): 'GET' | 'HEAD' | null | undefined {
+  const str = safeString(value);
+  if (typeof str !== 'string') return str;
+  const upper = str.toUpperCase().trim();
+  if (upper === 'GET' || upper === 'HEAD') return upper;
+  return null;
+}
+
+function normalizeTestPath(value: unknown): string | null | undefined {
+  const str = safeString(value);
+  if (typeof str !== 'string') return str;
+  const trimmed = str.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  if (normalized.length > 200) return null;
+  if (/\s/.test(normalized)) return null;
+  return normalized;
+}
+
 function normalizeAuthType(value: unknown): 'BEARER_TOKEN' | 'HEADER' | null | undefined {
   const str = safeString(value);
   if (typeof str !== 'string') return str;
@@ -122,6 +141,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
           slug: true,
           description: true,
           baseUrl: true as any,
+          testPath: true as any,
+          testMethod: true as any,
           authType: true as any,
           authHeaderName: true as any,
           authToken: true as any,
@@ -144,6 +165,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
         slug: c.slug,
         description: c.description,
         baseUrl: c.baseUrl || null,
+        testPath: c.testPath || null,
+        testMethod: c.testMethod || null,
         authType: c.authType || 'BEARER_TOKEN',
         authHeaderName: c.authHeaderName || 'Authorization',
         hasToken: Boolean(c.authToken),
@@ -178,6 +201,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
       isActive?: boolean;
       actions?: string[] | null;
       baseUrl?: string | null;
+      testPath?: string | null;
+      testMethod?: string | null;
       authType?: string | null;
       authHeaderName?: string | null;
       authToken?: string | null;
@@ -205,6 +230,19 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: 'baseUrl no puede apuntar a host local/privado.' });
       }
     }
+
+    const rawTestPath = typeof body?.testPath === 'string' ? body.testPath.trim() : '';
+    const testPath = normalizeTestPath(body?.testPath);
+    if (typeof body?.testPath !== 'undefined' && rawTestPath && testPath === null) {
+      return reply.code(400).send({ error: '"testPath" inválido. Usa un path tipo /health.' });
+    }
+
+    const rawTestMethod = typeof body?.testMethod === 'string' ? body.testMethod.trim() : '';
+    const testMethod = normalizeTestMethod(body?.testMethod);
+    if (typeof body?.testMethod !== 'undefined' && rawTestMethod && testMethod === null) {
+      return reply.code(400).send({ error: '"testMethod" inválido (GET | HEAD).' });
+    }
+
     const authType = normalizeAuthType(body?.authType);
     if (typeof body?.authType !== 'undefined' && authType === null) {
       return reply.code(400).send({ error: '"authType" inválido (BEARER_TOKEN | HEADER).' });
@@ -243,6 +281,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
           slug,
           description: body?.description ? String(body.description).trim() : null,
           baseUrl,
+          testPath,
+          testMethod,
           authType: authType || 'BEARER_TOKEN',
           authHeaderName: typeof authHeaderName === 'string' ? authHeaderName : 'Authorization',
           authToken: typeof authToken === 'string' ? authToken : null,
@@ -258,6 +298,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
           slug: true,
           description: true,
           baseUrl: true as any,
+          testPath: true as any,
+          testMethod: true as any,
           authType: true as any,
           authHeaderName: true as any,
           authToken: true as any,
@@ -295,6 +337,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
       slug: created.slug,
       description: created.description,
       baseUrl: created.baseUrl || null,
+      testPath: (created as any).testPath || null,
+      testMethod: (created as any).testMethod || null,
       authType: created.authType || 'BEARER_TOKEN',
       authHeaderName: created.authHeaderName || 'Authorization',
       hasToken: Boolean(created.authToken),
@@ -321,6 +365,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
       isActive?: boolean;
       actions?: string[] | null;
       baseUrl?: string | null;
+      testPath?: string | null;
+      testMethod?: string | null;
       authType?: string | null;
       authHeaderName?: string | null;
       authToken?: string | null;
@@ -341,6 +387,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
           slug: true,
           description: true,
           baseUrl: true as any,
+          testPath: true as any,
+          testMethod: true as any,
           authType: true as any,
           authHeaderName: true as any,
           authToken: true as any,
@@ -381,6 +429,18 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
         }
       }
       data.baseUrl = baseUrl;
+    }
+    if (typeof body.testPath !== 'undefined') {
+      const raw = typeof body.testPath === 'string' ? body.testPath.trim() : '';
+      const testPath = normalizeTestPath(body.testPath);
+      if (raw && testPath === null) return reply.code(400).send({ error: '"testPath" inválido. Usa un path tipo /health.' });
+      data.testPath = testPath;
+    }
+    if (typeof body.testMethod !== 'undefined') {
+      const raw = typeof body.testMethod === 'string' ? body.testMethod.trim() : '';
+      const testMethod = normalizeTestMethod(body.testMethod);
+      if (raw && testMethod === null) return reply.code(400).send({ error: '"testMethod" inválido (GET | HEAD).' });
+      data.testMethod = testMethod;
     }
     if (typeof body.authType !== 'undefined') {
       const authType = normalizeAuthType(body.authType);
@@ -432,6 +492,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
           slug: true,
           description: true,
           baseUrl: true as any,
+          testPath: true as any,
+          testMethod: true as any,
           authType: true as any,
           authHeaderName: true as any,
           authToken: true as any,
@@ -473,6 +535,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
       slug: updated.slug,
       description: updated.description,
       baseUrl: updated.baseUrl || null,
+      testPath: (updated as any).testPath || null,
+      testMethod: (updated as any).testMethod || null,
       authType: updated.authType || 'BEARER_TOKEN',
       authHeaderName: updated.authHeaderName || 'Authorization',
       hasToken: Boolean(updated.authToken),
@@ -495,6 +559,7 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
     const access = await resolveWorkspaceAccess(request);
     if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
     const { id } = request.params as { id: string };
+    const body = request.body as { path?: string | null; method?: string | null };
 
     let connector: any;
     try {
@@ -505,6 +570,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
           name: true,
           slug: true,
           baseUrl: true as any,
+          testPath: true as any,
+          testMethod: true as any,
           authType: true as any,
           authHeaderName: true as any,
           authToken: true as any,
@@ -549,6 +616,22 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
     const authHeaderName = String(connector.authHeaderName || 'Authorization').trim() || 'Authorization';
     const authToken = typeof connector.authToken === 'string' ? connector.authToken : null;
 
+    const overridePath = typeof body?.path === 'string' ? body.path : null;
+    const overrideMethod = typeof body?.method === 'string' ? body.method : null;
+    const testPath = normalizeTestPath(overridePath) ?? (connector as any).testPath ?? null;
+    const testMethod = normalizeTestMethod(overrideMethod) ?? (connector as any).testMethod ?? 'GET';
+    if (typeof overridePath === 'string' && overridePath.trim() && testPath === null) {
+      return reply.code(400).send({ error: '"path" inválido. Usa un path tipo /health.' });
+    }
+    if (typeof overrideMethod === 'string' && overrideMethod.trim() && normalizeTestMethod(overrideMethod) === null) {
+      return reply.code(400).send({ error: '"method" inválido (GET | HEAD).' });
+    }
+    if (testPath) {
+      const basePath = url.pathname.replace(/\/+$/g, '');
+      const extra = String(testPath).replace(/^\/+/g, '');
+      url.pathname = `${basePath}/${extra}`.replace(/\/{2,}/g, '/');
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs).unref();
 
@@ -565,10 +648,12 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
     let responseSnippet: string | null = null;
 
     try {
-      const res = await fetch(url.toString(), { method: 'GET', headers, signal: controller.signal });
+      const res = await fetch(url.toString(), { method: testMethod, headers, signal: controller.signal });
       statusCode = res.status;
-      const buf = Buffer.from(await res.arrayBuffer());
-      responseSnippet = buf.slice(0, Math.min(buf.length, maxPayloadBytes, 2048)).toString('utf8');
+      if (testMethod !== 'HEAD') {
+        const buf = Buffer.from(await res.arrayBuffer());
+        responseSnippet = buf.slice(0, Math.min(buf.length, maxPayloadBytes, 2048)).toString('utf8');
+      }
       ok = res.ok;
       if (!res.ok) error = `HTTP ${res.status}`;
     } catch (err: any) {
@@ -588,8 +673,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
           connectorId: connector.id,
           userId: request.user?.userId || null,
           kind: 'TEST',
-          action: 'GET',
-          requestJson: serializeJson({ method: 'GET', url: url.toString(), host: url.hostname, timeoutMs }),
+          action: testMethod,
+          requestJson: serializeJson({ method: testMethod, url: url.toString(), host: url.hostname, timeoutMs }),
           responseJson: serializeJson({ statusCode, durationMs, snippet: responseSnippet ? responseSnippet.slice(0, 512) : null }),
           ok,
           error,
@@ -615,6 +700,8 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
       statusCode,
       durationMs,
       error,
+      snippet: responseSnippet ? responseSnippet.slice(0, 512) : null,
+      tested: { method: testMethod, path: testPath || '/', url: url.toString() },
     });
   });
 }

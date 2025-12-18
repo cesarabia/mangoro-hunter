@@ -2,6 +2,7 @@ export const apiClient = {
   async request(path: string, options: RequestInit = {}) {
     const token = localStorage.getItem('token');
     const workspaceId = localStorage.getItem('workspaceId');
+    const method = (options.method || 'GET').toUpperCase();
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {})
@@ -10,6 +11,7 @@ export const apiClient = {
 
     const res = await fetch(path, {
       ...options,
+      cache: method === 'GET' ? 'no-store' : options.cache,
       headers: {
         ...headers,
         ...workspaceHeader,

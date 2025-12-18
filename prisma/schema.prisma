@@ -191,6 +191,8 @@ model WorkspaceConnector {
   slug        String
   description String?
   baseUrl     String?
+  testPath    String?
+  testMethod  String?
   authType    String?
   authHeaderName String?
   authToken   String?

@@ -520,11 +520,11 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
       return response;
     }
 
-    const wantsUserMgmt =
-      /\b(crea|crear|agrega|agregar|añade|anade|invita|invitar)\b/i.test(text) &&
-      /\b(usuario|usuarios|miembro|miembros|membership|rol)\b/i.test(text);
+    const maybeUserMgmt =
+      /\b(crea|crear|agrega|agregar|añade|anade|invita|invitar|invite|add)\b/i.test(text) &&
+      Boolean(extractEmail(text));
     const email = extractEmail(text);
-    if (wantsUserMgmt && email) {
+    if (maybeUserMgmt && email) {
       if (!isOwner) {
         const replyText =
           'Solo un OWNER puede gestionar usuarios/invitaciones en este workspace. Pídele a un OWNER que lo haga desde Configuración → Usuarios.';
@@ -540,20 +540,30 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
 
       const role = inferMembershipRoleFromText(text);
       const assignedOnly = inferAssignedOnlyFromText(text);
+      const wantsInvite = /\b(invita|invitar|invite)\b/i.test(text);
+      const assignedNote = assignedOnly && wantsInvite ? ' · Nota: "solo asignadas" se aplica después de aceptar el invite.' : '';
       const proposal: z.infer<typeof CopilotProposalSchema> = {
         id: `user_${Date.now().toString(36)}`,
-        title: `Crear/actualizar acceso: ${email}`,
-        summary: `Workspace: ${access.workspaceId} · Rol: ${role}${assignedOnly ? ' · Scope: solo asignadas' : ''}`,
+        title: `${wantsInvite ? 'Invitar' : 'Crear/actualizar acceso'}: ${email}`,
+        summary: `Workspace: ${access.workspaceId} · Rol: ${role}${assignedOnly && !wantsInvite ? ' · Scope: solo asignadas' : ''}${assignedNote}`,
         commands: [
-          {
-            type: 'CREATE_OR_UPDATE_USER_MEMBERSHIP',
-            email,
-            role,
-            ...(assignedOnly ? { assignedOnly: true } : {}),
-          } as any,
+          wantsInvite
+            ? ({
+                type: 'INVITE_USER_BY_EMAIL',
+                email,
+                role,
+              } as any)
+            : ({
+                type: 'CREATE_OR_UPDATE_USER_MEMBERSHIP',
+                email,
+                role,
+                ...(assignedOnly ? { assignedOnly: true } : {}),
+              } as any),
         ],
       };
-      const replyText = `Puedo crear/actualizar el acceso de ${email} con rol ${role} en este workspace. ¿Confirmas?`;
+      const replyText = wantsInvite
+        ? `Puedo crear un invite para ${email} (rol ${role}). ¿Confirmas?`
+        : `Puedo crear/actualizar el acceso de ${email} con rol ${role} en este workspace. ¿Confirmas?`;
       if (run?.id) {
         await prisma.copilotRunLog.update({
           where: { id: run.id },

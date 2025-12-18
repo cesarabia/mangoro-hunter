@@ -120,6 +120,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   );
   const [medilinkBaseUrl, setMedilinkBaseUrl] = useState<string>('');
   const [medilinkToken, setMedilinkToken] = useState<string>('');
+  const [medilinkTestPath, setMedilinkTestPath] = useState<string>('/health');
+  const [medilinkTestMethod, setMedilinkTestMethod] = useState<string>('GET');
   const [medilinkStatus, setMedilinkStatus] = useState<string | null>(null);
   const [medilinkError, setMedilinkError] = useState<string | null>(null);
 
@@ -340,6 +342,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setConnectors(connList);
     const med = connList.find((c: any) => String(c?.slug || '').toLowerCase() === 'medilink') || null;
     setMedilinkBaseUrl(typeof med?.baseUrl === 'string' ? med.baseUrl : '');
+    setMedilinkTestPath(typeof med?.testPath === 'string' ? med.testPath : '/health');
+    setMedilinkTestMethod(typeof med?.testMethod === 'string' ? med.testMethod : 'GET');
     setMedilinkToken('');
     setMedilinkStatus(null);
     setMedilinkError(null);
@@ -462,6 +466,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       slug: '',
       description: '',
       baseUrl: '',
+      testPath: '/health',
+      testMethod: 'GET',
       authType: 'BEARER_TOKEN',
       authHeaderName: 'Authorization',
       authToken: '',
@@ -482,6 +488,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       slug: c.slug || '',
       description: c.description || '',
       baseUrl: c.baseUrl || '',
+      testPath: c.testPath || '/health',
+      testMethod: c.testMethod || 'GET',
       authType: c.authType || 'BEARER_TOKEN',
       authHeaderName: c.authHeaderName || 'Authorization',
       authToken: '',
@@ -509,6 +517,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         slug: String(connectorEditor.slug || '').trim() || null,
         description: String(connectorEditor.description || '').trim() || null,
         baseUrl: String(connectorEditor.baseUrl || '').trim() || null,
+        testPath: String(connectorEditor.testPath || '').trim() || null,
+        testMethod: String(connectorEditor.testMethod || '').trim() || null,
         authType: String(connectorEditor.authType || '').trim() || null,
         authHeaderName: String(connectorEditor.authHeaderName || '').trim() || null,
         allowedDomains: parseLines(String(connectorEditor.allowedDomainsText || '')),
@@ -551,7 +561,13 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     try {
       const res: any = await apiClient.post(`/api/connectors/${id}/test`, {});
       const ok = Boolean(res?.ok);
-      const label = ok ? `OK (${res?.statusCode || '—'})` : `FAIL (${res?.error || res?.statusCode || 'error'})`;
+      const code = typeof res?.statusCode === 'number' ? String(res.statusCode) : '—';
+      const duration = typeof res?.durationMs === 'number' ? `${res.durationMs}ms` : '';
+      const method = typeof res?.tested?.method === 'string' ? res.tested.method : 'GET';
+      const path = typeof res?.tested?.path === 'string' ? res.tested.path : '/';
+      const label = ok
+        ? `OK (${code}${duration ? ` · ${duration}` : ''})`
+        : `FAIL (${res?.error || code}${duration ? ` · ${duration}` : ''}) · ${method} ${path}`;
       setConnectorTestStatus((prev) => ({ ...prev, [id]: label }));
       await loadIntegrations();
     } catch (err: any) {
@@ -565,9 +581,13 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     try {
       const baseUrl = medilinkBaseUrl.trim() || null;
       const token = medilinkToken.trim();
+      const testPath = medilinkTestPath.trim() || null;
+      const testMethod = medilinkTestMethod.trim() || null;
       const existingId = medilinkConnector?.id ? String(medilinkConnector.id) : null;
       if (existingId) {
         const payload: any = { baseUrl };
+        payload.testPath = testPath;
+        payload.testMethod = testMethod;
         if (token) payload.authToken = token;
         await apiClient.patch(`/api/connectors/${existingId}`, payload);
       } else {
@@ -576,6 +596,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
           slug: 'medilink',
           description: 'Medilink API (SSClinical)',
           baseUrl,
+          testPath,
+          testMethod,
           authType: 'BEARER_TOKEN',
           authHeaderName: 'Authorization',
           actions: ['search_patient', 'create_appointment', 'create_payment'],
@@ -1563,6 +1585,26 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     />
                   </div>
                   <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Test method</div>
+                    <select
+                      value={connectorEditor.testMethod || 'GET'}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, testMethod: e.target.value }))}
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    >
+                      <option value="GET">GET</option>
+                      <option value="HEAD">HEAD</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Test endpoint path</div>
+                    <input
+                      value={connectorEditor.testPath || ''}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, testPath: e.target.value }))}
+                      placeholder="/health"
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div>
                     <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Auth type</div>
                     <select
                       value={connectorEditor.authType}
@@ -1709,6 +1751,26 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   type="password"
                   style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
                 />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Test endpoint path</div>
+                <input
+                  value={medilinkTestPath}
+                  onChange={(e) => setMedilinkTestPath(e.target.value)}
+                  placeholder="/health"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Test method</div>
+                <select
+                  value={medilinkTestMethod}
+                  onChange={(e) => setMedilinkTestMethod(e.target.value)}
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                >
+                  <option value="GET">GET</option>
+                  <option value="HEAD">HEAD</option>
+                </select>
               </div>
             </div>
             <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
