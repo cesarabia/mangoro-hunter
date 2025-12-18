@@ -95,6 +95,8 @@ async function ensureConnector(params: {
       slug: params.slug,
       description: params.description ?? null,
       isActive: true,
+      authType: 'BEARER_TOKEN' as any,
+      authHeaderName: 'Authorization' as any,
       actionsJson: params.actions && params.actions.length > 0 ? JSON.stringify(params.actions) : null,
     },
     select: { id: true },

@@ -145,7 +145,16 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
   - Tipos mínimos: `LINK` | `TEXT` (extensible a archivos).
   - Campos: `title`, `url?`, `contentText?`, `tags?`, `archivedAt?`.
 - **WorkspaceConnector** (archive-only):
-  - Conectores declarativos disponibles por workspace (ej: “Medilink”), con `actionsJson` (acciones posibles).
+  - Conectores declarativos disponibles por workspace (ej: “Medilink”), con:
+    - `baseUrl` (solo `http/https`), `authType` (`BEARER_TOKEN` | `HEADER`), `authHeaderName`, `authToken` (masked en UI),
+    - `allowedDomains` (allowlist para evitar SSRF), `timeoutMs`, `maxPayloadBytes`,
+    - `actionsJson` (acciones posibles), `isActive`, `archivedAt`.
+  - “Test conexión” (UI/endpoint) **NO ejecuta negocio**: solo valida conectividad y deja auditoría:
+    - Bloquea hosts locales/privados (SSRF guardrail),
+    - Respeta `allowedDomains`,
+    - Loggea sin secretos.
+- **ConnectorCallLog** (audit log, archive-only):
+  - Registra cada test/llamada (kind/action, request/response resumida, ok/error/statusCode, userId, timestamps).
 - **ProgramConnectorPermission** (archive-only):
   - Whitelist por Program de qué acciones del connector están permitidas (`allowedActionsJson`).
 - Auditoría: cambios en Programs/Knowledge/Tools se registran en `ConfigChangeLog`.
@@ -301,7 +310,7 @@ En v1 “profesional”, Programs incluye (además de `name/slug/isActive/agentS
 ### 8.6 Ayuda / QA
 Tabs:
 - **Ayuda** (no técnica): conceptos + primeros pasos + guías por módulo + troubleshooting.
-- **QA / Owner Review**: build/health, SAFE MODE, allowlist efectiva, logs recientes, botón Run Smoke Scenarios, Release Notes (DEV) y descarga Review Pack ZIP.
+- **QA / Owner Review**: build/health, SAFE MODE, allowlist efectiva, logs recientes, botón Run Smoke Scenarios, Release Notes (DEV) + **DoD v1** (Auto: PASS/FAIL/PENDIENTE re-evaluable; Manual: PENDIENTE por defecto) y descarga Review Pack ZIP.
 
 ---
 

@@ -58,6 +58,7 @@ Reglas de seguridad y guardrails:
 - Nunca sobrescribas candidateName si existe candidateNameManual.
 - Evita loops: no repitas la misma pregunta 2+ veces; si necesitas confirmar, pide confirmación en formato 1/2.
 - Si event.type == "AI_SUGGEST": NO cambies estado/perfil (no UPSERT_PROFILE_FIELDS ni SET_CONVERSATION_*). Devuelve SOLO 1 SEND_MESSAGE con el texto sugerido. Si existe event.draftText, mejora ese borrador manteniendo el significado.
+- El Program actual (incluido en el prompt) es la fuente única de verdad. Si el historial de la conversación parece de otro Program, igual debes responder siguiendo el Program actual.
 `.trim();
 
   return `${policy}\n\nEstado ventana WhatsApp: ${params.windowStatus}\n\n${params.programPrompt}`.trim();
@@ -580,6 +581,33 @@ export async function runAgent(event: AgentEvent): Promise<{
   let lastInvalidIssues: any = null;
 
   try {
+    const buildFallbackResponse = (reason: string): AgentResponse => {
+      const fallbackText = (() => {
+        if (event.eventType === 'AI_SUGGEST') {
+          const draft = String(event.draftText || '').trim();
+          if (draft) return draft;
+          return '¿Qué respuesta quieres enviar? Escribe un borrador y lo mejoro.';
+        }
+        return 'Gracias por tu mensaje. ¿Me puedes contar un poco más para ayudarte?';
+      })();
+      const dedupeSeed = `${conversation.id}:${event.eventType}:${event.inboundMessageId || ''}:FALLBACK:${fallbackText}`;
+      return {
+        agent: 'fallback',
+        version: 1,
+        commands: [
+          {
+            command: 'SEND_MESSAGE',
+            conversationId: conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_TEXT',
+            text: fallbackText,
+            dedupeKey: `fallback:${stableHash(dedupeSeed).slice(0, 16)}`,
+          } as any,
+        ],
+        notes: `fallback:${reason}`,
+      };
+    };
+
     let safetyIterations = 0;
     let invalidAttempts = 0;
     while (safetyIterations < 6) {
@@ -662,7 +690,21 @@ export async function runAgent(event: AgentEvent): Promise<{
           });
           continue;
         }
-        throw new Error(`Respuesta del agente inválida: ${validated.error.message}`);
+        const fallback = buildFallbackResponse('INVALID_SCHEMA');
+        await prisma.agentRunLog.update({
+          where: { id: runLog.id },
+          data: {
+            status: 'PLANNED',
+            commandsJson: serializeJson(fallback),
+            resultsJson: serializeJson({
+              fallbackUsed: true,
+              reason: 'INVALID_SCHEMA',
+              lastInvalidRaw,
+              lastInvalidIssues,
+            }),
+          },
+        });
+        return { runId: runLog.id, windowStatus, response: fallback };
       }
 
       const semanticIssues = validateAgentResponseSemantics(validated.data);
@@ -705,7 +747,21 @@ export async function runAgent(event: AgentEvent): Promise<{
           });
           continue;
         }
-        throw new Error(`Respuesta del agente inválida: ${serializeJson(semanticIssues)}`);
+        const fallback = buildFallbackResponse('INVALID_SEMANTICS');
+        await prisma.agentRunLog.update({
+          where: { id: runLog.id },
+          data: {
+            status: 'PLANNED',
+            commandsJson: serializeJson(fallback),
+            resultsJson: serializeJson({
+              fallbackUsed: true,
+              reason: 'INVALID_SEMANTICS',
+              lastInvalidRaw,
+              lastInvalidIssues,
+            }),
+          },
+        });
+        return { runId: runLog.id, windowStatus, response: fallback };
       }
 
       await prisma.agentRunLog.update({

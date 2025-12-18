@@ -21,6 +21,7 @@ model User {
   copilotThreads CopilotThread[]
   scenarioRuns   ScenarioRunLog[]
   configChanges  ConfigChangeLog[]
+  connectorCalls ConnectorCallLog[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 }
@@ -33,6 +34,7 @@ model Workspace {
   phoneLines  PhoneLine[]
   programs    Program[]
   connectors  WorkspaceConnector[]
+  connectorCalls ConnectorCallLog[]
   programKnowledgeAssets ProgramKnowledgeAsset[]
   programConnectorPermissions ProgramConnectorPermission[]
   automations AutomationRule[]
@@ -162,15 +164,48 @@ model WorkspaceConnector {
   name        String
   slug        String
   description String?
+  baseUrl     String?
+  authType    String?
+  authHeaderName String?
+  authToken   String?
+  allowedDomainsJson String?
+  timeoutMs   Int?
+  maxPayloadBytes Int?
+  lastTestedAt DateTime?
+  lastTestOk  Boolean?
+  lastTestError String?
   actionsJson String?
   isActive    Boolean   @default(true)
   archivedAt  DateTime?
   programPermissions ProgramConnectorPermission[]
+  calls       ConnectorCallLog[]
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   @@unique([workspaceId, slug])
   @@index([workspaceId])
+}
+
+model ConnectorCallLog {
+  id          String    @id @default(cuid())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  workspaceId String
+  connector   WorkspaceConnector @relation(fields: [connectorId], references: [id])
+  connectorId String
+  user        User?     @relation(fields: [userId], references: [id])
+  userId      String?
+  kind        String
+  action      String?
+  requestJson String?
+  responseJson String?
+  ok          Boolean   @default(false)
+  error       String?
+  statusCode  Int?
+  createdAt   DateTime  @default(now())
+
+  @@index([workspaceId])
+  @@index([connectorId])
+  @@index([createdAt])
 }
 
 model ProgramConnectorPermission {

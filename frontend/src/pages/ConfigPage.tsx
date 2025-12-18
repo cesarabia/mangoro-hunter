@@ -88,6 +88,12 @@ export const ConfigPage: React.FC = () => {
   const [integrationsWaError, setIntegrationsWaError] = useState<string | null>(null);
   const [integrationsWaTest, setIntegrationsWaTest] = useState<string | null>(null);
 
+  const [connectors, setConnectors] = useState<any[]>([]);
+  const [connectorEditor, setConnectorEditor] = useState<any | null>(null);
+  const [connectorStatus, setConnectorStatus] = useState<string | null>(null);
+  const [connectorError, setConnectorError] = useState<string | null>(null);
+  const [connectorTestStatus, setConnectorTestStatus] = useState<Record<string, string>>({});
+
   const [authorizedAdminNumbersText, setAuthorizedAdminNumbersText] = useState<string>('');
   const [authorizedTestNumbersText, setAuthorizedTestNumbersText] = useState<string>('');
   const [authorizedNumbersStatus, setAuthorizedNumbersStatus] = useState<string | null>(null);
@@ -260,10 +266,11 @@ export const ConfigPage: React.FC = () => {
   };
 
   const loadIntegrations = async () => {
-    const [ai, wa, auth] = await Promise.all([
+    const [ai, wa, auth, conns] = await Promise.all([
       apiClient.get('/api/config/ai'),
       apiClient.get('/api/config/whatsapp'),
       apiClient.get('/api/config/authorized-numbers'),
+      apiClient.get('/api/connectors'),
     ]);
     setIntegrationsAi(ai);
     setIntegrationsAiModel(typeof ai?.aiModel === 'string' ? ai.aiModel : '');
@@ -284,6 +291,11 @@ export const ConfigPage: React.FC = () => {
     setAuthorizedTestNumbersText(testNumbers.join('\n'));
     setAuthorizedNumbersStatus(null);
     setAuthorizedNumbersError(null);
+
+    setConnectors(Array.isArray(conns) ? conns : []);
+    setConnectorEditor(null);
+    setConnectorStatus(null);
+    setConnectorError(null);
   };
 
   const saveAiIntegration = async () => {
@@ -388,6 +400,112 @@ export const ConfigPage: React.FC = () => {
       await loadIntegrations();
     } catch (err: any) {
       setAuthorizedNumbersError(err.message || 'No se pudo guardar');
+    }
+  };
+
+  const openNewConnector = () => {
+    setConnectorStatus(null);
+    setConnectorError(null);
+    setConnectorEditor({
+      id: null,
+      name: '',
+      slug: '',
+      description: '',
+      baseUrl: '',
+      authType: 'BEARER_TOKEN',
+      authHeaderName: 'Authorization',
+      authToken: '',
+      allowedDomainsText: '',
+      actionsText: 'search_patient\ncreate_appointment\ncreate_payment',
+      timeoutMs: 8000,
+      maxPayloadBytes: 200000,
+      isActive: true,
+    });
+  };
+
+  const editConnector = (c: any) => {
+    setConnectorStatus(null);
+    setConnectorError(null);
+    setConnectorEditor({
+      id: c.id,
+      name: c.name || '',
+      slug: c.slug || '',
+      description: c.description || '',
+      baseUrl: c.baseUrl || '',
+      authType: c.authType || 'BEARER_TOKEN',
+      authHeaderName: c.authHeaderName || 'Authorization',
+      authToken: '',
+      allowedDomainsText: Array.isArray(c.allowedDomains) ? c.allowedDomains.join('\n') : '',
+      actionsText: Array.isArray(c.actions) ? c.actions.join('\n') : '',
+      timeoutMs: typeof c.timeoutMs === 'number' ? c.timeoutMs : 8000,
+      maxPayloadBytes: typeof c.maxPayloadBytes === 'number' ? c.maxPayloadBytes : 200000,
+      isActive: Boolean(c.isActive),
+    });
+  };
+
+  const parseLines = (value: string): string[] =>
+    value
+      .split(/[\n,]/g)
+      .map((v) => v.trim())
+      .filter(Boolean);
+
+  const saveConnector = async () => {
+    if (!connectorEditor) return;
+    setConnectorStatus(null);
+    setConnectorError(null);
+    try {
+      const payload: any = {
+        name: String(connectorEditor.name || '').trim(),
+        slug: String(connectorEditor.slug || '').trim() || null,
+        description: String(connectorEditor.description || '').trim() || null,
+        baseUrl: String(connectorEditor.baseUrl || '').trim() || null,
+        authType: String(connectorEditor.authType || '').trim() || null,
+        authHeaderName: String(connectorEditor.authHeaderName || '').trim() || null,
+        allowedDomains: parseLines(String(connectorEditor.allowedDomainsText || '')),
+        actions: parseLines(String(connectorEditor.actionsText || '')),
+        timeoutMs: Number(connectorEditor.timeoutMs),
+        maxPayloadBytes: Number(connectorEditor.maxPayloadBytes),
+        isActive: Boolean(connectorEditor.isActive),
+      };
+      const token = String(connectorEditor.authToken || '').trim();
+      if (token) payload.authToken = token;
+
+      if (connectorEditor.id) {
+        await apiClient.patch(`/api/connectors/${connectorEditor.id}`, payload);
+      } else {
+        await apiClient.post('/api/connectors', payload);
+      }
+      setConnectorStatus('Guardado.');
+      await loadIntegrations();
+    } catch (err: any) {
+      setConnectorError(err.message || 'No se pudo guardar');
+    }
+  };
+
+  const archiveConnector = async (id: string) => {
+    const ok = window.confirm('¿Archivar connector? (no se borra)');
+    if (!ok) return;
+    setConnectorStatus(null);
+    setConnectorError(null);
+    try {
+      await apiClient.patch(`/api/connectors/${id}`, { archived: true });
+      setConnectorStatus('Archivado.');
+      await loadIntegrations();
+    } catch (err: any) {
+      setConnectorError(err.message || 'No se pudo archivar');
+    }
+  };
+
+  const testConnector = async (id: string) => {
+    setConnectorTestStatus((prev) => ({ ...prev, [id]: 'Testeando…' }));
+    try {
+      const res: any = await apiClient.post(`/api/connectors/${id}/test`, {});
+      const ok = Boolean(res?.ok);
+      const label = ok ? `OK (${res?.statusCode || '—'})` : `FAIL (${res?.error || res?.statusCode || 'error'})`;
+      setConnectorTestStatus((prev) => ({ ...prev, [id]: label }));
+      await loadIntegrations();
+    } catch (err: any) {
+      setConnectorTestStatus((prev) => ({ ...prev, [id]: err.message || 'FAIL' }));
     }
   };
 
@@ -1176,6 +1294,253 @@ export const ConfigPage: React.FC = () => {
               {integrationsWaTest ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{integrationsWaTest}</div> : null}
               {integrationsWaError ? <div style={{ fontSize: 12, color: '#b93800' }}>{integrationsWaError}</div> : null}
             </div>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Connectors / APIs externas</div>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  Guarda credenciales y prueba conectividad. Luego puedes habilitar el connector por Program (Tools).
+                </div>
+              </div>
+              <button
+                onClick={openNewConnector}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                + Agregar connector
+              </button>
+            </div>
+            {connectorStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{connectorStatus}</div> : null}
+            {connectorError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{connectorError}</div> : null}
+
+            <div style={{ marginTop: 10, border: '1px solid #f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#fafafa', textAlign: 'left' }}>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Name</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Base URL</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Auth</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Último test</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(Array.isArray(connectors) ? connectors : []).length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ padding: 10, fontSize: 13, color: '#666' }}>
+                        — Sin connectors. Agrega uno (ej: Medilink).
+                      </td>
+                    </tr>
+                  ) : (
+                    (connectors || []).map((c: any) => (
+                      <tr key={c.id} style={{ borderTop: '1px solid #f0f0f0' }}>
+                        <td style={{ padding: 10, fontSize: 13 }}>
+                          <div style={{ fontWeight: 800 }}>{c.name}</div>
+                          <div style={{ fontSize: 12, color: '#666', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                            {c.slug}
+                          </div>
+                          <div style={{ marginTop: 4, fontSize: 12, color: c.hasToken ? '#1a7f37' : '#b93800' }}>
+                            {c.hasToken ? '✅ token configurado' : '⚠️ sin token'}
+                          </div>
+                        </td>
+                        <td style={{ padding: 10, fontSize: 13, color: '#111' }}>
+                          <div style={{ maxWidth: 260, overflowWrap: 'anywhere' }}>{c.baseUrl || '—'}</div>
+                          {Array.isArray(c.allowedDomains) && c.allowedDomains.length > 0 ? (
+                            <div style={{ marginTop: 4, fontSize: 12, color: '#666' }}>
+                              allowlist: {c.allowedDomains.join(', ')}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td style={{ padding: 10, fontSize: 13 }}>
+                          <div style={{ fontSize: 12, color: '#666' }}>{c.authType || '—'}</div>
+                          <div style={{ fontSize: 12, color: '#666' }}>{c.authHeaderName ? `header: ${c.authHeaderName}` : ''}</div>
+                        </td>
+                        <td style={{ padding: 10, fontSize: 13 }}>
+                          <div style={{ fontSize: 12, color: c.lastTestOk ? '#1a7f37' : c.lastTestOk === false ? '#b93800' : '#666' }}>
+                            {c.lastTestOk === true ? 'PASS' : c.lastTestOk === false ? 'FAIL' : '—'}
+                            {c.lastTestedAt ? ` · ${c.lastTestedAt}` : ''}
+                          </div>
+                          {c.lastTestError ? <div style={{ fontSize: 12, color: '#b93800' }}>{String(c.lastTestError).slice(0, 80)}</div> : null}
+                          {connectorTestStatus[c.id] ? (
+                            <div style={{ marginTop: 4, fontSize: 12, color: connectorTestStatus[c.id].startsWith('OK') ? '#1a7f37' : '#666' }}>
+                              {connectorTestStatus[c.id]}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td style={{ padding: 10, fontSize: 13 }}>
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <button
+                              onClick={() => editConnector(c)}
+                              style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                            >
+                              Editar
+                            </button>
+                            <button
+                              onClick={() => testConnector(c.id).catch(() => {})}
+                              style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                            >
+                              Test
+                            </button>
+                            <button
+                              onClick={() => archiveConnector(c.id).catch(() => {})}
+                              style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', color: '#b93800' }}
+                            >
+                              Archivar
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {connectorEditor ? (
+              <div style={{ marginTop: 12, borderTop: '1px solid #eee', paddingTop: 12 }}>
+                <div style={{ fontWeight: 800, marginBottom: 8 }}>
+                  {connectorEditor.id ? 'Editar connector' : 'Nuevo connector'}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Name</div>
+                    <input
+                      value={connectorEditor.name}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, name: e.target.value }))}
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Slug</div>
+                    <input
+                      value={connectorEditor.slug}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, slug: e.target.value }))}
+                      placeholder="ej: medilink"
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Descripción</div>
+                    <input
+                      value={connectorEditor.description}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, description: e.target.value }))}
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Base URL (http/https)</div>
+                    <input
+                      value={connectorEditor.baseUrl}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, baseUrl: e.target.value }))}
+                      placeholder="https://api.example.com"
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Auth type</div>
+                    <select
+                      value={connectorEditor.authType}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, authType: e.target.value }))}
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    >
+                      <option value="BEARER_TOKEN">BEARER_TOKEN</option>
+                      <option value="HEADER">HEADER</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Header name</div>
+                    <input
+                      value={connectorEditor.authHeaderName}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, authHeaderName: e.target.value }))}
+                      placeholder="Authorization"
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Token/Secret (masked)</div>
+                    <input
+                      value={connectorEditor.authToken}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, authToken: e.target.value }))}
+                      placeholder="Pegar aquí para actualizar (dejar vacío = no cambia)"
+                      type="password"
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Timeout (ms)</div>
+                    <input
+                      value={connectorEditor.timeoutMs}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, timeoutMs: e.target.value }))}
+                      type="number"
+                      min={1000}
+                      max={60000}
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Max payload (bytes)</div>
+                    <input
+                      value={connectorEditor.maxPayloadBytes}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, maxPayloadBytes: e.target.value }))}
+                      type="number"
+                      min={1024}
+                      max={5000000}
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Allowlist dominios (1 por línea)</div>
+                    <textarea
+                      value={connectorEditor.allowedDomainsText}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, allowedDomainsText: e.target.value }))}
+                      rows={4}
+                      placeholder="api.example.com"
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Acciones disponibles (1 por línea)</div>
+                    <textarea
+                      value={connectorEditor.actionsText}
+                      onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, actionsText: e.target.value }))}
+                      rows={4}
+                      style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                    />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#666' }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(connectorEditor.isActive)}
+                        onChange={(e) => setConnectorEditor((prev: any) => ({ ...prev, isActive: e.target.checked }))}
+                      />
+                      Activo
+                    </label>
+                    <button
+                      onClick={() => saveConnector().catch(() => {})}
+                      style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff' }}
+                    >
+                      Guardar connector
+                    </button>
+                    <button
+                      onClick={() => setConnectorEditor(null)}
+                      style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff' }}
+                    >
+                      Cancelar
+                    </button>
+                    {connectorEditor.id ? (
+                      <button
+                        onClick={() => testConnector(connectorEditor.id).catch(() => {})}
+                        style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff' }}
+                      >
+                        Test conexión
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>

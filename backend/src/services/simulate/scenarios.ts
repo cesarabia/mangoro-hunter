@@ -149,6 +149,24 @@ export const SCENARIOS: ScenarioDefinition[] = [
       { setProgramSlug: 'sales', action: 'AI_SUGGEST', inboundText: 'Necesito un pitch corto para suero terapia', expect: { agentRun: { eventType: 'AI_SUGGEST', programSlug: 'sales' } } },
     ],
   },
+  {
+    id: 'program_switch_suggest_and_inbound',
+    name: 'Program switch: Sugerir + inbound (consistencia total)',
+    description:
+      'Al cambiar Program en la conversación, tanto Sugerir como el siguiente inbound deben usar el Program nuevo.',
+    programSlug: 'recruitment',
+    contactWaId: 'sandbox',
+    steps: [
+      { inboundText: 'Hola', expect: { agentRun: { eventType: 'INBOUND_MESSAGE', programSlug: 'recruitment' } } },
+      {
+        setProgramSlug: 'sales',
+        action: 'AI_SUGGEST',
+        inboundText: 'Necesito un pitch corto para suero terapia',
+        expect: { agentRun: { eventType: 'AI_SUGGEST', programSlug: 'sales' } },
+      },
+      { inboundText: 'Hola', expect: { agentRun: { eventType: 'INBOUND_MESSAGE', programSlug: 'sales' } } },
+    ],
+  },
 ];
 
 export function getScenario(id: string): ScenarioDefinition | null {

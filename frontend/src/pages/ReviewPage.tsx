@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 
 type PageTab = 'help' | 'qa';
-type LogTab = 'agentRuns' | 'outbound' | 'automationRuns' | 'copilotRuns' | 'configChanges';
+type LogTab = 'agentRuns' | 'outbound' | 'automationRuns' | 'copilotRuns' | 'configChanges' | 'connectorCalls';
+
+type DodStatus = 'PASS' | 'FAIL' | 'PENDING';
 
 type ScenarioResult = {
   id: string;
@@ -19,7 +21,8 @@ type ReleaseNotes = {
   changed: string[];
   todo: string[];
   risks: string[];
-  dod?: Record<string, boolean>;
+  dod?: Record<string, DodStatus>;
+  dodEvaluatedAt?: string;
 };
 
 const normalizeSearch = (value: string) =>
@@ -36,15 +39,29 @@ const splitLines = (text: string) =>
     .map((l) => l.trim())
     .filter(Boolean);
 
-const DOD_ITEMS: Array<{ id: string; label: string }> = [
-  { id: 'safeMode', label: 'SAFE MODE: default ALLOWLIST_ONLY + allowlist efectiva solo admin/test' },
-  { id: 'inboxUx', label: 'Inbox: chat-first + sin scroll horizontal + responsive sin perder estado' },
-  { id: 'programConsistency', label: 'Program consistency: Sugerir + RUN_AGENT + Automations usan Program correcto; sin ERROR por shape' },
-  { id: 'copilotLv2', label: 'Copilot Nivel 2: propuestas Confirmar/Cancelar sin estados inconsistentes' },
-  { id: 'programsPro', label: 'Programs PRO: Knowledge Pack + Prompt Builder + auditoría + Tools/Integraciones por Program' },
-  { id: 'smokeScenarios', label: 'Simulator/Smoke Scenarios: PASS (admin/test/loop/safe_mode/program_switch)' },
-  { id: 'reviewPack', label: 'Review Pack ZIP: descarga OK y contiene docs + logs + scenarios' }
+type DodItem = { id: string; label: string; kind: 'auto' | 'manual' };
+const DOD_ITEMS: DodItem[] = [
+  { id: 'safeMode', label: 'SAFE MODE: default ALLOWLIST_ONLY + allowlist efectiva solo admin/test', kind: 'auto' },
+  { id: 'smokeScenarios', label: 'Simulator/Smoke Scenarios: PASS (admin/test/loop/safe_mode/program_switch)', kind: 'auto' },
+  { id: 'reviewPack', label: 'Review Pack ZIP: descarga OK y contiene docs + logs + scenarios', kind: 'auto' },
+  { id: 'programConsistency', label: 'Program consistency: Sugerir + RUN_AGENT + Automations usan Program correcto', kind: 'auto' },
+  { id: 'inboxUx', label: 'Inbox UX: chat-first + responsive sin perder estado', kind: 'manual' },
+  { id: 'copilotLv2', label: 'Copilot Nivel 2: propuestas Confirmar/Cancelar sin estados inconsistentes', kind: 'manual' },
+  { id: 'programsPro', label: 'Programs PRO: Knowledge Pack + Prompt Builder + auditoría + Tools por Program', kind: 'manual' }
 ];
+
+const normalizeDodStatus = (value: unknown): DodStatus | null => {
+  if (typeof value !== 'string') return null;
+  const upper = value.trim().toUpperCase();
+  if (upper === 'PASS' || upper === 'FAIL' || upper === 'PENDING') return upper as DodStatus;
+  return null;
+};
+
+const dodColor = (status: DodStatus): string => {
+  if (status === 'PASS') return '#1a7f37';
+  if (status === 'FAIL') return '#b93800';
+  return '#666';
+};
 
 export const ReviewPage: React.FC<{
   onGoInbox: () => void;
@@ -72,7 +89,10 @@ export const ReviewPage: React.FC<{
   const [releaseChanged, setReleaseChanged] = useState('');
   const [releaseTodo, setReleaseTodo] = useState('');
   const [releaseRisks, setReleaseRisks] = useState('');
-  const [releaseDod, setReleaseDod] = useState<Record<string, boolean>>({});
+  const [releaseDod, setReleaseDod] = useState<Record<string, DodStatus>>({});
+  const [dodEvaluatedAt, setDodEvaluatedAt] = useState<string | null>(null);
+  const [evaluatingDod, setEvaluatingDod] = useState(false);
+  const [evaluateDodError, setEvaluateDodError] = useState<string | null>(null);
 
   const [logTab, setLogTab] = useState<LogTab>('agentRuns');
   const [outboundConversationId, setOutboundConversationId] = useState<string>('');
@@ -81,6 +101,7 @@ export const ReviewPage: React.FC<{
   const [outboundLogs, setOutboundLogs] = useState<any[]>([]);
   const [copilotRuns, setCopilotRuns] = useState<any[]>([]);
   const [configChanges, setConfigChanges] = useState<any[]>([]);
+  const [connectorCalls, setConnectorCalls] = useState<any[]>([]);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
 
@@ -153,7 +174,16 @@ export const ReviewPage: React.FC<{
       setReleaseChanged(joinLines(notes?.changed));
       setReleaseTodo(joinLines(notes?.todo));
       setReleaseRisks(joinLines(notes?.risks));
-      setReleaseDod((notes?.dod && typeof notes.dod === 'object') ? notes.dod : {});
+      const nextDod: Record<string, DodStatus> = {};
+      if (notes?.dod && typeof notes.dod === 'object') {
+        for (const [k, v] of Object.entries(notes.dod)) {
+          const normalized = normalizeDodStatus(v);
+          if (!normalized) continue;
+          nextDod[String(k)] = normalized;
+        }
+      }
+      setReleaseDod(nextDod);
+      setDodEvaluatedAt(typeof notes?.dodEvaluatedAt === 'string' ? notes.dodEvaluatedAt : null);
     } catch (err: any) {
       setRelease(null);
       setReleaseError(err.message || 'No se pudieron cargar Release Notes');
@@ -168,16 +198,18 @@ export const ReviewPage: React.FC<{
       const outboundPath = conversationFilter
         ? `/api/logs/outbound-messages?limit=20&conversationId=${encodeURIComponent(conversationFilter)}`
         : '/api/logs/outbound-messages?limit=20';
-      const [ar, or, au, cc] = await Promise.all([
+      const [ar, or, au, cc, kc] = await Promise.all([
         apiClient.get('/api/logs/agent-runs?limit=20'),
         apiClient.get(outboundPath),
         apiClient.get('/api/logs/automation-runs?limit=20'),
         apiClient.get('/api/logs/config-changes?limit=20'),
+        apiClient.get('/api/logs/connector-calls?limit=20'),
       ]);
       setAgentRuns(Array.isArray(ar) ? ar : []);
       setOutboundLogs(Array.isArray(or) ? or : []);
       setAutomationRuns(Array.isArray(au) ? au : []);
       setConfigChanges(Array.isArray(cc) ? cc : []);
+      setConnectorCalls(Array.isArray(kc) ? kc : []);
       apiClient
         .get('/api/logs/copilot-runs?limit=20')
         .then((cr) => setCopilotRuns(Array.isArray(cr) ? cr : []))
@@ -189,6 +221,7 @@ export const ReviewPage: React.FC<{
       setAutomationRuns([]);
       setCopilotRuns([]);
       setConfigChanges([]);
+      setConnectorCalls([]);
     } finally {
       setLogsLoading(false);
     }
@@ -215,6 +248,20 @@ export const ReviewPage: React.FC<{
     }
   };
 
+  const evaluateDod = async () => {
+    setEvaluatingDod(true);
+    setEvaluateDodError(null);
+    try {
+      await apiClient.post('/api/release-notes/evaluate-dod', {});
+      await refreshReleaseNotes();
+      await refreshOutbound();
+    } catch (err: any) {
+      setEvaluateDodError(err.message || 'No se pudo re-evaluar el DoD');
+    } finally {
+      setEvaluatingDod(false);
+    }
+  };
+
   useEffect(() => {
     let preloadConversationId: string | undefined;
     try {
@@ -223,7 +270,7 @@ export const ReviewPage: React.FC<{
         setActiveTab(storedTab);
       }
       const storedLogTab = localStorage.getItem('reviewLogTab');
-      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns' || storedLogTab === 'copilotRuns' || storedLogTab === 'configChanges') {
+      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns' || storedLogTab === 'copilotRuns' || storedLogTab === 'configChanges' || storedLogTab === 'connectorCalls') {
         setLogTab(storedLogTab);
         setActiveTab('qa');
       }
@@ -472,6 +519,40 @@ export const ReviewPage: React.FC<{
                 <td style={tdStyle} title={r.conversationId || ''}>
                   {r.conversationId || '—'}
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+
+    if (logTab === 'connectorCalls') {
+      return (
+        <table style={tableStyle}>
+          <thead>
+            <tr>
+              <th style={thStyle}>createdAt</th>
+              <th style={thStyle}>connector</th>
+              <th style={thStyle}>kind</th>
+              <th style={thStyle}>ok</th>
+              <th style={thStyle}>statusCode</th>
+              <th style={thStyle}>error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(connectorCalls || []).slice(0, 20).map((c: any) => (
+              <tr key={c.id}>
+                <td style={tdStyle}>{c.createdAt}</td>
+                <td style={tdStyle}>
+                  {c.connector?.name || '—'}{' '}
+                  <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: '#666' }}>
+                    {c.connector?.slug ? `(${c.connector.slug})` : ''}
+                  </span>
+                </td>
+                <td style={tdStyle}>{c.kind}</td>
+                <td style={{ ...tdStyle, color: c.ok ? '#1a7f37' : '#b93800', fontWeight: 800 }}>{c.ok ? 'PASS' : 'FAIL'}</td>
+                <td style={tdStyle}>{typeof c.statusCode === 'number' ? c.statusCode : '—'}</td>
+                <td style={{ ...tdStyle, color: c.error ? '#b93800' : '#666' }}>{c.error || '—'}</td>
               </tr>
             ))}
           </tbody>
@@ -888,19 +969,59 @@ export const ReviewPage: React.FC<{
             </div>
 
             <div style={{ marginTop: 12, borderTop: '1px solid #eee', paddingTop: 12 }}>
-              <div style={{ fontWeight: 800, marginBottom: 8 }}>v1 DoD (PASS/FAIL)</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 800 }}>v1 DoD</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  {dodEvaluatedAt ? (
+                    <div style={{ fontSize: 12, color: '#666' }}>
+                      evaluado: <strong>{dodEvaluatedAt}</strong>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#666' }}>evaluado: —</div>
+                  )}
+                  <button
+                    onClick={() => evaluateDod().catch(() => {})}
+                    disabled={evaluatingDod}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 10,
+                      border: '1px solid #111',
+                      background: '#111',
+                      color: '#fff',
+                      fontSize: 12,
+                      cursor: evaluatingDod ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {evaluatingDod ? 'Re-evaluando…' : 'Re-evaluar DoD'}
+                  </button>
+                </div>
+              </div>
+              {evaluateDodError ? <div style={{ marginTop: 8, color: '#b93800', fontSize: 12 }}>{evaluateDodError}</div> : null}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {DOD_ITEMS.map((item) => {
-                  const ok = Boolean(releaseDod?.[item.id]);
+                  const status: DodStatus = releaseDod?.[item.id] || 'PENDING';
                   return (
                     <label key={item.id} style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12 }}>
-                      <input
-                        type="checkbox"
-                        checked={ok}
-                        onChange={(e) => setReleaseDod((prev) => ({ ...(prev || {}), [item.id]: e.target.checked }))}
-                      />
-                      <span style={{ fontWeight: 800, color: ok ? '#1a7f37' : '#b93800', width: 44 }}>
-                        {ok ? 'PASS' : 'FAIL'}
+                      {item.kind === 'manual' ? (
+                        <select
+                          value={status}
+                          onChange={(e) => {
+                            const next = normalizeDodStatus(e.target.value) || 'PENDING';
+                            setReleaseDod((prev) => ({ ...(prev || {}), [item.id]: next }));
+                          }}
+                          style={{ padding: '6px 8px', borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }}
+                        >
+                          <option value="PASS">PASS</option>
+                          <option value="PENDING">PENDIENTE</option>
+                          <option value="FAIL">FAIL</option>
+                        </select>
+                      ) : (
+                        <div style={{ width: 88, textAlign: 'center', padding: '6px 8px', borderRadius: 10, border: '1px solid #eee', background: '#fafafa', fontSize: 12 }}>
+                          Auto
+                        </div>
+                      )}
+                      <span style={{ fontWeight: 800, color: dodColor(status), width: 70 }}>
+                        {status === 'PENDING' ? 'PEND.' : status}
                       </span>
                       <span style={{ color: '#111' }}>{item.label}</span>
                     </label>
@@ -908,7 +1029,7 @@ export const ReviewPage: React.FC<{
                 })}
               </div>
               <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
-                Tip: SAFE MODE y resultados de escenarios se ven arriba en QA. Este DoD queda guardado en Release Notes.
+                Tip: ítems Auto se calculan con “Re-evaluar DoD”. Ítems manuales parten en PENDIENTE por defecto.
               </div>
             </div>
             <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -1011,6 +1132,9 @@ export const ReviewPage: React.FC<{
               </button>
               <button onClick={() => setLogTab('configChanges')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'configChanges' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'configChanges' ? '#111' : '#fff', color: logTab === 'configChanges' ? '#fff' : '#333', fontSize: 12 }}>
                 Config Changes
+              </button>
+              <button onClick={() => setLogTab('connectorCalls')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'connectorCalls' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'connectorCalls' ? '#111' : '#fff', color: logTab === 'connectorCalls' ? '#fff' : '#333', fontSize: 12 }}>
+                Connector Calls
               </button>
               <button onClick={() => openConfigTab('logs')} style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
                 Ver en Config → Logs

@@ -219,4 +219,38 @@ export async function registerLogRoutes(app: FastifyInstance) {
       after: safeJsonParse(l.afterJson),
     }));
   });
+
+  app.get('/connector-calls', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+
+    const limitRaw = (request.query as any)?.limit;
+    const limit = typeof limitRaw === 'string' ? parseInt(limitRaw, 10) : 50;
+    const take = Number.isFinite(limit) && limit > 0 && limit <= 200 ? limit : 50;
+
+    const logs = await prisma.connectorCallLog.findMany({
+      where: { workspaceId: access.workspaceId },
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        connector: { select: { id: true, name: true, slug: true } },
+        user: { select: { id: true, email: true, name: true } },
+      },
+    });
+
+    return logs.map((l) => ({
+      id: l.id,
+      createdAt: l.createdAt.toISOString(),
+      workspaceId: l.workspaceId,
+      connector: l.connector ? { id: l.connector.id, name: l.connector.name, slug: l.connector.slug } : null,
+      user: l.user ? { id: l.user.id, email: l.user.email, name: l.user.name } : null,
+      kind: l.kind,
+      action: l.action,
+      ok: l.ok,
+      statusCode: l.statusCode,
+      error: l.error,
+      request: safeJsonParse(l.requestJson),
+      response: safeJsonParse(l.responseJson),
+    }));
+  });
 }
