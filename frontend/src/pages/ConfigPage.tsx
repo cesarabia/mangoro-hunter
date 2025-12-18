@@ -45,8 +45,28 @@ const downloadJson = (filename: string, data: any) => {
   URL.revokeObjectURL(url);
 };
 
-export const ConfigPage: React.FC = () => {
-  const [tab, setTab] = useState<TabKey>('workspace');
+export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boolean }> = ({ workspaceRole, isOwner }) => {
+  const roleUpper = String(workspaceRole || '').toUpperCase();
+  const isWorkspaceAdmin = isOwner || roleUpper === 'ADMIN';
+  const visibleTabs = useMemo(() => {
+    if (isOwner) return TABS;
+    if (isWorkspaceAdmin) {
+      return TABS.filter((t) => !['workspace', 'integrations', 'users'].includes(t.key));
+    }
+    return [];
+  }, [isOwner, isWorkspaceAdmin]);
+
+  const [tab, setTab] = useState<TabKey>(() => {
+    const fallback: TabKey = isOwner ? 'workspace' : 'programs';
+    try {
+      const stored = localStorage.getItem('configSelectedTab');
+      const allowed = new Set(visibleTabs.map((t) => t.key));
+      if (stored && allowed.has(stored as any)) return stored as TabKey;
+    } catch {
+      // ignore
+    }
+    return fallback;
+  });
   const [logsTab, setLogsTab] = useState<LogsTabKey>('agentRuns');
   const [isNarrow, setIsNarrow] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -94,6 +114,15 @@ export const ConfigPage: React.FC = () => {
   const [connectorError, setConnectorError] = useState<string | null>(null);
   const [connectorTestStatus, setConnectorTestStatus] = useState<Record<string, string>>({});
 
+  const medilinkConnector = useMemo(
+    () => (Array.isArray(connectors) ? connectors : []).find((c: any) => String(c?.slug || '').toLowerCase() === 'medilink') || null,
+    [connectors],
+  );
+  const [medilinkBaseUrl, setMedilinkBaseUrl] = useState<string>('');
+  const [medilinkToken, setMedilinkToken] = useState<string>('');
+  const [medilinkStatus, setMedilinkStatus] = useState<string | null>(null);
+  const [medilinkError, setMedilinkError] = useState<string | null>(null);
+
   const [authorizedAdminNumbersText, setAuthorizedAdminNumbersText] = useState<string>('');
   const [authorizedTestNumbersText, setAuthorizedTestNumbersText] = useState<string>('');
   const [authorizedNumbersStatus, setAuthorizedNumbersStatus] = useState<string | null>(null);
@@ -105,6 +134,9 @@ export const ConfigPage: React.FC = () => {
   const [inviteRole, setInviteRole] = useState('MEMBER');
   const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  const [invites, setInvites] = useState<any[]>([]);
+  const [invitesError, setInvitesError] = useState<string | null>(null);
+  const [inviteUrlById, setInviteUrlById] = useState<Record<string, string>>({});
 
   const [phoneLines, setPhoneLines] = useState<any[]>([]);
   const [phoneLineEditor, setPhoneLineEditor] = useState<any | null>(null);
@@ -157,15 +189,17 @@ export const ConfigPage: React.FC = () => {
   useEffect(() => {
     try {
       const stored = localStorage.getItem('configSelectedTab');
-      const keys = new Set(TABS.map((t) => t.key));
+      const keys = new Set(visibleTabs.map((t) => t.key));
       if (stored && keys.has(stored as any)) {
         setTab(stored as TabKey);
+      } else if (!keys.has(tab)) {
+        setTab(isOwner ? 'workspace' : 'programs');
       }
       localStorage.removeItem('configSelectedTab');
     } catch {
       // ignore
     }
-  }, []);
+  }, [visibleTabs, tab, isOwner]);
 
   useEffect(() => {
     const onResize = () => setIsNarrow(window.innerWidth < 900);
@@ -181,6 +215,16 @@ export const ConfigPage: React.FC = () => {
   const loadUsers = async () => {
     const data = await apiClient.get('/api/users');
     setUsers(Array.isArray(data) ? data : []);
+  };
+  const loadInvites = async () => {
+    setInvitesError(null);
+    try {
+      const data = await apiClient.get('/api/invites');
+      setInvites(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setInvites([]);
+      setInvitesError(err.message || 'No se pudieron cargar invitaciones');
+    }
   };
   const loadPhoneLines = async () => {
     const data = await apiClient.get('/api/phone-lines');
@@ -292,7 +336,13 @@ export const ConfigPage: React.FC = () => {
     setAuthorizedNumbersStatus(null);
     setAuthorizedNumbersError(null);
 
-    setConnectors(Array.isArray(conns) ? conns : []);
+    const connList = Array.isArray(conns) ? conns : [];
+    setConnectors(connList);
+    const med = connList.find((c: any) => String(c?.slug || '').toLowerCase() === 'medilink') || null;
+    setMedilinkBaseUrl(typeof med?.baseUrl === 'string' ? med.baseUrl : '');
+    setMedilinkToken('');
+    setMedilinkStatus(null);
+    setMedilinkError(null);
     setConnectorEditor(null);
     setConnectorStatus(null);
     setConnectorError(null);
@@ -509,6 +559,50 @@ export const ConfigPage: React.FC = () => {
     }
   };
 
+  const saveMedilink = async () => {
+    setMedilinkStatus(null);
+    setMedilinkError(null);
+    try {
+      const baseUrl = medilinkBaseUrl.trim() || null;
+      const token = medilinkToken.trim();
+      const existingId = medilinkConnector?.id ? String(medilinkConnector.id) : null;
+      if (existingId) {
+        const payload: any = { baseUrl };
+        if (token) payload.authToken = token;
+        await apiClient.patch(`/api/connectors/${existingId}`, payload);
+      } else {
+        const payload: any = {
+          name: 'Medilink',
+          slug: 'medilink',
+          description: 'Medilink API (SSClinical)',
+          baseUrl,
+          authType: 'BEARER_TOKEN',
+          authHeaderName: 'Authorization',
+          actions: ['search_patient', 'create_appointment', 'create_payment'],
+          timeoutMs: 8000,
+          maxPayloadBytes: 200000,
+          isActive: true,
+        };
+        if (token) payload.authToken = token;
+        await apiClient.post('/api/connectors', payload);
+      }
+      setMedilinkToken('');
+      setMedilinkStatus('Guardado.');
+      await loadIntegrations();
+    } catch (err: any) {
+      setMedilinkError(err.message || 'No se pudo guardar Medilink');
+    }
+  };
+
+  const testMedilink = async () => {
+    const id = medilinkConnector?.id ? String(medilinkConnector.id) : null;
+    if (!id) {
+      setMedilinkError('Crea el connector Medilink primero.');
+      return;
+    }
+    await testConnector(id);
+  };
+
   const applyPricingToState = (data: any) => {
     const openAi = data?.openAiModelPricing && typeof data.openAiModelPricing === 'object' ? data.openAiModelPricing : null;
     const rows: Array<{ model: string; promptUsdPer1k: string; completionUsdPer1k: string }> = [];
@@ -619,7 +713,10 @@ export const ConfigPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (tab === 'users') loadUsers().catch(() => {});
+    if (tab === 'users') {
+      loadUsers().catch(() => {});
+      loadInvites().catch(() => {});
+    }
     if (tab === 'logs') {
       loadAgentRuns().catch(() => {});
       loadAutomationRuns().catch(() => {});
@@ -696,22 +793,50 @@ export const ConfigPage: React.FC = () => {
     await apiClient.patch(`/api/users/${membershipId}`, { archived });
     await loadUsers();
   };
+  const setUserAssignedOnly = async (membershipId: string, assignedOnly: boolean) => {
+    await apiClient.patch(`/api/users/${membershipId}`, { assignedOnly });
+    await loadUsers();
+  };
 
   const inviteUser = async () => {
     setInviteStatus(null);
     setInviteError(null);
     try {
-      const res = await apiClient.post('/api/users/invite', { email: inviteEmail, role: inviteRole });
-      if (res?.tempPassword) {
-        setInviteStatus(`Usuario creado. Password temporal: ${res.tempPassword}`);
+      const res: any = await apiClient.post('/api/invites', { email: inviteEmail, role: inviteRole });
+      const url = typeof res?.inviteUrl === 'string' ? res.inviteUrl : null;
+      if (url) {
+        try {
+          await navigator.clipboard.writeText(url);
+          setInviteStatus(`Invite creado. Link copiado al portapapeles.`);
+        } catch {
+          setInviteStatus(`Invite creado. Copia el link: ${url}`);
+        }
       } else {
-        setInviteStatus('Usuario invitado / rol actualizado.');
+        setInviteStatus('Invite creado.');
       }
       setInviteEmail('');
       setInviteOpen(false);
       await loadUsers();
+      await loadInvites();
     } catch (err: any) {
       setInviteError(err.message || 'No se pudo invitar');
+    }
+  };
+
+  const copyInviteLink = async (inviteId: string) => {
+    setInviteUrlById((prev) => ({ ...prev, [inviteId]: 'Cargando…' }));
+    try {
+      const res: any = await apiClient.post(`/api/invites/${inviteId}/url`, {});
+      const url = typeof res?.inviteUrl === 'string' ? res.inviteUrl : null;
+      if (!url) throw new Error('No se pudo obtener el link.');
+      try {
+        await navigator.clipboard.writeText(url);
+        setInviteUrlById((prev) => ({ ...prev, [inviteId]: '✅ Copiado' }));
+      } catch {
+        setInviteUrlById((prev) => ({ ...prev, [inviteId]: url }));
+      }
+    } catch (err: any) {
+      setInviteUrlById((prev) => ({ ...prev, [inviteId]: err.message || 'Error' }));
     }
   };
 
@@ -1016,7 +1141,7 @@ export const ConfigPage: React.FC = () => {
             style={{ padding: '8px 10px', borderRadius: 10, border: '1px solid #ccc', minWidth: 240, maxWidth: '100%' }}
             aria-label="Seleccionar sección"
           >
-            {TABS.map((t) => (
+            {visibleTabs.map((t) => (
               <option key={t.key} value={t.key}>
                 {t.label}
               </option>
@@ -1025,7 +1150,7 @@ export const ConfigPage: React.FC = () => {
         </div>
       ) : (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {TABS.map((t) => (
+          {visibleTabs.map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
@@ -1544,6 +1669,80 @@ export const ConfigPage: React.FC = () => {
           </div>
 
           <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Medilink API</div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+              Estado:{' '}
+              {medilinkConnector?.hasToken ? (
+                <span style={{ color: '#1a7f37' }}>✅ Token configurado ({medilinkConnector.tokenMasked || 'masked'})</span>
+              ) : (
+                <span style={{ color: '#b93800' }}>⚠️ Sin token</span>
+              )}{' '}
+              · Base URL:{' '}
+              {medilinkConnector?.baseUrl ? <span style={{ color: '#1a7f37' }}>✅</span> : <span style={{ color: '#b93800' }}>⚠️</span>}
+              {medilinkConnector?.lastTestedAt ? (
+                <span style={{ marginLeft: 6 }}>
+                  · Último test:{' '}
+                  {medilinkConnector?.lastTestOk ? (
+                    <span style={{ color: '#1a7f37' }}>OK</span>
+                  ) : (
+                    <span style={{ color: '#b93800' }}>FAIL</span>
+                  )}
+                </span>
+              ) : null}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'start' }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Base URL</div>
+                <input
+                  value={medilinkBaseUrl}
+                  onChange={(e) => setMedilinkBaseUrl(e.target.value)}
+                  placeholder="https://api.medilink.cl"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Token (masked)</div>
+                <input
+                  value={medilinkToken}
+                  onChange={(e) => setMedilinkToken(e.target.value)}
+                  placeholder="Pega aquí para actualizar (vacío = no cambia)"
+                  type="password"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => saveMedilink().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                Guardar Medilink
+              </button>
+              <button
+                onClick={() => testMedilink().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff' }}
+              >
+                Test conexión
+              </button>
+              {medilinkConnector?.id && connectorTestStatus[String(medilinkConnector.id)] ? (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: String(connectorTestStatus[String(medilinkConnector.id)]).startsWith('OK') ? '#1a7f37' : '#666',
+                  }}
+                >
+                  {connectorTestStatus[String(medilinkConnector.id)]}
+                </div>
+              ) : null}
+              {medilinkStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{medilinkStatus}</div> : null}
+              {medilinkError ? <div style={{ fontSize: 12, color: '#b93800' }}>{medilinkError}</div> : null}
+              {medilinkConnector?.lastTestError ? (
+                <div style={{ fontSize: 12, color: '#b93800' }}>Último error: {String(medilinkConnector.lastTestError)}</div>
+              ) : null}
+            </div>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
             <div style={{ fontWeight: 800, marginBottom: 6 }}>Números autorizados (roles)</div>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
               Estos números se consideran ADMIN o TEST para guardrails y simulación. En DEV, mantén solo los autorizados.
@@ -1605,6 +1804,7 @@ export const ConfigPage: React.FC = () => {
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Email</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Name</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Role</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Scope</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>AddedAt</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
                 </tr>
@@ -1626,6 +1826,20 @@ export const ConfigPage: React.FC = () => {
                           </option>
                         ))}
                       </select>
+                    </td>
+                    <td style={{ padding: 10, fontSize: 13 }}>
+                      {u.role === 'MEMBER' ? (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(u.assignedOnly)}
+                            onChange={(e) => setUserAssignedOnly(u.membershipId, e.target.checked).catch(() => {})}
+                          />
+                          <span style={{ fontSize: 12, color: '#555' }}>Solo asignadas</span>
+                        </label>
+                      ) : (
+                        <span style={{ fontSize: 12, color: '#999' }}>—</span>
+                      )}
                     </td>
                     <td style={{ padding: 10, fontSize: 13 }}>{u.addedAt}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>
@@ -1672,6 +1886,56 @@ export const ConfigPage: React.FC = () => {
               {inviteError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{inviteError}</div> : null}
             </div>
           ) : null}
+
+          <div style={{ marginTop: 12, border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Invitaciones (links)</div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+              Para invitar a alguien, comparte el link. No se borra: se archiva/expira.
+            </div>
+            {invitesError ? <div style={{ marginBottom: 8, fontSize: 12, color: '#b93800' }}>{invitesError}</div> : null}
+            <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#fafafa', textAlign: 'left' }}>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Email</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Role</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Expires</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Accepted</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(invites || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ padding: 10, fontSize: 13, color: '#666' }}>
+                        — Sin invitaciones.
+                      </td>
+                    </tr>
+                  ) : (
+                    invites.map((i: any) => (
+                      <tr key={i.id} style={{ borderTop: '1px solid #f0f0f0' }}>
+                        <td style={{ padding: 10, fontSize: 13 }}>{i.email}</td>
+                        <td style={{ padding: 10, fontSize: 13 }}>{i.role}</td>
+                        <td style={{ padding: 10, fontSize: 13 }}>{i.expiresAt ? String(i.expiresAt).slice(0, 19).replace('T', ' ') : '—'}</td>
+                        <td style={{ padding: 10, fontSize: 13 }}>{i.acceptedAt ? '✅' : '—'}</td>
+                        <td style={{ padding: 10, fontSize: 13 }}>
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <button
+                              onClick={() => copyInviteLink(i.id).catch(() => {})}
+                              style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                            >
+                              Copiar link
+                            </button>
+                            {inviteUrlById[i.id] ? <span style={{ fontSize: 12, color: '#666' }}>{inviteUrlById[i.id]}</span> : null}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -2128,6 +2392,7 @@ export const ConfigPage: React.FC = () => {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ fontSize: 18, fontWeight: 700 }}>Automations</div>
             <button
+              data-guide-id="config-automations-new-rule"
               onClick={() =>
                 setAutomationEditor({
                   name: '',

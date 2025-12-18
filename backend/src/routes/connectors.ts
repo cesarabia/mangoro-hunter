@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../db/client';
 import { serializeJson } from '../utils/json';
-import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceAuthService';
+import { resolveWorkspaceAccess, isWorkspaceOwner } from '../services/workspaceAuthService';
 
 function isMissingColumnError(err: any): boolean {
   return Boolean(err && typeof err === 'object' && err.code === 'P2022');
@@ -110,7 +110,7 @@ function maskSecret(value: string | null | undefined): string | null {
 export async function registerConnectorRoutes(app: FastifyInstance) {
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
-    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
 
     try {
       const connectors = await prisma.workspaceConnector.findMany({
@@ -169,7 +169,7 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
 
   app.post('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
-    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
 
     const body = request.body as {
       name?: string;
@@ -311,7 +311,7 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
 
   app.patch('/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
-    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
 
     const { id } = request.params as { id: string };
     const body = request.body as {
@@ -493,7 +493,7 @@ export async function registerConnectorRoutes(app: FastifyInstance) {
 
   app.post('/:id/test', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
-    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
     const { id } = request.params as { id: string };
 
     let connector: any;

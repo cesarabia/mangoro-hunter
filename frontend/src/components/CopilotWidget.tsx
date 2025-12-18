@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiClient } from '../api/client';
 
+type GuideStep = { guideId: string; title?: string | null; body?: string | null };
+
 type CopilotAction =
   | {
       type: 'NAVIGATE';
@@ -9,6 +11,12 @@ type CopilotAction =
       label?: string;
       focusKind?: 'program' | 'automation' | 'phoneLine';
       focusId?: string;
+    }
+  | {
+      type: 'GUIDE';
+      title?: string | null;
+      steps: GuideStep[];
+      label?: string;
     };
 
 type CopilotCommand =
@@ -18,7 +26,9 @@ type CopilotCommand =
   | { type: 'RUN_SMOKE_SCENARIOS'; scenarioIds?: string[]; sanitizePii?: boolean }
   | { type: 'DOWNLOAD_REVIEW_PACK' }
   | { type: 'CREATE_PHONE_LINE'; alias: string; waPhoneNumberId: string }
-  | { type: 'SET_PHONE_LINE_DEFAULT_PROGRAM'; phoneLineId?: string | null; waPhoneNumberId?: string | null; programId?: string | null; programSlug?: string | null };
+  | { type: 'SET_PHONE_LINE_DEFAULT_PROGRAM'; phoneLineId?: string | null; waPhoneNumberId?: string | null; programId?: string | null; programSlug?: string | null }
+  | { type: 'CREATE_OR_UPDATE_USER_MEMBERSHIP'; email: string; role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'; assignedOnly?: boolean }
+  | { type: 'INVITE_USER_BY_EMAIL'; email: string; role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'; expiresDays?: number };
 
 type CopilotProposal = {
   id: string;
@@ -260,9 +270,14 @@ export const CopilotWidget: React.FC<{
 
   const handleAutoNavigate = (res: any, actions: CopilotAction[] | undefined) => {
     if (!res?.autoNavigate) return;
-    const first = actions?.[0];
-    if (!first) return;
-    onNavigate(first, { conversationId: selectedConversationId });
+    const list = Array.isArray(actions) ? actions : [];
+    if (list.length === 0) return;
+    const nav = list.find((a) => a.type === 'NAVIGATE');
+    if (nav) onNavigate(nav, { conversationId: selectedConversationId });
+    for (const a of list) {
+      if (a.type === 'NAVIGATE') continue;
+      onNavigate(a, { conversationId: selectedConversationId });
+    }
   };
 
   const confirmProposal = async (runId: string, proposalId: string) => {
@@ -697,7 +712,7 @@ export const CopilotWidget: React.FC<{
                             onClick={() => onNavigate(a, { conversationId: selectedConversationId })}
                             style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
                           >
-                            {a.label || `Ir a ${a.view}`}
+                            {a.label || (a.type === 'GUIDE' ? 'Iniciar guía' : `Ir a ${a.view}`)}
                           </button>
                         ))}
                       </div>

@@ -110,6 +110,9 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
 - **User**: credenciales + rol global (mínimo)  
 - **Workspace**: tenant (incluye `isSandbox`)  
 - **Membership**: rol por workspace (OWNER|ADMIN|MEMBER|VIEWER), soft-archive (no delete)  
+  - `assignedOnly`: si `true` y rol=MEMBER, el usuario solo ve/gestiona conversaciones asignadas (`Conversation.assignedToId`).  
+- **WorkspaceInvite** (archive-only): invitación expirable por email+rol para entrar a un workspace.  
+  - Token **no** se loguea; solo se expone al OWNER vía “Copiar link”.  
 
 ### 5.2 Canales y conversaciones
 - **PhoneLine**: alias + `waPhoneNumberId` + defaultProgram  
@@ -132,6 +135,7 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
 - **CopilotRunLog**: auditoría por corrida (diagnóstico/navegación) y fuente del historial (inputText/responseText)  
   - Estados: `RUNNING` → `SUCCESS` / `PENDING_CONFIRMATION` → (`EXECUTING` → `EXECUTED`) / `CANCELLED` / `ERROR`  
   - Confirmar/Cancelar es **idempotente** (doble click no duplica ejecución; devuelve “ya ejecutado”).  
+  - **Guías visuales (coachmarks)**: Copilot puede emitir acciones `GUIDE` (steps con `guideId`) que resaltan elementos UI (`data-guide-id="..."`) y guían al usuario sin terminal.  
 
 ### 5.6 Uso & costos
 - **AiUsageLog**: tokens por AgentRuntime/Copilot  
@@ -362,6 +366,12 @@ Tabs:
   - El servidor limpia `outboundAllowAllUntil` cuando expira y deja auditoría `ConfigChangeLog` tipo `OUTBOUND_SAFETY_TEMP_OFF_EXPIRED`.
   - Cualquier bloqueo queda registrado como `blockedReason` (ej: `SAFE_OUTBOUND_BLOCKED:*`) y se muestra en QA → Logs.
   - Cambios de policy/allowlist/TEMP_OFF quedan auditados en `ConfigChangeLog` (visible en QA → Logs → Config Changes).
+- **Rate limiting (baseline)**:
+  - Límite in-memory por IP para: WhatsApp webhook, Copilot, Simulator y “AI suggest”.
+  - Respuesta 429 incluye `Retry-After` y queda visible via logs estándar del backend.
+- **Request limits + headers (baseline)**:
+  - `bodyLimit` aplicado a requests JSON para reducir abuso.
+  - Headers mínimos: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`.
 - **NO_CONTACTAR**: bloquea cualquier outbound (respeto opt-out).  
 - **Ventana WhatsApp 24h**: fuera de ventana, texto libre bloqueado; solo templates.  
 - **Auditoría**: cada run y cada tool call queda logueado; replay no toca conversaciones reales.  

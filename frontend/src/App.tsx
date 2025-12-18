@@ -3,12 +3,14 @@ import { apiClient } from './api/client';
 import { LoginPage } from './pages/LoginPage';
 import { InboxPage } from './pages/InboxPage';
 import { PrivacyPage } from './pages/PrivacyPage';
+import { InvitePage } from './pages/InvitePage';
 import { AgendaPage } from './pages/AgendaPage';
 import { ConfigPage } from './pages/ConfigPage';
 import { SimulatorPage } from './pages/SimulatorPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CopilotWidget } from './components/CopilotWidget';
+import { GuideOverlay, GuideSpec } from './components/GuideOverlay';
 
 type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review';
 
@@ -62,13 +64,20 @@ export const App: React.FC = () => {
     const found = workspaces.find((w) => String(w.id) === String(workspaceId));
     return found?.role || null;
   }, [workspaces, workspaceId]);
-  const isAdmin = userRole === 'ADMIN' || ['OWNER', 'ADMIN'].includes(String(workspaceRole || '').toUpperCase());
+  const workspaceRoleUpper = String(workspaceRole || '').toUpperCase();
+  const isOwner = userRole === 'ADMIN' || workspaceRoleUpper === 'OWNER';
+  const isAdmin = userRole === 'ADMIN' || ['OWNER', 'ADMIN'].includes(workspaceRoleUpper);
+  const canAccessAgenda = isAdmin || ['MEMBER', 'VIEWER'].includes(workspaceRoleUpper);
+  const canAccessConfig = isAdmin;
+  const canAccessReview = isAdmin;
+  const canAccessSimulator = isAdmin;
 
   useEffect(() => {
-    if ((view === 'config' || view === 'agenda' || view === 'simulator' || view === 'review') && !isAdmin) {
-      setView('inbox');
-    }
-  }, [view, isAdmin]);
+    if (view === 'config' && !canAccessConfig) setView('inbox');
+    if (view === 'agenda' && !canAccessAgenda) setView('inbox');
+    if (view === 'simulator' && !canAccessSimulator) setView('inbox');
+    if (view === 'review' && !canAccessReview) setView('inbox');
+  }, [view, canAccessConfig, canAccessAgenda, canAccessSimulator, canAccessReview]);
 
   const loadWorkspaces = useCallback(async () => {
     if (!token) return;
@@ -132,6 +141,9 @@ export const App: React.FC = () => {
   if (pathname.startsWith('/privacy')) {
     return <PrivacyPage />;
   }
+  if (pathname.startsWith('/invite/')) {
+    return <InvitePage />;
+  }
 
   const handleLogin = (newToken: string) => {
     localStorage.setItem('token', newToken);
@@ -154,18 +166,22 @@ export const App: React.FC = () => {
   }
 
   const handleOpenAgenda = () => {
-    if (isAdmin) {
+    if (canAccessAgenda) {
       setView('agenda');
     }
   };
 
-  if (view === 'agenda' && isAdmin) {
+  if (view === 'agenda' && canAccessAgenda) {
     return (
       <Layout
         view={view}
         setView={setView}
         onLogout={handleLogout}
         isAdmin={isAdmin}
+        canAccessAgenda={canAccessAgenda}
+        canAccessConfig={canAccessConfig}
+        canAccessReview={canAccessReview}
+        canAccessSimulator={canAccessSimulator}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -177,31 +193,39 @@ export const App: React.FC = () => {
     );
   }
 
-  if (view === 'config' && isAdmin) {
+  if (view === 'config' && canAccessConfig) {
     return (
       <Layout
         view={view}
         setView={setView}
         onLogout={handleLogout}
         isAdmin={isAdmin}
+        canAccessAgenda={canAccessAgenda}
+        canAccessConfig={canAccessConfig}
+        canAccessReview={canAccessReview}
+        canAccessSimulator={canAccessSimulator}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
         outboundPolicy={outboundPolicy}
         versionInfo={versionInfo}
       >
-        <ConfigPage />
+        <ConfigPage workspaceRole={workspaceRoleUpper} isOwner={isOwner} />
       </Layout>
     );
   }
 
-  if (view === 'simulator' && isAdmin) {
+  if (view === 'simulator' && canAccessSimulator) {
     return (
       <Layout
         view={view}
         setView={setView}
         onLogout={handleLogout}
         isAdmin={isAdmin}
+        canAccessAgenda={canAccessAgenda}
+        canAccessConfig={canAccessConfig}
+        canAccessReview={canAccessReview}
+        canAccessSimulator={canAccessSimulator}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -213,13 +237,17 @@ export const App: React.FC = () => {
     );
   }
 
-  if (view === 'review' && isAdmin) {
+  if (view === 'review' && canAccessReview) {
     return (
       <Layout
         view={view}
         setView={setView}
         onLogout={handleLogout}
         isAdmin={isAdmin}
+        canAccessAgenda={canAccessAgenda}
+        canAccessConfig={canAccessConfig}
+        canAccessReview={canAccessReview}
+        canAccessSimulator={canAccessSimulator}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -250,6 +278,10 @@ export const App: React.FC = () => {
       setView={setView}
       onLogout={handleLogout}
       isAdmin={isAdmin}
+      canAccessAgenda={canAccessAgenda}
+      canAccessConfig={canAccessConfig}
+      canAccessReview={canAccessReview}
+      canAccessSimulator={canAccessSimulator}
       workspaces={workspaces}
       workspaceId={workspaceId}
       setWorkspaceId={setWorkspaceId}
@@ -259,6 +291,7 @@ export const App: React.FC = () => {
       <InboxPage
         mode={view === 'inactive' ? 'INACTIVE' : 'INBOX'}
         workspaceId={workspaceId}
+        canAssignConversation={isAdmin}
         onOpenAgenda={handleOpenAgenda}
         onOpenSimulator={() => setView('simulator')}
         onOpenConfig={() => setView('config')}
@@ -273,18 +306,23 @@ const Layout: React.FC<{
   setView: (v: View) => void;
   onLogout: () => void;
   isAdmin: boolean;
+  canAccessAgenda: boolean;
+  canAccessConfig: boolean;
+  canAccessReview: boolean;
+  canAccessSimulator: boolean;
   workspaces: Array<{ id: string; name: string; isSandbox?: boolean; role?: string | null }>;
   workspaceId: string;
   setWorkspaceId: (id: string) => void;
   outboundPolicy?: string | null;
   versionInfo?: any | null;
   children: React.ReactNode;
-}> = ({ view, setView, onLogout, isAdmin, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, children }) => {
+}> = ({ view, setView, onLogout, isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, children }) => {
   const [isNarrow, setIsNarrow] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 980;
   });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [guide, setGuide] = useState<GuideSpec | null>(null);
 
   useEffect(() => {
     const onResize = () => setIsNarrow(window.innerWidth < 980);
@@ -329,8 +367,15 @@ const Layout: React.FC<{
       { view: 'config', label: 'Configuración', adminOnly: true },
       { label: 'Salir', action: onLogout },
     ];
-    return items.filter((i) => !i.adminOnly || isAdmin);
-  }, [isAdmin, onLogout]);
+    return items.filter((i) => {
+      if (!i.view) return true;
+      if (i.view === 'agenda') return canAccessAgenda;
+      if (i.view === 'config') return canAccessConfig;
+      if (i.view === 'review') return canAccessReview;
+      if (i.view === 'simulator') return canAccessSimulator;
+      return !i.adminOnly || isAdmin;
+    });
+  }, [isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, onLogout]);
 
   const versionStamp = useMemo(() => {
     const sha = typeof versionInfo?.gitSha === 'string' ? versionInfo.gitSha : null;
@@ -430,10 +475,10 @@ const Layout: React.FC<{
             <>
               {navButton('inbox', 'Inbox')}
               {navButton('inactive', 'Inactivos')}
-              {isAdmin && navButton('review', 'Ayuda / QA')}
-              {isAdmin && navButton('simulator', 'Simulador')}
-              {isAdmin && navButton('agenda', 'Agenda')}
-              {isAdmin && navButton('config', 'Configuración')}
+              {canAccessReview && navButton('review', 'Ayuda / QA')}
+              {canAccessSimulator && navButton('simulator', 'Simulador')}
+              {canAccessAgenda && navButton('agenda', 'Agenda')}
+              {canAccessConfig && navButton('config', 'Configuración')}
               <button
                 onClick={onLogout}
                 style={{
@@ -534,10 +579,16 @@ const Layout: React.FC<{
           {children}
         </ErrorBoundary>
       </div>
+      <GuideOverlay guide={guide} onClose={() => setGuide(null)} />
       <CopilotWidget
         currentView={view}
         isAdmin={isAdmin}
         onNavigate={(action, ctx) => {
+          if (action.type === 'GUIDE') {
+            const steps = Array.isArray((action as any).steps) ? (action as any).steps : [];
+            setGuide({ title: (action as any).title || 'Guía', steps });
+            return;
+          }
           try {
             if (action.type === 'NAVIGATE' && action.view === 'config' && action.configTab) {
               localStorage.setItem('configSelectedTab', action.configTab);

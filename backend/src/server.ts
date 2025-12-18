@@ -23,10 +23,58 @@ import { registerReleaseNotesRoutes } from './routes/releaseNotes';
 import { registerCopilotRoutes } from './routes/copilot';
 import { registerReviewPackRoutes } from './routes/reviewPack';
 import { registerConnectorRoutes } from './routes/connectors';
-import { isWorkspaceAdmin, resolveWorkspaceAccess } from './services/workspaceAuthService';
+import { registerInviteRoutes } from './routes/invites';
+import { isWorkspaceAdmin, isWorkspaceOwner, resolveWorkspaceAccess } from './services/workspaceAuthService';
+import { checkRateLimit } from './services/rateLimitService';
 
 export async function buildServer() {
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    trustProxy: true,
+    bodyLimit: 2_000_000,
+  });
+
+  app.addHook('onRequest', async (request: any, reply: any) => {
+    const url = String(request?.url || '');
+    const ipHeader = String(request?.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
+    const ip = ipHeader || String(request?.ip || '');
+
+    // Security headers (API)
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    reply.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+
+    // Basic rate limiting (in-memory; DEV baseline)
+    const pick = (() => {
+      if (url.startsWith('/whatsapp/webhook') || url.startsWith('/webhook/whatsapp')) {
+        return { name: 'wa_webhook', limit: 600, windowMs: 60_000 };
+      }
+      if (url.startsWith('/api/copilot')) {
+        return { name: 'copilot', limit: 120, windowMs: 60_000 };
+      }
+      if (url.startsWith('/api/simulate')) {
+        return { name: 'simulate', limit: 120, windowMs: 60_000 };
+      }
+      if (url.includes('/ai/suggest')) {
+        return { name: 'ai_suggest', limit: 60, windowMs: 60_000 };
+      }
+      return null;
+    })();
+
+    if (!pick) return;
+    const key = `${pick.name}:${ip || 'unknown'}`;
+    const res = checkRateLimit({ key, limit: pick.limit, windowMs: pick.windowMs });
+    if (!res.allowed) {
+      const retryAfterSeconds = Math.max(1, Math.ceil(res.retryAfterMs / 1000));
+      reply.header('Retry-After', String(retryAfterSeconds));
+      return reply.code(429).send({
+        error: 'Rate limit exceeded',
+        scope: pick.name,
+        retryAfterSeconds,
+      });
+    }
+  });
 
   app.register(fastifyJwt, {
     secret: env.jwtSecret
@@ -40,12 +88,16 @@ export async function buildServer() {
         request.workspaceAccess = access;
         request.workspaceId = access.workspaceId;
         request.workspaceRole = access.role;
+        request.workspaceAssignedOnly = access.assignedOnly;
         request.isWorkspaceAdmin = isWorkspaceAdmin(request, access);
+        request.isWorkspaceOwner = isWorkspaceOwner(request, access);
       } catch {
         request.workspaceAccess = null;
         request.workspaceId = 'default';
         request.workspaceRole = null;
+        request.workspaceAssignedOnly = false;
         request.isWorkspaceAdmin = request.user?.role === 'ADMIN';
+        request.isWorkspaceOwner = request.user?.role === 'ADMIN';
       }
     } catch (err) {
       reply.code(401).send({ error: 'Unauthorized' });
@@ -60,6 +112,7 @@ export async function buildServer() {
   app.register(registerHealthRoutes, { prefix: '/api' });
   app.register(registerWorkspaceRoutes, { prefix: '/api/workspaces' });
   app.register(registerUserRoutes, { prefix: '/api/users' });
+  app.register(registerInviteRoutes, { prefix: '/api/invites' });
   app.register(registerConversationRoutes, { prefix: '/api/conversations' });
   app.register(registerAiRoutes, { prefix: '/api/conversations' });
   app.register(registerConfigRoutes, { prefix: '/api/config' });

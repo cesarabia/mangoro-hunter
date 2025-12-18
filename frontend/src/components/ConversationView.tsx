@@ -6,6 +6,7 @@ interface ConversationViewProps {
   onMessageSent: () => void;
   programs?: any[];
   onReplayInSimulator?: (conversationId: string) => void;
+  canAssignConversation?: boolean;
   draftText: string;
   onDraftChange: (value: string) => void;
 }
@@ -98,6 +99,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   onMessageSent,
   programs,
   onReplayInSimulator,
+  canAssignConversation,
   draftText,
   onDraftChange
 }) => {
@@ -141,6 +143,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [safeModeActionLoading, setSafeModeActionLoading] = useState(false);
   const [safeModeActionStatus, setSafeModeActionStatus] = useState<string | null>(null);
   const [safeModeActionError, setSafeModeActionError] = useState<string | null>(null);
+  const [workspaceUsers, setWorkspaceUsers] = useState<any[]>([]);
+  const [workspaceUsersLoaded, setWorkspaceUsersLoaded] = useState(false);
+  const [workspaceUsersError, setWorkspaceUsersError] = useState<string | null>(null);
+  const [assignedToId, setAssignedToId] = useState<string>('');
+  const [assignmentSaving, setAssignmentSaving] = useState(false);
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
 
   useEffect(() => {
     const handleResize = () => setIsNarrow(window.innerWidth < 900);
@@ -178,6 +186,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setSafeModeActionLoading(false);
       setSafeModeActionStatus(null);
       setSafeModeActionError(null);
+      setWorkspaceUsers([]);
+      setWorkspaceUsersLoaded(false);
+      setWorkspaceUsersError(null);
+      setAssignedToId('');
+      setAssignmentSaving(false);
+      setAssignmentError(null);
       return;
     }
     setDetailsOpen(false);
@@ -209,7 +223,53 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     setSafeModeActionLoading(false);
     setSafeModeActionStatus(null);
     setSafeModeActionError(null);
+    setWorkspaceUsersError(null);
+    setAssignedToId(conversation.assignedTo?.id || conversation.assignedToId || '');
+    setAssignmentSaving(false);
+    setAssignmentError(null);
   }, [conversation?.id]);
+
+  useEffect(() => {
+    if (!conversation) return;
+    setAssignedToId(conversation.assignedTo?.id || conversation.assignedToId || '');
+  }, [conversation?.assignedToId, conversation?.assignedTo?.id]);
+
+  useEffect(() => {
+    if (!detailsOpen) return;
+    if (!canAssignConversation) return;
+    if (isAdmin) return;
+    if (workspaceUsersLoaded) return;
+    apiClient
+      .get('/api/users')
+      .then((data: any) => {
+        const list = Array.isArray(data) ? data : [];
+        setWorkspaceUsers(list.filter((u: any) => !u.archivedAt));
+        setWorkspaceUsersLoaded(true);
+        setWorkspaceUsersError(null);
+      })
+      .catch((err: any) => {
+        setWorkspaceUsers([]);
+        setWorkspaceUsersLoaded(true);
+        setWorkspaceUsersError(err.message || 'No se pudieron cargar usuarios');
+      });
+  }, [detailsOpen, canAssignConversation, isAdmin, workspaceUsersLoaded, conversation?.id]);
+
+  const handleAssignmentUpdate = async (nextUserId: string) => {
+    if (!conversation) return;
+    setAssignmentSaving(true);
+    setAssignmentError(null);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/assign`, {
+        assignedToUserId: nextUserId || null
+      });
+      setAssignedToId(nextUserId);
+      onMessageSent();
+    } catch (err: any) {
+      setAssignmentError(err.message || 'No se pudo asignar');
+    } finally {
+      setAssignmentSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!conversation) return;
@@ -663,6 +723,25 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 <span style={{ fontSize: 12, color: '#555' }}>
                   PhoneLine: <strong>{conversation?.phoneLine?.alias || conversation?.phoneLineId || '—'}</strong>
                 </span>
+                {canAssignConversation && !isAdmin ? (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+                    Asignado a:
+                    <select
+                      value={assignedToId}
+                      onChange={(e) => handleAssignmentUpdate(e.target.value).catch(() => {})}
+                      disabled={assignmentSaving || Boolean(workspaceUsersError)}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                      data-guide-id="conversation-assign-select"
+                    >
+                      <option value="">(sin asignar)</option>
+                      {(workspaceUsers || []).map((u: any) => (
+                        <option key={u.userId} value={u.userId}>
+                          {u.name || u.email} · {u.role}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 <span style={{ fontSize: 12, color: '#555' }}>
                   Ventana WhatsApp:{' '}
                   <strong>{conversation?.within24h === false ? 'OUTSIDE_24H' : 'IN_24H'}</strong>
@@ -678,6 +757,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                     }}
                     disabled={programSaving}
                     style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                    data-guide-id="conversation-program-select"
                   >
                     <option value="">—</option>
                     {programOptions.map((p: any) => (
@@ -688,6 +768,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   </select>
                 </label>
                 {programError ? <span style={{ fontSize: 12, color: '#b93800' }}>{programError}</span> : null}
+                {workspaceUsersError ? <span style={{ fontSize: 12, color: '#b93800' }}>{workspaceUsersError}</span> : null}
+                {assignmentError ? <span style={{ fontSize: 12, color: '#b93800' }}>{assignmentError}</span> : null}
               </div>
             )}
             {detailsOpen && !isAdmin && namePanelOpen && (
@@ -826,6 +908,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
             {hasConversation ? (
               <button
                 type="button"
+                data-guide-id="conversation-details-button"
                 onClick={() => setDetailsOpen((v) => !v)}
                 style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', cursor: 'pointer', fontSize: 12 }}
               >

@@ -7,12 +7,14 @@ import {
 } from '../services/configService';
 import { getContactDisplayName } from '../utils/contactDisplay';
 import { resolveInterviewSlotFromDayTime } from '../services/interviewSchedulerService';
+import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 
 export async function registerAgendaRoutes(app: FastifyInstance) {
   app.get('/reservations', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
-      return reply.code(403).send({ error: 'Forbidden' });
-    }
+    const access = await resolveWorkspaceAccess(request);
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+    const role = String((access as any).role || '').toUpperCase();
+    const assignedOnly = role === 'MEMBER' && Boolean((access as any).assignedOnly) && Boolean(userId);
 
     const query = request.query as {
       from?: string;
@@ -35,6 +37,7 @@ export async function registerAgendaRoutes(app: FastifyInstance) {
 
     const reservations = await prisma.interviewReservation.findMany({
       where: {
+        conversation: { workspaceId: access.workspaceId, ...(assignedOnly ? { assignedToId: userId } : {}) },
         startAt: { gte: from, lt: to },
         ...(includeInactive ? {} : { activeKey: 'ACTIVE' })
       },
@@ -71,7 +74,8 @@ export async function registerAgendaRoutes(app: FastifyInstance) {
   });
 
   app.post('/blocks', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -180,7 +184,8 @@ export async function registerAgendaRoutes(app: FastifyInstance) {
   });
 
   app.delete('/blocks/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const { id } = request.params as { id: string };
@@ -194,8 +199,4 @@ export async function registerAgendaRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'Bloqueo no encontrado' });
     }
   });
-}
-
-function isAdmin(request: any): boolean {
-  return request.user?.role === 'ADMIN';
 }

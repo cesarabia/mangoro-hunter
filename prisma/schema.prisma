@@ -16,6 +16,8 @@ model User {
   passwordHash   String
   role           String         @default("AGENT")
   memberships    Membership[]
+  invitesCreated WorkspaceInvite[] @relation("InviteCreatedBy")
+  invitesAccepted WorkspaceInvite[] @relation("InviteAcceptedBy")
   conversations  Conversation[] @relation("UserConversations")
   copilotRuns    CopilotRunLog[]
   copilotThreads CopilotThread[]
@@ -31,6 +33,7 @@ model Workspace {
   name        String
   isSandbox   Boolean       @default(false)
   memberships Membership[]
+  invites     WorkspaceInvite[]
   phoneLines  PhoneLine[]
   programs    Program[]
   connectors  WorkspaceConnector[]
@@ -74,12 +77,35 @@ model Membership {
   workspace   Workspace @relation(fields: [workspaceId], references: [id])
   workspaceId String
   role        String
+  assignedOnly Boolean  @default(false)
   archivedAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   @@unique([userId, workspaceId])
   @@index([workspaceId])
+}
+
+model WorkspaceInvite {
+  id              String    @id @default(cuid())
+  workspace       Workspace @relation(fields: [workspaceId], references: [id])
+  workspaceId     String
+  email           String
+  role            String
+  token           String    @unique
+  expiresAt       DateTime
+  createdBy       User?     @relation("InviteCreatedBy", fields: [createdByUserId], references: [id])
+  createdByUserId String?
+  acceptedAt      DateTime?
+  acceptedBy      User?     @relation("InviteAcceptedBy", fields: [acceptedByUserId], references: [id])
+  acceptedByUserId String?
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([workspaceId])
+  @@index([email])
+  @@index([createdAt])
 }
 
 model PhoneLine {

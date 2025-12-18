@@ -100,12 +100,23 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }).catch(() => {});
   }
 
+  const canSeeOnlyAssigned = (access: any, userId: string | null) => {
+    const role = String(access?.role || '').toUpperCase();
+    return role === 'MEMBER' && Boolean(access?.assignedOnly) && Boolean(userId);
+  };
+
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
+    const userId = (request as any)?.user?.userId ? String((request as any).user.userId) : null;
+    const assignedOnly = canSeeOnlyAssigned(access, userId);
     const conversations = await prisma.conversation.findMany({
-      where: { workspaceId: access.workspaceId },
+      where: {
+        workspaceId: access.workspaceId,
+        ...(assignedOnly ? { assignedToId: userId } : {}),
+      },
       include: {
         contact: true,
+        assignedTo: { select: { id: true, email: true, name: true } },
         program: { select: { id: true, name: true, slug: true } },
         phoneLine: { select: { id: true, alias: true } },
         messages: {
@@ -205,11 +216,13 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   app.get('/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
+    const userId = (request as any)?.user?.userId ? String((request as any).user.userId) : null;
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, workspaceId: access.workspaceId },
       include: {
         contact: true,
+        assignedTo: { select: { id: true, email: true, name: true } },
         program: { select: { id: true, name: true, slug: true } },
         phoneLine: { select: { id: true, alias: true } },
         messages: {
@@ -220,6 +233,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
     if (!conversation) {
       return reply.code(404).send({ error: 'Conversation not found' });
+    }
+    if (canSeeOnlyAssigned(access, userId) && String(conversation.assignedToId || '') !== String(userId)) {
+      return reply.code(403).send({ error: 'Forbidden' });
     }
 
     const lastInbound = await prisma.message.findFirst({
@@ -284,6 +300,46 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       }
     });
     return { ok: true };
+  });
+
+  app.patch('/:id/assign', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const actor = (request as any)?.user?.userId || null;
+    const { id } = request.params as { id: string };
+    const body = request.body as { assignedToUserId?: string | null };
+
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId, archivedAt: null },
+      select: { id: true, assignedToId: true, isAdmin: true }
+    });
+    if (!conversation) return reply.code(404).send({ error: 'Conversation not found' });
+    if (conversation.isAdmin) return reply.code(400).send({ error: 'No aplica a conversación admin' });
+
+    const nextUserId = typeof body.assignedToUserId === 'string' && body.assignedToUserId.trim() ? body.assignedToUserId.trim() : null;
+    if (nextUserId) {
+      const membership = await prisma.membership.findFirst({
+        where: { workspaceId: access.workspaceId, userId: nextUserId, archivedAt: null },
+        include: { user: { select: { email: true, name: true } } }
+      });
+      if (!membership) return reply.code(400).send({ error: 'Usuario inválido para este workspace' });
+      await prisma.conversation.update({
+        where: { id },
+        data: { assignedToId: nextUserId, updatedAt: new Date() }
+      });
+      const label = membership.user?.name || membership.user?.email || nextUserId;
+      await logSystemMessage(id, `👤 Conversación asignada a: ${label}`, { assignment: 'SET', assignedToUserId: nextUserId, actor });
+      return { ok: true, assignedToUserId: nextUserId };
+    }
+
+    await prisma.conversation.update({
+      where: { id },
+      data: { assignedToId: null, updatedAt: new Date() }
+    });
+    await logSystemMessage(id, '👤 Asignación removida (sin responsable).', { assignment: 'UNSET', actor });
+    return { ok: true, assignedToUserId: null };
   });
 
   app.patch('/:id/contact-name', { preValidation: [app.authenticate] }, async (request, reply) => {
@@ -397,11 +453,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
   app.post('/:id/messages', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
-    if (!isWorkspaceAdmin(request, access)) {
-      return reply.code(403).send({ error: 'Forbidden' });
-    }
     const { id } = request.params as { id: string };
     const { text } = request.body as { text: string };
+    const userId = (request as any)?.user?.userId ? String((request as any).user.userId) : null;
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, workspaceId: access.workspaceId },
@@ -410,6 +464,16 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
     if (!conversation || !conversation.contact.waId) {
       return reply.code(400).send({ error: 'Conversation or waId not found' });
+    }
+    if (canSeeOnlyAssigned(access, userId) && String(conversation.assignedToId || '') !== String(userId)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const role = String(access.role || '').toUpperCase();
+    const canSend =
+      isWorkspaceAdmin(request, access) ||
+      (role === 'MEMBER' && Boolean(userId) && String(conversation.assignedToId || '') === String(userId));
+    if (!canSend) {
+      return reply.code(403).send({ error: 'Forbidden' });
     }
     if (conversation.contact.noContact) {
       return reply.code(403).send({ error: 'Contacto marcado como NO_CONTACTAR. Reactívalo antes de enviar.' });
@@ -484,11 +548,16 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.post('/:id/mark-read', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
+    const userId = (request as any)?.user?.userId ? String((request as any).user.userId) : null;
 
-    const conversation = await prisma.conversation.findUnique({ where: { id } });
+    const conversation = await prisma.conversation.findFirst({ where: { id, workspaceId: access.workspaceId } });
     if (!conversation) {
       return reply.code(404).send({ error: 'Conversation not found' });
+    }
+    if (canSeeOnlyAssigned(access, userId) && String(conversation.assignedToId || '') !== String(userId)) {
+      return reply.code(403).send({ error: 'Forbidden' });
     }
 
     const result = await prisma.message.updateMany({
@@ -500,6 +569,10 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   });
 
   app.patch('/:id/status', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
     const { id } = request.params as { id: string };
     const body = request.body as { status?: string };
     const allowed = ['NEW', 'OPEN', 'CLOSED'];
@@ -509,18 +582,25 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Invalid status' });
     }
 
-    try {
-      const updated = await prisma.conversation.update({
-        where: { id },
-        data: { status: nextStatus }
-      });
-      return updated;
-    } catch (err) {
+    const updated = await prisma.conversation.updateMany({
+      where: { id, workspaceId: access.workspaceId },
+      data: { status: nextStatus, updatedAt: new Date() }
+    });
+    if (updated.count === 0) {
       return reply.code(404).send({ error: 'Conversation not found' });
     }
+    const fresh = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId },
+      include: { contact: true, program: { select: { id: true, name: true, slug: true } }, phoneLine: { select: { id: true, alias: true } } }
+    });
+    return fresh || { id, status: nextStatus };
   });
 
   app.patch('/:id/ai-mode', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
     const { id } = request.params as { id: string };
     const body = request.body as { mode?: string };
     const allowed = ['RECRUIT', 'INTERVIEW', 'SELLER', 'OFF'];
@@ -530,18 +610,19 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Modo inválido' });
     }
 
-    try {
-      const updated = await prisma.conversation.update({
-        where: { id },
-        data: { aiMode: nextMode }
-      });
-      return updated;
-    } catch (err) {
-      return reply.code(404).send({ error: 'Conversation not found' });
-    }
+    const updated = await prisma.conversation.updateMany({
+      where: { id, workspaceId: access.workspaceId },
+      data: { aiMode: nextMode, updatedAt: new Date() }
+    });
+    if (updated.count === 0) return reply.code(404).send({ error: 'Conversation not found' });
+    return prisma.conversation.findFirst({ where: { id, workspaceId: access.workspaceId } });
   });
 
   app.patch('/:id/ai-settings', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
     const { id } = request.params as { id: string };
     const body = request.body as { mode?: string; aiPaused?: boolean };
     const data: Record<string, any> = {};
@@ -558,18 +639,19 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     if (Object.keys(data).length === 0) {
       return reply.code(400).send({ error: 'Sin cambios' });
     }
-    try {
-      const updated = await prisma.conversation.update({
-        where: { id },
-        data
-      });
-      return updated;
-    } catch (err) {
-      return reply.code(404).send({ error: 'Conversation not found' });
-    }
+    const updated = await prisma.conversation.updateMany({
+      where: { id, workspaceId: access.workspaceId },
+      data: { ...data, updatedAt: new Date() }
+    });
+    if (updated.count === 0) return reply.code(404).send({ error: 'Conversation not found' });
+    return prisma.conversation.findFirst({ where: { id, workspaceId: access.workspaceId } });
   });
 
   app.patch('/:id/interview', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
     const { id } = request.params as { id: string };
     const body = request.body as {
       interviewDay?: string | null;
@@ -578,8 +660,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       interviewStatus?: string | null;
     };
 
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId },
       include: { contact: true }
     });
     if (!conversation) {

@@ -6,6 +6,7 @@ import { ConversationView } from '../components/ConversationView';
 interface Props {
   mode: 'INBOX' | 'INACTIVE';
   workspaceId: string;
+  canAssignConversation?: boolean;
   onOpenAgenda?: () => void;
   onOpenSimulator?: () => void;
   onOpenConfig?: () => void;
@@ -15,6 +16,7 @@ interface Props {
 export const InboxPage: React.FC<Props> = ({
   mode,
   workspaceId,
+  canAssignConversation,
   onReplayInSimulator
 }) => {
   const POLLING_INTERVAL = 7000;
@@ -379,6 +381,7 @@ export const InboxPage: React.FC<Props> = ({
                   onMessageSent={handleMessageSent}
                   programs={programs}
                   onReplayInSimulator={onReplayInSimulator}
+                  canAssignConversation={Boolean(canAssignConversation)}
                   draftText={draftsByConversationId[selectedId] || ''}
                   onDraftChange={(value) => {
                     setDraftsByConversationId((prev) => ({
@@ -443,6 +446,7 @@ export const InboxPage: React.FC<Props> = ({
                 onMessageSent={handleMessageSent}
                 programs={programs}
                 onReplayInSimulator={onReplayInSimulator}
+                canAssignConversation={Boolean(canAssignConversation)}
                 draftText={selectedId ? draftsByConversationId[selectedId] || '' : ''}
                 onDraftChange={(value) => {
                   if (!selectedId) return;

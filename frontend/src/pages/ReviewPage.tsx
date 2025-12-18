@@ -81,6 +81,8 @@ export const ReviewPage: React.FC<{
   const [phoneLines, setPhoneLines] = useState<any[]>([]);
   const [programs, setPrograms] = useState<any[]>([]);
   const [automations, setAutomations] = useState<any[]>([]);
+  const [workspaceConnectors, setWorkspaceConnectors] = useState<any[]>([]);
+  const [workspaceConnectorsError, setWorkspaceConnectorsError] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
 
   const [release, setRelease] = useState<any | null>(null);
@@ -148,19 +150,26 @@ export const ReviewPage: React.FC<{
 
   const refreshSetup = async () => {
     setSetupError(null);
+    setWorkspaceConnectorsError(null);
     try {
-      const [lines, progs, autos] = await Promise.all([
+      const [lines, progs, autos, conns] = await Promise.all([
         apiClient.get('/api/phone-lines'),
         apiClient.get('/api/programs'),
-        apiClient.get('/api/automations')
+        apiClient.get('/api/automations'),
+        apiClient.get('/api/connectors').catch((err) => {
+          setWorkspaceConnectorsError(err?.message || 'No se pudieron cargar connectors (requiere OWNER)');
+          return null;
+        }),
       ]);
       setPhoneLines(Array.isArray(lines) ? lines : []);
       setPrograms(Array.isArray(progs) ? progs : []);
       setAutomations(Array.isArray(autos) ? autos : []);
+      setWorkspaceConnectors(Array.isArray(conns) ? conns : []);
     } catch (err: any) {
       setPhoneLines([]);
       setPrograms([]);
       setAutomations([]);
+      setWorkspaceConnectors([]);
       setSetupError(err.message || 'No se pudo cargar configuración');
     }
   };
@@ -309,17 +318,29 @@ export const ReviewPage: React.FC<{
 
   const phoneLineOk = useMemo(() => (phoneLines || []).some((l: any) => Boolean(l?.isActive) && l?.waPhoneNumberId), [phoneLines]);
   const programsOk = useMemo(() => (programs || []).some((p: any) => Boolean(p?.isActive) && !p?.archivedAt), [programs]);
+  const medilinkOk = useMemo(() => {
+    const med = (workspaceConnectors || []).find((c: any) => String(c?.slug || '').toLowerCase() === 'medilink') || null;
+    return Boolean(med?.hasToken) && Boolean(String(med?.baseUrl || '').trim());
+  }, [workspaceConnectors]);
   const automationsOk = useMemo(
     () =>
       (automations || []).some(
         (r: any) =>
           Boolean(r?.enabled) &&
           String(r?.trigger || '').toUpperCase() === 'INBOUND_MESSAGE' &&
-          String(r?.actionsJson || '').includes('RUN_AGENT')
+          (Array.isArray(r?.actions)
+            ? (r.actions || []).some((a: any) => String(a?.type || '').toUpperCase() === 'RUN_AGENT')
+            : String((r as any)?.actionsJson || '').toUpperCase().includes('RUN_AGENT'))
       ),
     [automations]
   );
   const lastQaOk = Boolean(release?.lastQa?.ok);
+
+  const [firstStepsEvaluatedAt, setFirstStepsEvaluatedAt] = useState<string | null>(null);
+  const reevaluateFirstSteps = async () => {
+    await Promise.all([refreshOutbound(), refreshSetup()]);
+    setFirstStepsEvaluatedAt(new Date().toISOString());
+  };
 
   const runAllScenarios = async () => {
     setRunningScenarios(true);
@@ -829,7 +850,22 @@ export const ReviewPage: React.FC<{
           </div>
 
           <div style={{ marginTop: 14, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
-            <div style={{ fontWeight: 900, marginBottom: 8 }}>Primeros pasos (click-only)</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 900 }}>Primeros pasos (click-only)</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                {firstStepsEvaluatedAt ? (
+                  <div style={{ fontSize: 12, color: '#666' }}>
+                    Evaluado: {new Date(firstStepsEvaluatedAt).toLocaleString('es-CL')}
+                  </div>
+                ) : null}
+                <button
+                  onClick={() => reevaluateFirstSteps().catch(() => {})}
+                  style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+                >
+                  Re-evaluar Primeros Pasos
+                </button>
+              </div>
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {helpSteps.filter(matchHelp).map((s) => (
                 <div key={s.title} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -1103,10 +1139,38 @@ export const ReviewPage: React.FC<{
           </div>
 
           <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 800, marginBottom: 10 }}>Pilot SSClinical (MVP) — checklist</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 10, alignItems: 'center' }}>
+              <div>
+                <span style={{ color: safeModeOk ? '#1a7f37' : '#b93800' }}>{safeModeOk ? '✅' : '⚠️'}</span> SAFE MODE allowlist-only (solo admin/test).
+              </div>
+              <button onClick={() => openConfigTab('workspace')} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Ver SAFE MODE
+              </button>
+
+              <div>
+                <span style={{ color: automationsOk ? '#1a7f37' : '#b93800' }}>{automationsOk ? '✅' : '⚠️'}</span> Automation básica INBOUND_MESSAGE → RUN_AGENT habilitada.
+              </div>
+              <button onClick={() => openConfigTab('automations')} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Ver Automations
+              </button>
+
+              <div>
+                <span style={{ color: medilinkOk ? '#1a7f37' : '#b93800' }}>{medilinkOk ? '✅' : '⚠️'}</span> Medilink API configurada (base URL + token).
+              </div>
+              <button onClick={() => openConfigTab('integrations')} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}>
+                Ver Integraciones
+              </button>
+            </div>
+            {workspaceConnectorsError ? <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>{workspaceConnectorsError}</div> : null}
+          </div>
+
+          <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ fontWeight: 800 }}>Logs recientes</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <input
+                  data-guide-id="review-logs-filter"
                   value={outboundConversationId}
                   onChange={(e) => setOutboundConversationId(e.target.value)}
                   placeholder="Filtro conversationId (opcional)"

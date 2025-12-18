@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { z } from 'zod';
 import { prisma } from '../db/client';
@@ -11,12 +12,18 @@ import {
   normalizeModelId,
   updateOutboundSafetyConfig,
 } from '../services/configService';
-import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceAuthService';
+import { resolveWorkspaceAccess, isWorkspaceAdmin, isWorkspaceOwner } from '../services/workspaceAuthService';
 import { serializeJson } from '../utils/json';
 import { SCENARIOS, getScenario } from '../services/simulate/scenarios';
 
 const ViewSchema = z.enum(['inbox', 'inactive', 'simulator', 'agenda', 'config', 'review']);
 const ConfigTabSchema = z.enum(['workspace', 'integrations', 'users', 'phoneLines', 'programs', 'automations', 'logs', 'usage']);
+
+const GuideStepSchema = z.object({
+  guideId: z.string().min(1).max(80),
+  title: z.string().max(140).optional().nullable(),
+  body: z.string().max(800).optional().nullable(),
+});
 
 const CopilotActionSchema = z.discriminatedUnion('type', [
   z.object({
@@ -27,7 +34,16 @@ const CopilotActionSchema = z.discriminatedUnion('type', [
     focusKind: z.enum(['program', 'automation', 'phoneLine']).optional(),
     focusId: z.string().min(1).optional(),
   }),
+  z.object({
+    type: z.literal('GUIDE'),
+    title: z.string().max(140).optional().nullable(),
+    label: z.string().optional(),
+    steps: z.array(GuideStepSchema).min(1),
+  }),
 ]);
+
+type CopilotAction = z.infer<typeof CopilotActionSchema>;
+type CopilotNavigateAction = Extract<CopilotAction, { type: 'NAVIGATE' }>;
 
 const CopilotCommandSchema = z.discriminatedUnion('type', [
   z.object({
@@ -87,6 +103,18 @@ const CopilotCommandSchema = z.discriminatedUnion('type', [
     programId: z.string().min(1).optional(),
     programSlug: z.string().min(1).max(80).optional(),
   }),
+  z.object({
+    type: z.literal('CREATE_OR_UPDATE_USER_MEMBERSHIP'),
+    email: z.string().min(3).max(200),
+    role: z.enum(['OWNER', 'ADMIN', 'MEMBER', 'VIEWER']),
+    assignedOnly: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('INVITE_USER_BY_EMAIL'),
+    email: z.string().min(3).max(200),
+    role: z.enum(['OWNER', 'ADMIN', 'MEMBER', 'VIEWER']),
+    expiresDays: z.number().int().min(1).max(30).optional(),
+  }),
 ]);
 
 const CopilotProposalSchema = z.object({
@@ -129,6 +157,34 @@ function slugify(value: string): string {
     .slice(0, 64);
 }
 
+function extractEmail(value: string): string | null {
+  const match = String(value || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (!match) return null;
+  return match[0].trim().toLowerCase();
+}
+
+function inferMembershipRoleFromText(value: string): 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER' {
+  const t = normalizeText(value);
+  if (/\b(owner|dueno|dueño)\b/.test(t)) return 'OWNER';
+  if (/\b(admin|administrador)\b/.test(t)) return 'ADMIN';
+  if (/\b(viewer|solo lectura|lectura)\b/.test(t)) return 'VIEWER';
+  return 'MEMBER';
+}
+
+function inferAssignedOnlyFromText(value: string): boolean {
+  const t = normalizeText(value);
+  return /\b(assigned-only|solo asignad|solo asignadas|solo asignados|asignad[oa]s)\b/.test(t);
+}
+
+function buildInviteToken(): string {
+  return crypto.randomBytes(18).toString('base64url');
+}
+
+function buildInviteUrl(token: string): string {
+  const base = process.env.PUBLIC_BASE_URL || 'https://hunter.mangoro.app';
+  return `${base.replace(/\/+$/g, '')}/invite/${token}`;
+}
+
 async function ensureUniqueProgramSlug(workspaceId: string, desired: string): Promise<string> {
   const base = slugify(desired);
   if (!base) return `program-${Date.now().toString(36)}`;
@@ -144,7 +200,7 @@ async function ensureUniqueProgramSlug(workspaceId: string, desired: string): Pr
   return `${base}-${Date.now().toString(36).slice(0, 6)}`;
 }
 
-function inferNavigation(text: string): z.infer<typeof CopilotActionSchema> | null {
+function inferNavigation(text: string): CopilotNavigateAction | null {
   const t = normalizeText(text);
   const go = (view: z.infer<typeof ViewSchema>, configTab?: z.infer<typeof ConfigTabSchema>, label?: string) =>
     ({ type: 'NAVIGATE', view, ...(configTab ? { configTab } : {}), ...(label ? { label } : {}) }) as const;
@@ -169,6 +225,74 @@ function inferNavigation(text: string): z.infer<typeof CopilotActionSchema> | nu
     if (/\b(config|configuracion|settings)\b/i.test(text)) return go('config', undefined, 'Abrir Configuración');
   }
   if (/\b(ayuda|qa|owner review)\b/i.test(text)) return go('review', undefined, 'Abrir Ayuda / QA');
+  return null;
+}
+
+function inferGuide(text: string, ctx: { isAdmin: boolean; conversationId: string | null }) {
+  const t = normalizeText(text);
+  const wantsGuide = /\b(mu[eé]stra|muestrame|donde|d[oó]nde|guia|gu[ií]a|guiame|resalta|highlight)\b/.test(t);
+  if (!wantsGuide) return null;
+
+  const nav = (view: z.infer<typeof ViewSchema>, configTab?: z.infer<typeof ConfigTabSchema>, label?: string) =>
+    ({ type: 'NAVIGATE', view, ...(configTab ? { configTab } : {}), ...(label ? { label } : {}) }) as const;
+  const guide = (title: string, steps: Array<z.infer<typeof GuideStepSchema>>) =>
+    ({ type: 'GUIDE', title, label: 'Iniciar guía', steps } as const);
+
+  if (/\b(program|programs|programa)\b/.test(t) && /\b(cambiar|cambio|selector|seleccionar|asignar)\b/.test(t)) {
+    const steps = [
+      {
+        guideId: 'conversation-details-button',
+        title: 'Abrir Detalles',
+        body: 'Haz click en “Detalles” para ver la configuración de esta conversación.',
+      },
+      {
+        guideId: 'conversation-program-select',
+        title: 'Cambiar Program',
+        body: 'Usa este selector para elegir el Program (agente) activo. El siguiente “Sugerir” y el siguiente inbound usarán ese Program.',
+      },
+    ];
+    const reply = ctx.conversationId
+      ? 'Listo. Te muestro dónde cambiar el Program de esta conversación.'
+      : 'Te llevo a Inbox. Abre una conversación y luego te muestro dónde cambiar el Program.';
+    return { reply, actions: [nav('inbox', undefined, 'Abrir Inbox'), guide('Guía: Cambiar Program', steps)], autoNavigate: true };
+  }
+
+  if (/\b(logs?|bitacora)\b/.test(t)) {
+    if (!ctx.isAdmin) {
+      return {
+        reply: 'Para ver Logs necesitas permisos de ADMIN/OWNER. Si no los tienes, pídele a un ADMIN que revise Ayuda / QA.',
+        actions: [nav('inbox', undefined, 'Abrir Inbox')],
+        autoNavigate: true,
+      };
+    }
+    const steps = [
+      {
+        guideId: 'review-logs-filter',
+        title: 'Filtrar por conversación',
+        body: 'Pega aquí un conversationId para ver Agent Runs / Outbound / Automation Runs del chat (útil para “no respondió”).',
+      },
+    ];
+    return { reply: 'Abriendo QA y resaltando dónde filtrar logs…', actions: [nav('review', undefined, 'Abrir QA (Logs)'), guide('Guía: Ver Logs', steps)], autoNavigate: true };
+  }
+
+  if (/\b(automation|automations|automat|regla|reglas)\b/.test(t)) {
+    if (!ctx.isAdmin) {
+      return {
+        reply: 'Para crear Automations necesitas permisos de ADMIN/OWNER. Si no los tienes, pídele a un ADMIN que lo haga desde Configuración → Automations.',
+        actions: [nav('inbox', undefined, 'Abrir Inbox')],
+        autoNavigate: true,
+      };
+    }
+    const steps = [
+      {
+        guideId: 'config-automations-new-rule',
+        title: 'Crear regla',
+        body: 'Haz click aquí para crear una regla. Para empezar: Trigger INBOUND_MESSAGE + Action RUN_AGENT + Enabled=true.',
+      },
+    ];
+    return { reply: 'Abriendo Automations y resaltando el botón para crear una regla…', actions: [nav('config', 'automations', 'Ir a Automations'), guide('Guía: Crear Automation', steps)], autoNavigate: true };
+  }
+
   return null;
 }
 
@@ -323,6 +447,7 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
   app.post('/chat', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const isAdmin = isWorkspaceAdmin(request, access);
+    const isOwner = isWorkspaceOwner(request, access);
     const body = request.body as { text?: string; conversationId?: string | null; view?: string | null; threadId?: string | null };
     const text = String(body?.text || '').trim();
     const conversationId = body?.conversationId ? String(body.conversationId) : null;
@@ -368,6 +493,17 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
         .catch(() => {});
     }
 
+    const guideHint = inferGuide(text, { isAdmin, conversationId });
+    if (guideHint) {
+      if (run?.id) {
+        await prisma.copilotRunLog.update({
+          where: { id: run.id },
+          data: { status: 'SUCCESS', responseText: guideHint.reply, actionsJson: serializeJson(guideHint.actions) },
+        });
+      }
+      return { ...guideHint, threadId, runId: run?.id || null };
+    }
+
     const directNav = inferNavigation(text);
     if (directNav && (!directNav.configTab || isAdmin)) {
       const cleaned = String(directNav.label || '')
@@ -382,6 +518,49 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
         });
       }
       return response;
+    }
+
+    const wantsUserMgmt =
+      /\b(crea|crear|agrega|agregar|añade|anade|invita|invitar)\b/i.test(text) &&
+      /\b(usuario|usuarios|miembro|miembros|membership|rol)\b/i.test(text);
+    const email = extractEmail(text);
+    if (wantsUserMgmt && email) {
+      if (!isOwner) {
+        const replyText =
+          'Solo un OWNER puede gestionar usuarios/invitaciones en este workspace. Pídele a un OWNER que lo haga desde Configuración → Usuarios.';
+        const actions = [{ type: 'NAVIGATE' as const, view: 'review' as const, label: 'Abrir Ayuda / QA' }];
+        if (run?.id) {
+          await prisma.copilotRunLog.update({
+            where: { id: run.id },
+            data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+          });
+        }
+        return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
+      }
+
+      const role = inferMembershipRoleFromText(text);
+      const assignedOnly = inferAssignedOnlyFromText(text);
+      const proposal: z.infer<typeof CopilotProposalSchema> = {
+        id: `user_${Date.now().toString(36)}`,
+        title: `Crear/actualizar acceso: ${email}`,
+        summary: `Workspace: ${access.workspaceId} · Rol: ${role}${assignedOnly ? ' · Scope: solo asignadas' : ''}`,
+        commands: [
+          {
+            type: 'CREATE_OR_UPDATE_USER_MEMBERSHIP',
+            email,
+            role,
+            ...(assignedOnly ? { assignedOnly: true } : {}),
+          } as any,
+        ],
+      };
+      const replyText = `Puedo crear/actualizar el acceso de ${email} con rol ${role} en este workspace. ¿Confirmas?`;
+      if (run?.id) {
+        await prisma.copilotRunLog.update({
+          where: { id: run.id },
+          data: { status: 'PENDING_CONFIRMATION', responseText: replyText, proposalsJson: serializeJson([proposal]) } as any,
+        });
+      }
+      return { reply: replyText, proposals: [proposal], threadId, runId: run?.id || null, autoNavigate: false };
     }
 
     const config = await getSystemConfig();
@@ -549,6 +728,11 @@ CopilotCommand permitidos (usa solo estos):
      "defaultProgramRef"?: string, "defaultProgramId"?: string|null, "isActive"?: boolean }
 7) SET_PHONE_LINE_DEFAULT_PROGRAM:
    { "type":"SET_PHONE_LINE_DEFAULT_PROGRAM", "phoneLineId"?: string, "waPhoneNumberId"?: string, "programId"?: string, "programSlug"?: string, "programRef"?: string }
+8) CREATE_OR_UPDATE_USER_MEMBERSHIP (solo OWNER):
+   { "type":"CREATE_OR_UPDATE_USER_MEMBERSHIP", "email": string, "role": "OWNER"|"ADMIN"|"MEMBER"|"VIEWER", "assignedOnly"?: boolean }
+   (Si el usuario NO existe, crea un invite en lugar de setear password.)
+9) INVITE_USER_BY_EMAIL (solo OWNER):
+   { "type":"INVITE_USER_BY_EMAIL", "email": string, "role": "OWNER"|"ADMIN"|"MEMBER"|"VIEWER", "expiresDays"?: number }
 
 Tu salida debe ser SOLO un JSON válido con el shape:
 {
@@ -782,6 +966,7 @@ Tu salida debe ser SOLO un JSON válido con el shape:
     const access = await resolveWorkspaceAccess(request);
     if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
     const userId = request.user?.userId || null;
+    const isOwner = isWorkspaceOwner(request, access);
     const { id } = request.params as { id: string };
     const body = request.body as { proposalId?: string | null };
     const proposalId = typeof body?.proposalId === 'string' && body.proposalId.trim() ? body.proposalId.trim() : null;
@@ -1032,6 +1217,7 @@ Tu salida debe ser SOLO un JSON válido con el shape:
         }
 
         if (cmd.type === 'TEMP_OFF_OUTBOUND') {
+          if (!isOwner) throw new Error('Solo OWNER puede cambiar SAFE MODE.');
           const before = await getSystemConfig();
           const until = new Date(Date.now() + cmd.minutes * 60 * 1000);
           const after = await updateOutboundSafetyConfig({ outboundAllowAllUntil: until });
@@ -1085,6 +1271,126 @@ Tu salida debe ser SOLO un JSON válido con el shape:
           continue;
         }
 
+        if (cmd.type === 'INVITE_USER_BY_EMAIL') {
+          if (!isOwner) throw new Error('Solo OWNER puede invitar usuarios.');
+          const email = String(cmd.email || '').trim().toLowerCase();
+          if (!email || !email.includes('@')) throw new Error('Email inválido.');
+          const role = cmd.role;
+          const expiresDays = typeof (cmd as any).expiresDays === 'number' ? Math.max(1, Math.min(30, Math.floor((cmd as any).expiresDays))) : 7;
+          const now = new Date();
+          const expiresAt = new Date(now.getTime() + expiresDays * 24 * 60 * 60 * 1000);
+
+          const existing = await prisma.workspaceInvite.findFirst({
+            where: { workspaceId: access.workspaceId, email, role, archivedAt: null, acceptedAt: null, expiresAt: { gt: now } },
+            select: { id: true },
+          });
+          const created = existing
+            ? existing
+            : await prisma.workspaceInvite.create({
+                data: {
+                  workspaceId: access.workspaceId,
+                  email,
+                  role,
+                  token: buildInviteToken(),
+                  expiresAt,
+                  createdByUserId: userId ? String(userId) : null,
+                },
+                select: { id: true },
+              });
+
+          await prisma.configChangeLog
+            .create({
+              data: {
+                workspaceId: access.workspaceId,
+                userId: userId ? String(userId) : null,
+                type: 'INVITE_CREATED',
+                beforeJson: null,
+                afterJson: serializeJson({ inviteId: created.id, email, role, expiresAt: expiresAt.toISOString() }),
+              },
+            })
+            .catch(() => {});
+
+          results.push({ type: cmd.type, ok: true, inviteId: created.id });
+          summaryLines.push(`✅ Invite creado para ${email} (rol ${role}).`);
+          continue;
+        }
+
+        if (cmd.type === 'CREATE_OR_UPDATE_USER_MEMBERSHIP') {
+          if (!isOwner) throw new Error('Solo OWNER puede gestionar usuarios.');
+          const email = String(cmd.email || '').trim().toLowerCase();
+          if (!email || !email.includes('@')) throw new Error('Email inválido.');
+          const role = cmd.role;
+          const assignedOnly = typeof (cmd as any).assignedOnly === 'boolean' ? Boolean((cmd as any).assignedOnly) : null;
+
+          const user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+          if (!user) {
+            const now = new Date();
+            const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+            const existing = await prisma.workspaceInvite.findFirst({
+              where: { workspaceId: access.workspaceId, email, role, archivedAt: null, acceptedAt: null, expiresAt: { gt: now } },
+              select: { id: true },
+            });
+            const created = existing
+              ? existing
+              : await prisma.workspaceInvite.create({
+                  data: {
+                    workspaceId: access.workspaceId,
+                    email,
+                    role,
+                    token: buildInviteToken(),
+                    expiresAt,
+                    createdByUserId: userId ? String(userId) : null,
+                  },
+                  select: { id: true },
+                });
+            results.push({ type: cmd.type, ok: true, inviteId: created.id, invited: true });
+            summaryLines.push(`✅ Invite creado para ${email} (rol ${role}).`);
+            continue;
+          }
+
+          const existing = await prisma.membership.findFirst({
+            where: { userId: user.id, workspaceId: access.workspaceId },
+            select: { id: true, role: true, assignedOnly: true as any, archivedAt: true },
+          });
+
+          const updated = existing
+            ? await prisma.membership.update({
+                where: { id: existing.id },
+                data: {
+                  role,
+                  archivedAt: null,
+                  ...(assignedOnly === null ? {} : { assignedOnly }),
+                } as any,
+                select: { id: true, role: true, assignedOnly: true as any },
+              })
+            : await prisma.membership.create({
+                data: {
+                  userId: user.id,
+                  workspaceId: access.workspaceId,
+                  role,
+                  archivedAt: null,
+                  ...(assignedOnly === null ? {} : { assignedOnly }),
+                } as any,
+                select: { id: true, role: true, assignedOnly: true as any },
+              });
+
+          await prisma.configChangeLog
+            .create({
+              data: {
+                workspaceId: access.workspaceId,
+                userId: userId ? String(userId) : null,
+                type: 'MEMBERSHIP_UPDATED',
+                beforeJson: existing ? serializeJson({ membershipId: existing.id, role: existing.role, assignedOnly: Boolean((existing as any).assignedOnly), archivedAt: existing.archivedAt ? true : false }) : null,
+                afterJson: serializeJson({ membershipId: updated.id, email, role: updated.role, assignedOnly: Boolean((updated as any).assignedOnly) }),
+              },
+            })
+            .catch(() => {});
+
+          results.push({ type: cmd.type, ok: true, membershipId: updated.id, userId: user.id, role: updated.role, assignedOnly: Boolean((updated as any).assignedOnly) });
+          summaryLines.push(`✅ Membership actualizado: ${email} (${role})`);
+          continue;
+        }
+
         throw new Error('Comando no soportado.');
       } catch (err: any) {
         ok = false;
@@ -1108,6 +1414,15 @@ Tu salida debe ser SOLO un JSON válido con el shape:
         label: 'Ver Programs',
         focusKind: 'program',
         focusId: String(createdProgram.programId),
+      });
+    }
+    const membershipResult = results.find((r) => (r.type === 'CREATE_OR_UPDATE_USER_MEMBERSHIP' || r.type === 'INVITE_USER_BY_EMAIL') && r.ok);
+    if (membershipResult && isOwner) {
+      actions.push({
+        type: 'NAVIGATE',
+        view: 'config',
+        configTab: 'users',
+        label: 'Ver Usuarios',
       });
     }
 

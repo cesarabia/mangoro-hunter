@@ -15,6 +15,9 @@ function safeJsonParse(value: any): any | null {
 export async function registerAutomationRoutes(app: FastifyInstance) {
   app.get('/', { preValidation: [app.authenticate] }, async (request) => {
     const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return [];
+    }
     const rules = await prisma.automationRule.findMany({
       where: { workspaceId: access.workspaceId, archivedAt: null },
       orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
@@ -189,4 +192,3 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
     }));
   });
 }
-

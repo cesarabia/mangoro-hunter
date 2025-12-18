@@ -29,10 +29,12 @@ export async function registerAiRoutes(app: FastifyInstance) {
     const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
     const { draft } = request.body as { draft?: string };
+    const userId = request.user?.userId ? String(request.user.userId) : null;
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, workspaceId: access.workspaceId },
       include: {
+        assignedTo: { select: { id: true } },
         program: { select: { id: true, slug: true } },
         messages: {
           orderBy: { timestamp: 'asc' }
@@ -42,6 +44,11 @@ export async function registerAiRoutes(app: FastifyInstance) {
 
     if (!conversation) {
       return reply.code(404).send({ error: 'Conversation not found' });
+    }
+    const role = String((access as any).role || '').toUpperCase();
+    const assignedOnly = role === 'MEMBER' && Boolean((access as any).assignedOnly) && Boolean(userId);
+    if (assignedOnly && String((conversation as any).assignedToId || '') !== String(userId)) {
+      return reply.code(403).send({ error: 'Forbidden' });
     }
 
     try {

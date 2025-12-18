@@ -235,7 +235,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   }
 
   app.get('/whatsapp', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -254,7 +254,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.put('/whatsapp', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -291,7 +291,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.get('/authorized-numbers', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const config = await loadConfigSafe(request);
@@ -305,7 +305,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.put('/authorized-numbers', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -373,7 +373,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.put('/outbound-safety', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -439,7 +439,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.post('/outbound-safety/temp-off', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const body = request.body as { minutes?: number };
@@ -485,7 +485,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.post('/outbound-safety/clear-temp-off', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const before = await loadConfigSafe(request);
@@ -525,7 +525,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.get('/ai', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -543,7 +543,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.put('/ai', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -567,7 +567,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.post('/ai/test', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -656,7 +656,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.get('/ai-prompt', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -678,7 +678,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
   });
 
   app.put('/ai-prompt', { preValidation: [app.authenticate] }, async (request, reply) => {
-    if (!isAdmin(request)) {
+    if (!isOwner(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
@@ -1694,4 +1694,11 @@ function isAdmin(request: any): boolean {
   if (request.isWorkspaceAdmin === true) return true;
   const role = String(request.workspaceRole || '').toUpperCase();
   return role === 'OWNER' || role === 'ADMIN';
+}
+
+function isOwner(request: any): boolean {
+  if (request.user?.role === 'ADMIN') return true;
+  if (request.isWorkspaceOwner === true) return true;
+  const role = String(request.workspaceRole || '').toUpperCase();
+  return role === 'OWNER';
 }

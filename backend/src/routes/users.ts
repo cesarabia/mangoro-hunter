@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { prisma } from '../db/client';
 import { hashPassword } from '../services/passwordService';
-import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceAuthService';
+import { resolveWorkspaceAccess, isWorkspaceAdmin, isWorkspaceOwner } from '../services/workspaceAuthService';
 
 function generateTempPassword(): string {
   return crypto.randomBytes(9).toString('base64url');
@@ -25,6 +25,7 @@ export async function registerUserRoutes(app: FastifyInstance) {
       email: m.user.email,
       name: m.user.name,
       role: m.role,
+      assignedOnly: Boolean((m as any).assignedOnly),
       addedAt: m.createdAt.toISOString(),
       archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null
     }));
@@ -32,7 +33,7 @@ export async function registerUserRoutes(app: FastifyInstance) {
 
   app.post('/invite', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
-    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
 
     const body = request.body as { email?: string; role?: string; name?: string };
     const email = String(body.email || '').trim().toLowerCase();
@@ -82,10 +83,10 @@ export async function registerUserRoutes(app: FastifyInstance) {
 
   app.patch('/:membershipId', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
-    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
 
     const { membershipId } = request.params as { membershipId: string };
-    const body = request.body as { role?: string; archived?: boolean };
+    const body = request.body as { role?: string; archived?: boolean; assignedOnly?: boolean };
 
     const membership = await prisma.membership.findFirst({
       where: { id: membershipId, workspaceId: access.workspaceId }
@@ -103,14 +104,17 @@ export async function registerUserRoutes(app: FastifyInstance) {
     if (typeof body.archived === 'boolean') {
       data.archivedAt = body.archived ? new Date() : null;
     }
+    if (typeof body.assignedOnly === 'boolean') {
+      data.assignedOnly = body.assignedOnly;
+    }
 
     const updated = await prisma.membership.update({ where: { id: membershipId }, data });
     return {
       membershipId: updated.id,
       userId: updated.userId,
       role: updated.role,
+      assignedOnly: Boolean((updated as any).assignedOnly),
       archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null
     };
   });
 }
-
