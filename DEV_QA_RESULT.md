@@ -1,12 +1,24 @@
 # DEV QA Result — `hunter.mangoro.app`
 
-Fecha: 2025-12-16
+Fecha: 2025-12-18
 
 ## Build stamp (DEV)
 - URL: `https://hunter.mangoro.app/`
 - Health: `https://hunter.mangoro.app/api/health`
-- gitSha: `4940843`
-- startedAt: `2025-12-16T21:06:48.261Z`
+- gitSha: `1f6dd25`
+- startedAt: `2025-12-18T11:33:50.531Z`
+
+## Hotfix 2025-12-18 — UI crash en Inbox (TDZ) — PASS
+### Síntoma
+En DEV se mostraba el ErrorBoundary: “No se pudo renderizar la vista” con error:
+`ReferenceError: Cannot access 'Oe' before initialization` (bundle minificado).
+
+### Causa raíz (alto nivel)
+`ConversationView` referenciaba una variable derivada (`isAdmin`) en el dependency array de un `useEffect`
+antes de inicializarla, causando un error de **Temporal Dead Zone** en runtime.
+
+### Fix
+Se movió la inicialización de `isAdmin` al inicio del componente (antes de cualquier `useEffect` que lo use).
 
 ## SAFE OUTBOUND MODE (DEV) — PASS
 Regla no negociable: **ALLOWLIST_ONLY** y allowlist efectiva solo 2 números.
@@ -14,8 +26,8 @@ Regla no negociable: **ALLOWLIST_ONLY** y allowlist efectiva solo 2 números.
 Evidencia (SystemConfig en DEV DB):
 - `adminWaIds`: `["56982345846"]`
 - `testPhoneNumbers`: `["56994830202"]`
-- `outboundPolicy`: `null` ⇒ default env **ALLOWLIST_ONLY**
-- `outboundAllowlist`: `null`
+- `outboundPolicy`: `ALLOWLIST_ONLY`
+- `outboundAllowlist`: `[]/null` (vacío)
 
 ## TAREA A — “WhatsApp: digo Hola y responde” — PASS
 ### Resultado

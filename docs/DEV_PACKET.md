@@ -3,8 +3,8 @@
 Este es el **único** archivo que el Owner necesita para revisar DEV (sin terminal).
 
 ## Build stamp (DEV)
-- `gitSha`: **PENDIENTE** (ver badge en la topbar o `GET /api/health`)
-- `startedAt`: **PENDIENTE** (ver badge en la topbar o `GET /api/health`)
+- `gitSha`: `1f6dd25`
+- `startedAt`: `2025-12-18T11:33:50.531Z`
 
 ## Restricción crítica (SAFE OUTBOUND MODE)
 - DEV debe operar en **ALLOWLIST_ONLY**.
@@ -13,6 +13,7 @@ Este es el **único** archivo que el Owner necesita para revisar DEV (sin termin
   - Test: `56994830202`
 
 ## Qué cambió en esta iteración (UX + Review Mode)
+- Hotfix UI: se corrigió crash de React en Inbox (“Cannot access 'Oe' before initialization”) causado por referencia en TDZ dentro de `ConversationView`.
 - Inbox/Chat: vista **chat-first** con botón `Detalles` (evita encabezados largos); mensajes/adjuntos **wrap** (sin scroll horizontal).
 - Program vs Modo: se removió el selector “Modo del candidato” de la UI; el **Program** es la única fuente visible.
 - Nueva pantalla `Ayuda / QA` (topbar) con: build/health, SAFE MODE + allowlist, checklist click-only, logs recientes y botón `Run Smoke Scenarios` (sandbox / NullTransport).
