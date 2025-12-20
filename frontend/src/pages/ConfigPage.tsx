@@ -7,9 +7,9 @@ type LogsTabKey = 'agentRuns' | 'automationRuns';
 const looksLikeSecretOrToken = (value: string): boolean => {
   const raw = String(value || '').trim();
   if (!raw) return false;
-  if (/^EAAB/i.test(raw)) return true;
+  if (/^EAA/i.test(raw)) return true;
   if (/[A-Za-z]/.test(raw)) return true;
-  if (raw.length >= 30 && /[A-Za-z0-9_-]{30,}/.test(raw)) return true;
+  if (raw.length >= 20 && /[A-Za-z0-9_-]{20,}/.test(raw)) return true;
   return false;
 };
 
@@ -2461,17 +2461,25 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 {phoneLines.map((l) => (
                   <tr key={l.id} style={{ borderTop: '1px solid #f0f0f0' }}>
                     {(() => {
-                      const isArchived = Boolean(l.archivedAt);
-                      const isActive = Boolean(l.isActive) && !isArchived;
-                      const statusLabel = isArchived ? 'Archived' : isActive ? 'Active' : 'Inactive';
-                      return (
-                        <>
-                    <td style={{ padding: 10, fontSize: 13 }}>{l.alias}</td>
-                    <td style={{ padding: 10, fontSize: 13 }}>{l.phoneE164 || '—'}</td>
-                    <td style={{ padding: 10, fontSize: 13 }}>
-                      <span style={{ fontFamily: 'monospace' }}>{l.waPhoneNumberId}</span>
-                      <button
-                        onClick={() => navigator.clipboard.writeText(String(l.waPhoneNumberId || '')).catch(() => {})}
+	                      const isArchived = Boolean(l.archivedAt);
+	                      const isActive = Boolean(l.isActive) && !isArchived;
+	                      const needsAttention = Boolean((l as any).needsAttention);
+	                      const statusLabel = isArchived ? 'Archived' : isActive ? 'Active' : 'Inactive';
+	                      return (
+	                        <>
+	                    <td style={{ padding: 10, fontSize: 13 }}>{l.alias}</td>
+	                    <td style={{ padding: 10, fontSize: 13 }}>
+	                      {l.phoneE164 || '—'}
+	                      {needsAttention ? (
+	                        <div style={{ marginTop: 4, fontSize: 11, color: '#b93800', fontWeight: 800 }}>
+	                          ⚠ needsAttention: revisa phoneE164
+	                        </div>
+	                      ) : null}
+	                    </td>
+	                    <td style={{ padding: 10, fontSize: 13 }}>
+	                      <span style={{ fontFamily: 'monospace' }}>{l.waPhoneNumberId}</span>
+	                      <button
+	                        onClick={() => navigator.clipboard.writeText(String(l.waPhoneNumberId || '')).catch(() => {})}
                         style={{ marginLeft: 8, padding: '2px 6px', borderRadius: 6, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
                       >
                         Copiar
@@ -2484,29 +2492,34 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                         disabled={isArchived}
                         onChange={(e) => patchPhoneLine(String(l.id), { defaultProgramId: e.target.value || null }).catch(() => {})}
                         style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
-                      >
-                        <option value="">—</option>
-                        {programs.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
+	                      >
+	                        <option value="">—</option>
+	                        {programs.filter((p: any) => p && p.isActive).map((p) => (
+	                          <option key={p.id} value={p.id}>
+	                            {p.name}
+	                          </option>
+	                        ))}
+	                      </select>
+	                    </td>
                     <td style={{ padding: 10, fontSize: 13 }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <input
-                          type="checkbox"
-                          disabled={isArchived}
-                          checked={isActive}
-                          onChange={(e) => patchPhoneLine(String(l.id), { isActive: e.target.checked }).catch(() => {})}
-                        />
-                        {statusLabel}
-                      </label>
-                      {isArchived && l.archivedAt ? (
-                        <div style={{ marginTop: 4, fontSize: 11, color: '#666' }}>
-                          Archivado: {String(l.archivedAt).slice(0, 19).replace('T', ' ')}
-                        </div>
+	                      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+	                        <input
+	                          type="checkbox"
+	                          disabled={isArchived || (!isActive && needsAttention)}
+	                          checked={isActive}
+	                          onChange={(e) => patchPhoneLine(String(l.id), { isActive: e.target.checked }).catch(() => {})}
+	                        />
+	                        {statusLabel}
+	                      </label>
+	                      {!isActive && needsAttention ? (
+	                        <div style={{ marginTop: 4, fontSize: 11, color: '#b93800' }}>
+	                          Bloqueado hasta corregir phoneE164 (needsAttention).
+	                        </div>
+	                      ) : null}
+	                      {isArchived && l.archivedAt ? (
+	                        <div style={{ marginTop: 4, fontSize: 11, color: '#666' }}>
+	                          Archivado: {String(l.archivedAt).slice(0, 19).replace('T', ' ')}
+	                        </div>
                       ) : null}
                     </td>
                     <td style={{ padding: 10, fontSize: 13 }}>{l.lastInboundAt || '—'}</td>
@@ -2568,19 +2581,24 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 <input
                   value={phoneLineEditor.wabaId || ''}
                   onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, wabaId: e.target.value })}
-                  placeholder="wabaId (numérico, opcional)"
-                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
-                />
-                <select value={phoneLineEditor.defaultProgramId || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, defaultProgramId: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
-                  <option value="">Default Program</option>
-                  {programs.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+	                  placeholder="wabaId (numérico, opcional)"
+	                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+	                />
+	                <select value={phoneLineEditor.defaultProgramId || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, defaultProgramId: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
+	                  <option value="">Default Program</option>
+	                  {programs.filter((p: any) => p && p.isActive).map((p) => (
+	                    <option key={p.id} value={p.id}>
+	                      {p.name}
+	                    </option>
+	                  ))}
+	                </select>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input type="checkbox" checked={Boolean(phoneLineEditor.isActive)} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, isActive: e.target.checked })} />
+                  <input
+                    type="checkbox"
+                    disabled={!Boolean(phoneLineEditor.isActive) && Boolean((phoneLineEditor as any).needsAttention)}
+                    checked={Boolean(phoneLineEditor.isActive)}
+                    onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, isActive: e.target.checked })}
+                  />
                   Active
                 </label>
               </div>
@@ -2588,6 +2606,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 Regla: no reutilices el mismo <span style={{ fontFamily: 'monospace' }}>waPhoneNumberId</span> en dos workspaces activos a la vez.
                 Si necesitas mover la línea a otro workspace, primero desactívala/archívala en el workspace anterior.
               </div>
+              {Boolean((phoneLineEditor as any).needsAttention) ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#b93800', fontWeight: 800 }}>
+                  ⚠ needsAttention: este registro requiere revisión. Corrige <span style={{ fontFamily: 'monospace' }}>phoneE164</span> y guarda para poder activarlo.
+                </div>
+              ) : null}
               <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
                 <button onClick={() => savePhoneLine().catch(() => {})} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}>
                   Guardar

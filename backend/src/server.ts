@@ -27,6 +27,7 @@ import { registerInviteRoutes } from './routes/invites';
 import { registerPlatformRoutes } from './routes/platform';
 import { isWorkspaceAdmin, isWorkspaceOwner, resolveWorkspaceAccess } from './services/workspaceAuthService';
 import { checkRateLimit } from './services/rateLimitService';
+import { runPhoneLinePhoneE164Hygiene } from './services/phoneLineHygieneService';
 
 export async function buildServer() {
   const app = Fastify({
@@ -107,6 +108,9 @@ export async function buildServer() {
 
   await ensureAdminUser();
   app.log.info('Admin bootstrap ok');
+  await runPhoneLinePhoneE164Hygiene({ logger: app.log }).catch((err) => {
+    app.log.warn({ err }, 'PhoneLine hygiene failed');
+  });
   startWorkflowSchedulers(app);
 
   app.register(registerAuthRoutes, { prefix: '/api/auth' });

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { looksLikeSecretOrToken, normalizeChilePhoneE164 } from './phone';
 
 describe('phone utils', () => {
-  it('looksLikeSecretOrToken detects EAAB tokens', () => {
-    assert.equal(looksLikeSecretOrToken('EAAB12345abcdef'), true);
+  it('looksLikeSecretOrToken detects EAA tokens', () => {
+    assert.equal(looksLikeSecretOrToken('EAAJ12345abcdef'), true);
   });
 
   it('looksLikeSecretOrToken detects alphabetic strings', () => {
@@ -20,7 +20,6 @@ describe('phone utils', () => {
   });
 
   it('normalizeChilePhoneE164 throws for token-ish input', () => {
-    assert.throws(() => normalizeChilePhoneE164('EAAB-something-long'), /token\/credencial/i);
+    assert.throws(() => normalizeChilePhoneE164('EAAJ-something-long'), /token\/credencial/i);
   });
 });
-

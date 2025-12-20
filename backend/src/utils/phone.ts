@@ -1,10 +1,10 @@
 export function looksLikeSecretOrToken(value: string): boolean {
   const raw = String(value || '').trim();
   if (!raw) return false;
-  if (/^EAAB/i.test(raw)) return true;
+  if (/^EAA/i.test(raw)) return true;
   if (/[A-Za-z]/.test(raw)) return true;
   // Heuristic: long opaque strings (tokens) often include underscores/dashes.
-  if (raw.length >= 30 && /[A-Za-z0-9_-]{30,}/.test(raw)) return true;
+  if (raw.length >= 20 && /[A-Za-z0-9_-]{20,}/.test(raw)) return true;
   return false;
 }
 
@@ -25,4 +25,3 @@ export function normalizeChilePhoneE164(value: unknown): string | null {
   }
   return raw;
 }
-

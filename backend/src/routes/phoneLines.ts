@@ -38,6 +38,7 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
         wabaId: true,
         defaultProgramId: true,
         isActive: true,
+        needsAttention: true,
         lastInboundAt: true,
         lastOutboundAt: true,
         archivedAt: true,
@@ -185,7 +186,9 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     if (typeof body.alias === 'string') data.alias = body.alias.trim();
     if (typeof body.phoneE164 !== 'undefined') {
       try {
-        data.phoneE164 = normalizeChilePhoneE164(body.phoneE164 ?? '');
+        const normalized = normalizeChilePhoneE164(body.phoneE164 ?? '');
+        data.phoneE164 = normalized;
+        if (normalized) data.needsAttention = false;
       } catch (err: any) {
         return reply.code(400).send({ error: err?.message || 'phoneE164 inválido.' });
       }
@@ -202,6 +205,16 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     const nextWaPhoneNumberId = typeof data.waPhoneNumberId === 'string' ? String(data.waPhoneNumberId) : String(existing.waPhoneNumberId);
     const nextIsActive = typeof data.isActive === 'boolean' ? Boolean(data.isActive) : Boolean(existing.isActive);
     const nextArchivedAt = typeof data.archivedAt !== 'undefined' ? data.archivedAt : existing.archivedAt;
+    const enabling = !existing.isActive && nextIsActive;
+    const needsAttention = Boolean((existing as any).needsAttention) && (typeof data.needsAttention === 'undefined' ? true : Boolean(data.needsAttention));
+    if (enabling && needsAttention) {
+      return reply
+        .code(400)
+        .send({
+          error:
+            'Este número requiere revisión (needsAttention). Corrige phoneE164 antes de activarlo.',
+        });
+    }
     if (nextIsActive && !nextArchivedAt) {
       if (!sandbox) {
         try {

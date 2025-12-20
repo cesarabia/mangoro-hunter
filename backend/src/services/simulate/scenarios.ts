@@ -40,6 +40,10 @@ export type ScenarioStep = {
       /** Optional override; by default the scenario generates a unique waPhoneNumberId. */
       waPhoneNumberId?: string;
     };
+    inboundRoutingDefaultProgram?: {
+      /** Optional override; by default the scenario generates a unique waPhoneNumberId. */
+      waPhoneNumberId?: string;
+    };
   };
 };
 
@@ -214,6 +218,15 @@ export const SCENARIOS: ScenarioDefinition[] = [
       'Valida que un inbound con phone_number_id se enruta a un único workspace/PhoneLine; si hay 1 match, crea conversación en ese workspace.',
     steps: [
       { action: 'WORKSPACE_CHECK', inboundText: 'check inbound routing', expect: { inboundRoutingSingleOwner: {} } },
+    ],
+  },
+  {
+    id: 'inbound_routing_default_program',
+    name: 'Inbound routing: aplica Default Program de PhoneLine',
+    description:
+      'Valida que, si una conversación existe sin programId, al entrar un INBOUND se setea programId desde PhoneLine.defaultProgramId.',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check inbound default program', expect: { inboundRoutingDefaultProgram: {} } },
     ],
   },
   {

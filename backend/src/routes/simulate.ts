@@ -635,6 +635,161 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           .catch(() => {});
       }
 
+      const inboundDefaultProgram = (step.expect as any)?.inboundRoutingDefaultProgram;
+      if (inboundDefaultProgram && typeof inboundDefaultProgram === 'object') {
+        const waPhoneNumberId =
+          String((inboundDefaultProgram as any)?.waPhoneNumberId || '').trim() ||
+          `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+        const wsId = 'scenario-inbound-default-program';
+        const lineId = 'scenario-inbound-default-program-line';
+        const programSlug = 'scenario-default-program';
+        const now = new Date();
+
+        await prisma.workspace
+          .upsert({
+            where: { id: wsId },
+            create: { id: wsId, name: 'Scenario Inbound Default Program', isSandbox: false, archivedAt: null } as any,
+            update: { name: 'Scenario Inbound Default Program', isSandbox: false, archivedAt: null } as any,
+          })
+          .catch(() => {});
+
+        const program = await prisma.program
+          .upsert({
+            where: { workspaceId_slug: { workspaceId: wsId, slug: programSlug } } as any,
+            create: {
+              workspaceId: wsId,
+              name: 'Scenario Default Program',
+              slug: programSlug,
+              description: 'Scenario program (default)',
+              isActive: true,
+              archivedAt: null,
+              agentSystemPrompt:
+                'Eres un agente de prueba. Responde en español de forma breve. Siempre incluye un SEND_MESSAGE si corresponde.',
+            } as any,
+            update: {
+              name: 'Scenario Default Program',
+              description: 'Scenario program (default)',
+              isActive: true,
+              archivedAt: null,
+              agentSystemPrompt:
+                'Eres un agente de prueba. Responde en español de forma breve. Siempre incluye un SEND_MESSAGE si corresponde.',
+            } as any,
+            select: { id: true, slug: true },
+          })
+          .catch(() => null);
+
+        if (!program?.id) {
+          assertions.push({ ok: false, message: 'inboundRoutingDefaultProgram: no se pudo crear Program de escenario' });
+        } else {
+          await prisma.phoneLine
+            .upsert({
+              where: { id: lineId },
+              create: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Inbound Default',
+                phoneE164: null,
+                waPhoneNumberId,
+                wabaId: null,
+                defaultProgramId: program.id,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              update: {
+                workspaceId: wsId,
+                alias: 'Scenario Inbound Default',
+                phoneE164: null,
+                waPhoneNumberId,
+                wabaId: null,
+                defaultProgramId: program.id,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+            })
+            .catch(() => {});
+
+          const waFrom = '999';
+          const contact = await prisma.contact
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: waFrom } } as any,
+              create: { workspaceId: wsId, waId: waFrom, phone: `+${waFrom}`, archivedAt: null } as any,
+              update: { phone: `+${waFrom}`, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const conversation = contact?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: lineId,
+                    programId: null,
+                    contactId: contact.id,
+                    status: 'NEW',
+                    conversationStage: 'SANDBOX_SCENARIO',
+                    channel: 'whatsapp',
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+          if (!conversation?.id) {
+            assertions.push({ ok: false, message: 'inboundRoutingDefaultProgram: no se pudo crear Conversation' });
+          } else {
+            const config = await getSystemConfig();
+            const configOverride = { ...config, botAutoReply: false };
+            const res = await handleInboundWhatsAppMessage(app, {
+              waPhoneNumberId,
+              from: waFrom,
+              text: 'Hola',
+              waMessageId: `scenario-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+              timestamp: Math.floor(Date.now() / 1000),
+              profileName: null,
+              media: null,
+              rawPayload: { simulated: true, scenario: 'inbound_routing_default_program' },
+              config: configOverride as any,
+            } as any).catch(() => ({ conversationId: '' }));
+
+            const updated = res?.conversationId
+              ? await prisma.conversation
+                  .findUnique({
+                    where: { id: res.conversationId },
+                    select: { programId: true, program: { select: { slug: true } } },
+                  })
+                  .catch(() => null)
+              : null;
+            const pass = Boolean(updated?.programId) && String(updated?.programId) === String(program.id);
+            assertions.push({
+              ok: pass,
+              message: pass
+                ? `inboundRoutingDefaultProgram: programId set OK (${updated?.program?.slug || '—'})`
+                : `inboundRoutingDefaultProgram: expected programId=${program.id}, got ${String(updated?.programId || '—')}`,
+            });
+          }
+
+          // Cleanup: archive-only to keep DEV tidy.
+          await prisma.conversation
+            .updateMany({ where: { workspaceId: wsId, phoneLineId: lineId }, data: { archivedAt: now } as any })
+            .catch(() => {});
+          await prisma.contact
+            .updateMany({ where: { workspaceId: wsId, waId: waFrom }, data: { archivedAt: now } as any })
+            .catch(() => {});
+          await prisma.phoneLine
+            .updateMany({ where: { id: lineId }, data: { isActive: false, archivedAt: now } as any })
+            .catch(() => {});
+          await prisma.program
+            .updateMany({ where: { workspaceId: wsId, slug: programSlug }, data: { archivedAt: now } as any })
+            .catch(() => {});
+          await prisma.workspace
+            .updateMany({ where: { id: wsId }, data: { archivedAt: now } as any })
+            .catch(() => {});
+        }
+      }
+
       const stepOk = assertions.every((a) => a.ok);
       ok = ok && stepOk;
       stepResults.push({

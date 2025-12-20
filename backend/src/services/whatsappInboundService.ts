@@ -552,6 +552,12 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
       data: { status: "OPEN" },
     });
   }
+  if (!conversation.programId && defaultProgramId) {
+    conversation = await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { programId: defaultProgramId },
+    });
+  }
 
   const messageText = buildInboundText(params.text, params.media);
   let message;

@@ -121,6 +121,7 @@ model PhoneLine {
   defaultProgram  Program?  @relation("PhoneLineDefaultProgram", fields: [defaultProgramId], references: [id])
   defaultProgramId String?
   isActive        Boolean   @default(true)
+  needsAttention  Boolean   @default(false)
   lastInboundAt   DateTime?
   lastOutboundAt  DateTime?
   archivedAt      DateTime?
