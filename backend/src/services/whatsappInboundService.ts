@@ -32,6 +32,7 @@ import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } f
 import { createConversationAndMaybeSend } from "./conversationCreateService";
 import { archiveConversation } from "./conversationArchiveService";
 import { buildWaIdCandidates, normalizeWhatsAppId } from "../utils/whatsapp";
+import { logInboundRoutingError, resolveInboundPhoneLineRouting } from "./phoneLineRoutingService";
 import {
   attemptScheduleInterview,
   confirmActiveReservation,
@@ -74,33 +75,6 @@ interface InboundMessageParams {
 }
 
 const UPLOADS_BASE = path.join(__dirname, "..", "uploads");
-
-async function resolveInboundRouting(params: {
-  waPhoneNumberId?: string | null;
-}): Promise<{ workspaceId: string; phoneLineId: string } | null> {
-  const raw = String(params.waPhoneNumberId || "").trim();
-  // Simulation/internal calls may omit phone_number_id: fall back to default workspace/line.
-  if (!raw) return { workspaceId: "default", phoneLineId: "default" };
-
-  const matches = await prisma.phoneLine
-    .findMany({
-      where: {
-        waPhoneNumberId: raw,
-        archivedAt: null,
-        isActive: true,
-        workspace: { isSandbox: false },
-      },
-      select: { id: true, workspaceId: true },
-      take: 3,
-    })
-    .catch(() => []);
-
-  if (matches.length === 1) {
-    return { workspaceId: matches[0].workspaceId, phoneLineId: matches[0].id };
-  }
-
-  return null;
-}
 
 async function mergeOrCreateContact(params: { workspaceId: string; waId: string; preferredId?: string }) {
   const candidates = buildWaIdCandidates(params.waId);
@@ -215,17 +189,17 @@ export async function handleInboundWhatsAppMessage(
   params: InboundMessageParams,
 ): Promise<{ conversationId: string }> {
   const config = params.config ?? (await getSystemConfig());
-  const routing = await resolveInboundRouting({ waPhoneNumberId: params.waPhoneNumberId });
-  if (!routing) {
-    app.log.error(
-      {
-        waPhoneNumberId: params.waPhoneNumberId || null,
-        waMessageId: params.waMessageId || null,
-        from: params.from,
-      },
-      'Inbound WhatsApp no pudo resolverse a PhoneLine (phone_number_id desconocido).',
-    );
-    return { conversationId: '' };
+  const routing = await resolveInboundPhoneLineRouting({ waPhoneNumberId: params.waPhoneNumberId });
+  if (routing.kind !== "RESOLVED") {
+    await logInboundRoutingError({
+      app,
+      kind: routing.kind,
+      waPhoneNumberId: routing.waPhoneNumberId,
+      waMessageId: params.waMessageId ? String(params.waMessageId) : null,
+      from: params.from,
+      ...(routing.kind === "AMBIGUOUS" ? { matches: routing.matches } : {}),
+    });
+    return { conversationId: "" };
   }
   const { workspaceId, phoneLineId } = routing;
   const phoneLine = await prisma.phoneLine

@@ -29,9 +29,11 @@ export const apiClient = {
     const text = await res.text();
     if (!res.ok) {
       let errorMessage = `Error HTTP ${res.status}`;
+      let errorData: any = null;
       if (text) {
         try {
           const parsed = JSON.parse(text);
+          errorData = parsed;
           if (parsed?.error) {
             errorMessage = parsed.error;
           } else if (typeof parsed === 'string') {
@@ -43,6 +45,7 @@ export const apiClient = {
       }
       const error = new Error(errorMessage);
       (error as any).status = res.status;
+      (error as any).data = errorData;
       throw error;
     }
 

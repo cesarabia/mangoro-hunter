@@ -8,6 +8,7 @@ import { piiSanitizeText } from '../services/agent/tools';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { SCENARIOS, getScenario, ScenarioDefinition, ScenarioStep } from '../services/simulate/scenarios';
 import { runAgent } from '../services/agent/agentRuntimeService';
+import { resolveInboundPhoneLineRouting } from '../services/phoneLineRoutingService';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
   const normalizeForContains = (value: string): string =>
@@ -440,6 +441,198 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             }
           }
         }
+      }
+
+      const phoneLineDup = (step.expect as any)?.phoneLineDuplicateConflict;
+      if (phoneLineDup && typeof phoneLineDup === 'object') {
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const waPhoneNumberId =
+          String((phoneLineDup as any)?.waPhoneNumberId || '').trim() ||
+          `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+
+        const wsA = 'scenario-wa-conflict-a';
+        const wsB = 'scenario-wa-conflict-b';
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'phoneLineDuplicateConflict: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'phoneLineDuplicateConflict: auth header missing' });
+        } else {
+          // Prepare hidden workspaces + memberships (archived at the end; never delete).
+          await prisma.workspace
+            .upsert({
+              where: { id: wsA },
+              create: { id: wsA, name: 'Scenario WA Conflict A', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario WA Conflict A', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.workspace
+            .upsert({
+              where: { id: wsB },
+              create: { id: wsB, name: 'Scenario WA Conflict B', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario WA Conflict B', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsA } },
+              create: { userId, workspaceId: wsA, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsB } },
+              create: { userId, workspaceId: wsB, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const createInA = await app.inject({
+            method: 'POST',
+            url: '/api/phone-lines',
+            headers: {
+              authorization: authHeader,
+              'x-workspace-id': wsA,
+              'content-type': 'application/json',
+            },
+            payload: JSON.stringify({
+              alias: 'Scenario A',
+              phoneE164: null,
+              waPhoneNumberId,
+              wabaId: null,
+              defaultProgramId: null,
+              isActive: true,
+            }),
+          });
+
+          assertions.push({
+            ok: createInA.statusCode === 200,
+            message:
+              createInA.statusCode === 200
+                ? `phoneLineDuplicateConflict: created in ${wsA}`
+                : `phoneLineDuplicateConflict: create in ${wsA} failed (${createInA.statusCode})`,
+          });
+
+          const createInB = await app.inject({
+            method: 'POST',
+            url: '/api/phone-lines',
+            headers: {
+              authorization: authHeader,
+              'x-workspace-id': wsB,
+              'content-type': 'application/json',
+            },
+            payload: JSON.stringify({
+              alias: 'Scenario B',
+              phoneE164: null,
+              waPhoneNumberId,
+              wabaId: null,
+              defaultProgramId: null,
+              isActive: true,
+            }),
+          });
+
+          let body: any = null;
+          try {
+            body = JSON.parse(String(createInB.body || ''));
+          } catch {
+            body = null;
+          }
+
+          const is409 = createInB.statusCode === 409;
+          const hasPayload = Boolean(body?.conflictWorkspaceId) && Boolean(body?.conflictPhoneLineId);
+          const pointsToA = String(body?.conflictWorkspaceId || '') === wsA;
+
+          assertions.push({
+            ok: is409 && hasPayload,
+            message: is409 && hasPayload ? 'phoneLineDuplicateConflict: got 409 + conflict payload' : `phoneLineDuplicateConflict: expected 409 + payload, got ${createInB.statusCode}`,
+          });
+          assertions.push({
+            ok: !hasPayload || pointsToA,
+            message: pointsToA ? `phoneLineDuplicateConflict: conflict points to ${wsA}` : `phoneLineDuplicateConflict: conflictWorkspaceId mismatch (${String(body?.conflictWorkspaceId || '—')})`,
+          });
+
+          // Cleanup: archive-only.
+          await prisma.phoneLine
+            .updateMany({
+              where: { workspaceId: { in: [wsA, wsB] }, waPhoneNumberId },
+              data: { isActive: false, archivedAt: now } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .updateMany({ where: { userId, workspaceId: { in: [wsA, wsB] } }, data: { archivedAt: now } as any })
+            .catch(() => {});
+          await prisma.workspace
+            .updateMany({ where: { id: { in: [wsA, wsB] } }, data: { archivedAt: now } as any })
+            .catch(() => {});
+        }
+      }
+
+      const inboundRouting = (step.expect as any)?.inboundRoutingSingleOwner;
+      if (inboundRouting && typeof inboundRouting === 'object') {
+        const waPhoneNumberId =
+          String((inboundRouting as any)?.waPhoneNumberId || '').trim() ||
+          `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+        const wsId = 'scenario-inbound-routing';
+        const lineId = 'scenario-inbound-routing-line';
+        const now = new Date();
+
+        await prisma.workspace
+          .upsert({
+            where: { id: wsId },
+            create: { id: wsId, name: 'Scenario Inbound Routing', isSandbox: false, archivedAt: null } as any,
+            update: { name: 'Scenario Inbound Routing', isSandbox: false, archivedAt: null } as any,
+          })
+          .catch(() => {});
+
+        await prisma.phoneLine
+          .upsert({
+            where: { id: lineId },
+            create: {
+              id: lineId,
+              workspaceId: wsId,
+              alias: 'Scenario Inbound',
+              phoneE164: null,
+              waPhoneNumberId,
+              wabaId: null,
+              defaultProgramId: null,
+              isActive: true,
+              archivedAt: null,
+            } as any,
+            update: {
+              workspaceId: wsId,
+              alias: 'Scenario Inbound',
+              phoneE164: null,
+              waPhoneNumberId,
+              wabaId: null,
+              defaultProgramId: null,
+              isActive: true,
+              archivedAt: null,
+            } as any,
+          })
+          .catch(() => {});
+
+        const routingRes = await resolveInboundPhoneLineRouting({ waPhoneNumberId });
+        const pass =
+          routingRes.kind === 'RESOLVED' &&
+          routingRes.workspaceId === wsId &&
+          routingRes.phoneLineId === lineId;
+        assertions.push({
+          ok: pass,
+          message: pass
+            ? `inboundRoutingSingleOwner: RESOLVED to ${wsId}/${lineId}`
+            : `inboundRoutingSingleOwner: expected RESOLVED to ${wsId}/${lineId}, got ${String(routingRes.kind)}`,
+        });
+
+        // Cleanup: archive-only to keep DEV tidy.
+        await prisma.phoneLine
+          .updateMany({ where: { id: lineId }, data: { isActive: false, archivedAt: now } as any })
+          .catch(() => {});
+        await prisma.workspace
+          .updateMany({ where: { id: wsId }, data: { archivedAt: now } as any })
+          .catch(() => {});
       }
 
       const stepOk = assertions.every((a) => a.ok);

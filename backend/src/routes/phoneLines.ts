@@ -1,9 +1,25 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../db/client';
-import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceAuthService';
+import { resolveWorkspaceAccess, isWorkspaceAdmin, isWorkspaceOwner } from '../services/workspaceAuthService';
 import { normalizeChilePhoneE164 } from '../utils/phone';
+import { serializeJson } from '../utils/json';
 
 export async function registerPhoneLineRoutes(app: FastifyInstance) {
+  const isSandboxWorkspace = async (workspaceId: string): Promise<boolean> => {
+    const ws = await prisma.workspace
+      .findUnique({ where: { id: workspaceId }, select: { isSandbox: true } })
+      .catch(() => null);
+    return Boolean(ws?.isSandbox);
+  };
+
+  const assertNumericId = (value: string, label: string) => {
+    const raw = String(value || '').trim();
+    if (!raw) return;
+    if (!/^\d+$/.test(raw)) {
+      throw new Error(`${label} inválido. Debe ser numérico.`);
+    }
+  };
+
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const includeArchivedRaw = (request.query as any)?.includeArchived;
@@ -39,11 +55,15 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     }));
   });
 
-  const assertWaPhoneNumberIdNotActiveElsewhere = async (params: {
+  const findActiveWaPhoneNumberIdConflict = async (params: {
     workspaceId: string;
     phoneLineId?: string;
     waPhoneNumberId: string;
-  }) => {
+  }): Promise<{
+    conflictWorkspaceId: string;
+    conflictWorkspaceName: string | null;
+    conflictPhoneLineId: string;
+  } | null> => {
     const found = await prisma.phoneLine.findFirst({
       where: {
         workspaceId: { not: params.workspaceId },
@@ -52,13 +72,16 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
         archivedAt: null,
         ...(params.phoneLineId ? { id: { not: params.phoneLineId } } : {}),
       },
-      select: { id: true, workspaceId: true, alias: true },
+      select: { id: true, workspaceId: true, alias: true, workspace: { select: { name: true } } },
     });
     if (found?.id) {
-      throw new Error(
-        `waPhoneNumberId ya está activo en otro workspace (${found.workspaceId} / ${found.alias}). Desactívalo allí antes de activarlo aquí.`
-      );
+      return {
+        conflictWorkspaceId: found.workspaceId,
+        conflictWorkspaceName: found.workspace?.name || null,
+        conflictPhoneLineId: found.id,
+      };
     }
+    return null;
   };
 
   app.post('/', { preValidation: [app.authenticate] }, async (request, reply) => {
@@ -82,6 +105,16 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     if (!alias) return reply.code(400).send({ error: '"alias" es requerido.' });
     if (!waPhoneNumberId) return reply.code(400).send({ error: '"waPhoneNumberId" es requerido.' });
 
+    const sandbox = await isSandboxWorkspace(access.workspaceId);
+    if (!sandbox) {
+      try {
+        assertNumericId(waPhoneNumberId, 'waPhoneNumberId');
+        if (body.wabaId) assertNumericId(String(body.wabaId), 'wabaId');
+      } catch (err: any) {
+        return reply.code(400).send({ error: err?.message || 'IDs inválidos.' });
+      }
+    }
+
     let phoneE164: string | null = null;
     try {
       phoneE164 = normalizeChilePhoneE164(phoneE164Raw);
@@ -91,13 +124,16 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
 
     const isActive = typeof body.isActive === 'boolean' ? body.isActive : true;
     if (isActive) {
-      try {
-        await assertWaPhoneNumberIdNotActiveElsewhere({
-          workspaceId: access.workspaceId,
-          waPhoneNumberId,
+      const conflict = await findActiveWaPhoneNumberIdConflict({
+        workspaceId: access.workspaceId,
+        waPhoneNumberId,
+      });
+      if (conflict) {
+        const name = conflict.conflictWorkspaceName || conflict.conflictWorkspaceId;
+        return reply.code(409).send({
+          error: `waPhoneNumberId ya está activo en otro workspace (${name}).`,
+          ...conflict,
         });
-      } catch (err: any) {
-        return reply.code(409).send({ error: err?.message || 'waPhoneNumberId en uso en otro workspace.' });
       }
     }
 
@@ -143,6 +179,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     });
     if (!existing) return reply.code(404).send({ error: 'No encontrado' });
 
+    const sandbox = await isSandboxWorkspace(access.workspaceId);
+
     const data: Record<string, any> = {};
     if (typeof body.alias === 'string') data.alias = body.alias.trim();
     if (typeof body.phoneE164 !== 'undefined') {
@@ -165,14 +203,26 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     const nextIsActive = typeof data.isActive === 'boolean' ? Boolean(data.isActive) : Boolean(existing.isActive);
     const nextArchivedAt = typeof data.archivedAt !== 'undefined' ? data.archivedAt : existing.archivedAt;
     if (nextIsActive && !nextArchivedAt) {
-      try {
-        await assertWaPhoneNumberIdNotActiveElsewhere({
-          workspaceId: access.workspaceId,
-          phoneLineId: existing.id,
-          waPhoneNumberId: nextWaPhoneNumberId,
+      if (!sandbox) {
+        try {
+          assertNumericId(nextWaPhoneNumberId, 'waPhoneNumberId');
+          if (typeof data.wabaId === 'string' && data.wabaId) assertNumericId(String(data.wabaId), 'wabaId');
+        } catch (err: any) {
+          return reply.code(400).send({ error: err?.message || 'IDs inválidos.' });
+        }
+      }
+
+      const conflict = await findActiveWaPhoneNumberIdConflict({
+        workspaceId: access.workspaceId,
+        phoneLineId: existing.id,
+        waPhoneNumberId: nextWaPhoneNumberId,
+      });
+      if (conflict) {
+        const name = conflict.conflictWorkspaceName || conflict.conflictWorkspaceId;
+        return reply.code(409).send({
+          error: `waPhoneNumberId ya está activo en otro workspace (${name}).`,
+          ...conflict,
         });
-      } catch (err: any) {
-        return reply.code(409).send({ error: err?.message || 'waPhoneNumberId en uso en otro workspace.' });
       }
     }
 
@@ -188,5 +238,175 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
       createdAt: updated.createdAt.toISOString(),
       updatedAt: updated.updatedAt.toISOString(),
     };
+  });
+
+  // Move a waPhoneNumberId from another workspace to the current one (archive-only).
+  app.post('/move', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceOwner(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+    if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+    const body = request.body as {
+      conflictWorkspaceId?: string;
+      conflictPhoneLineId?: string;
+      alias?: string;
+      phoneE164?: string | null;
+      waPhoneNumberId?: string;
+      wabaId?: string | null;
+      defaultProgramId?: string | null;
+      isActive?: boolean;
+    };
+
+    const conflictWorkspaceId = String(body?.conflictWorkspaceId || '').trim();
+    const conflictPhoneLineId = String(body?.conflictPhoneLineId || '').trim();
+    const alias = String(body?.alias || '').trim();
+    const waPhoneNumberId = String(body?.waPhoneNumberId || '').trim();
+    const sandbox = await isSandboxWorkspace(access.workspaceId);
+    if (!conflictWorkspaceId || !conflictPhoneLineId) {
+      return reply.code(400).send({ error: 'conflictWorkspaceId y conflictPhoneLineId son requeridos.' });
+    }
+    if (conflictWorkspaceId === access.workspaceId) {
+      return reply.code(400).send({ error: 'El conflicto debe venir de otro workspace.' });
+    }
+    if (!alias) return reply.code(400).send({ error: '"alias" es requerido.' });
+    if (!waPhoneNumberId) return reply.code(400).send({ error: '"waPhoneNumberId" es requerido.' });
+
+    if (!sandbox) {
+      try {
+        assertNumericId(waPhoneNumberId, 'waPhoneNumberId');
+        if (body?.wabaId) assertNumericId(String(body.wabaId), 'wabaId');
+      } catch (err: any) {
+        return reply.code(400).send({ error: err?.message || 'IDs inválidos.' });
+      }
+    }
+
+    let phoneE164: string | null = null;
+    try {
+      phoneE164 = normalizeChilePhoneE164(typeof body.phoneE164 === 'string' ? body.phoneE164 : '');
+    } catch (err: any) {
+      return reply.code(400).send({ error: err?.message || 'phoneE164 inválido.' });
+    }
+
+    // Permission on source workspace (global ADMIN OR membership OWNER).
+    if (String(request.user?.role || '').toUpperCase() !== 'ADMIN') {
+      const srcMembership = await prisma.membership.findFirst({
+        where: { userId, workspaceId: conflictWorkspaceId, archivedAt: null },
+        select: { role: true },
+      });
+      const ok = srcMembership && String(srcMembership.role || '').toUpperCase() === 'OWNER';
+      if (!ok) return reply.code(403).send({ error: 'Forbidden (sin permisos para mover desde el workspace origen)' });
+    }
+
+    const now = new Date();
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const conflict = await tx.phoneLine.findFirst({
+          where: {
+            id: conflictPhoneLineId,
+            workspaceId: conflictWorkspaceId,
+            waPhoneNumberId,
+            isActive: true,
+            archivedAt: null,
+          },
+          select: { id: true, workspaceId: true, alias: true, waPhoneNumberId: true },
+        });
+        if (!conflict) {
+          throw new Error('No se encontró una PhoneLine activa en el workspace origen con ese waPhoneNumberId.');
+        }
+
+        // Archive origin line.
+        await tx.phoneLine.update({
+          where: { id: conflict.id },
+          data: { archivedAt: now, isActive: false },
+        });
+
+        // Ensure no other active conflicts remain.
+        const still = await tx.phoneLine.findFirst({
+          where: {
+            waPhoneNumberId,
+            isActive: true,
+            archivedAt: null,
+            workspaceId: { not: access.workspaceId },
+          },
+          select: { id: true, workspaceId: true },
+        });
+        if (still?.id) {
+          throw new Error('waPhoneNumberId sigue activo en otro workspace. Revisa duplicados antes de mover.');
+        }
+
+        // Upsert into target workspace (unique by workspaceId+waPhoneNumberId).
+        const existing = await tx.phoneLine.findFirst({
+          where: { workspaceId: access.workspaceId, waPhoneNumberId },
+          select: { id: true },
+        });
+        const isActive = typeof body.isActive === 'boolean' ? body.isActive : true;
+        const updated = existing?.id
+          ? await tx.phoneLine.update({
+              where: { id: existing.id },
+              data: {
+                alias,
+                phoneE164,
+                waPhoneNumberId,
+                wabaId: body.wabaId ? String(body.wabaId).trim() : null,
+                defaultProgramId: body.defaultProgramId ? String(body.defaultProgramId).trim() : null,
+                isActive,
+                archivedAt: null,
+              },
+            })
+          : await tx.phoneLine.create({
+              data: {
+                workspaceId: access.workspaceId,
+                alias,
+                phoneE164,
+                waPhoneNumberId,
+                wabaId: body.wabaId ? String(body.wabaId).trim() : null,
+                defaultProgramId: body.defaultProgramId ? String(body.defaultProgramId).trim() : null,
+                isActive,
+              },
+            });
+
+        await tx.configChangeLog
+          .create({
+            data: {
+              workspaceId: access.workspaceId,
+              userId,
+              type: 'PHONE_LINE_MOVED_IN',
+              beforeJson: serializeJson({ waPhoneNumberId, fromWorkspaceId: conflictWorkspaceId, fromPhoneLineId: conflictPhoneLineId }),
+              afterJson: serializeJson({ waPhoneNumberId, toWorkspaceId: access.workspaceId, toPhoneLineId: updated.id }),
+            },
+          })
+          .catch(() => {});
+        await tx.configChangeLog
+          .create({
+            data: {
+              workspaceId: conflictWorkspaceId,
+              userId,
+              type: 'PHONE_LINE_MOVED_OUT',
+              beforeJson: serializeJson({ waPhoneNumberId, fromWorkspaceId: conflictWorkspaceId, fromPhoneLineId: conflictPhoneLineId }),
+              afterJson: serializeJson({ waPhoneNumberId, toWorkspaceId: access.workspaceId, toPhoneLineId: updated.id }),
+            },
+          })
+          .catch(() => {});
+
+        return updated;
+      });
+
+      return {
+        ok: true,
+        phoneLine: {
+          ...result,
+          lastInboundAt: result.lastInboundAt ? result.lastInboundAt.toISOString() : null,
+          lastOutboundAt: result.lastOutboundAt ? result.lastOutboundAt.toISOString() : null,
+          archivedAt: result.archivedAt ? result.archivedAt.toISOString() : null,
+          createdAt: result.createdAt.toISOString(),
+          updatedAt: result.updatedAt.toISOString(),
+        },
+      };
+    } catch (err: any) {
+      return reply.code(400).send({ error: err?.message || 'No se pudo mover la PhoneLine.' });
+    }
   });
 }

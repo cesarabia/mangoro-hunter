@@ -32,6 +32,14 @@ export type ScenarioStep = {
         memberEmail: string;
       };
     };
+    phoneLineDuplicateConflict?: {
+      /** Optional override; by default the scenario generates a unique waPhoneNumberId. */
+      waPhoneNumberId?: string;
+    };
+    inboundRoutingSingleOwner?: {
+      /** Optional override; by default the scenario generates a unique waPhoneNumberId. */
+      waPhoneNumberId?: string;
+    };
   };
 };
 
@@ -188,6 +196,24 @@ export const SCENARIOS: ScenarioDefinition[] = [
         expect: { agentRun: { eventType: 'AI_SUGGEST', programSlug: 'sales' } },
       },
       { inboundText: 'Hola', expect: { agentRun: { eventType: 'INBOUND_MESSAGE', programSlug: 'sales' } } },
+    ],
+  },
+  {
+    id: 'wa_number_duplicate_conflict',
+    name: 'PhoneLines: conflicto waPhoneNumberId (cross-workspace)',
+    description:
+      'Valida que un waPhoneNumberId activo no pueda existir en 2 workspaces: el segundo intento debe fallar con 409 + payload de conflicto.',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check waPhoneNumberId conflict', expect: { phoneLineDuplicateConflict: {} } },
+    ],
+  },
+  {
+    id: 'inbound_routing_single_owner',
+    name: 'Inbound routing: single owner (phoneLine resuelto)',
+    description:
+      'Valida que un inbound con phone_number_id se enruta a un único workspace/PhoneLine; si hay 1 match, crea conversación en ese workspace.',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check inbound routing', expect: { inboundRoutingSingleOwner: {} } },
     ],
   },
   {

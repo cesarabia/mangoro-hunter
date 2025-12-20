@@ -197,6 +197,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [phoneLineEditor, setPhoneLineEditor] = useState<any | null>(null);
   const [phoneLineSaveStatus, setPhoneLineSaveStatus] = useState<string | null>(null);
   const [phoneLineSaveError, setPhoneLineSaveError] = useState<string | null>(null);
+  const [phoneLineConflict, setPhoneLineConflict] = useState<{
+    conflictWorkspaceId: string;
+    conflictWorkspaceName: string | null;
+    conflictPhoneLineId: string;
+  } | null>(null);
+  const [movingPhoneLine, setMovingPhoneLine] = useState(false);
+  const [phoneLineMoveStatus, setPhoneLineMoveStatus] = useState<string | null>(null);
+  const [phoneLineMoveError, setPhoneLineMoveError] = useState<string | null>(null);
 
   const [programs, setPrograms] = useState<any[]>([]);
   const [programEditor, setProgramEditor] = useState<any | null>(null);
@@ -1027,7 +1035,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     if (!phoneLineEditor) return;
     setPhoneLineSaveStatus(null);
     setPhoneLineSaveError(null);
+    setPhoneLineConflict(null);
+    setPhoneLineMoveStatus(null);
+    setPhoneLineMoveError(null);
     try {
+      const isSandboxWs = Boolean(currentWorkspace?.isSandbox);
       const normalizedPhone = normalizeChilePhoneE164(phoneLineEditor.phoneE164 || '');
       const payload = {
         alias: String(phoneLineEditor.alias || '').trim(),
@@ -1039,6 +1051,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       };
       if (!payload.alias) throw new Error('alias es requerido');
       if (!payload.waPhoneNumberId) throw new Error('waPhoneNumberId es requerido');
+      if (!isSandboxWs && !/^\d+$/.test(payload.waPhoneNumberId)) {
+        throw new Error('waPhoneNumberId inválido. Debe ser numérico (phone_number_id de WhatsApp).');
+      }
+      if (!isSandboxWs && payload.wabaId && !/^\d+$/.test(payload.wabaId)) {
+        throw new Error('wabaId inválido. Debe ser numérico.');
+      }
 
       if (phoneLineEditor.id) {
         await apiClient.patch(`/api/phone-lines/${phoneLineEditor.id}`, payload);
@@ -1050,6 +1068,21 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       await loadPhoneLines();
     } catch (err: any) {
       setPhoneLineSaveError(err.message || 'No se pudo guardar');
+      const status = err?.status;
+      const data = err?.data;
+      if (
+        status === 409 &&
+        data &&
+        typeof data === 'object' &&
+        data.conflictWorkspaceId &&
+        data.conflictPhoneLineId
+      ) {
+        setPhoneLineConflict({
+          conflictWorkspaceId: String(data.conflictWorkspaceId),
+          conflictWorkspaceName: data.conflictWorkspaceName ? String(data.conflictWorkspaceName) : null,
+          conflictPhoneLineId: String(data.conflictPhoneLineId),
+        });
+      }
     }
   };
 
@@ -1073,6 +1106,43 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     );
     if (!ok) return;
     await patchPhoneLine(phoneLineId, { archived });
+  };
+
+  const movePhoneLineFromConflict = async () => {
+    if (!phoneLineEditor || !phoneLineConflict) return;
+    setMovingPhoneLine(true);
+    setPhoneLineMoveStatus(null);
+    setPhoneLineMoveError(null);
+    try {
+      const name = phoneLineConflict.conflictWorkspaceName || phoneLineConflict.conflictWorkspaceId;
+      const ok = window.confirm(
+        `¿Mover este waPhoneNumberId a ESTE workspace?\n\nAcción:\n- Archivará el número en el workspace: ${name}\n- Lo activará aquí\n\nEsto NO borra data (archive-only).`
+      );
+      if (!ok) return;
+
+      const res: any = await apiClient.post('/api/phone-lines/move', {
+        conflictWorkspaceId: phoneLineConflict.conflictWorkspaceId,
+        conflictPhoneLineId: phoneLineConflict.conflictPhoneLineId,
+        alias: String(phoneLineEditor.alias || '').trim(),
+        phoneE164: phoneLineEditor.phoneE164 || null,
+        waPhoneNumberId: String(phoneLineEditor.waPhoneNumberId || '').trim(),
+        wabaId: phoneLineEditor.wabaId ? String(phoneLineEditor.wabaId).trim() : null,
+        defaultProgramId: phoneLineEditor.defaultProgramId ? String(phoneLineEditor.defaultProgramId).trim() : null,
+        isActive: Boolean(phoneLineEditor.isActive),
+      });
+
+      setPhoneLineMoveStatus('✅ Movido. El número quedó activo en este workspace.');
+      setPhoneLineEditor(null);
+      setPhoneLineConflict(null);
+      await loadPhoneLines();
+      if (res?.phoneLine?.id) {
+        setPhoneLinesStatus('Número movido.');
+      }
+    } catch (err: any) {
+      setPhoneLineMoveError(err.message || 'No se pudo mover');
+    } finally {
+      setMovingPhoneLine(false);
+    }
   };
 
   const saveProgram = async () => {
@@ -2354,9 +2424,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 Refresh
               </button>
               <button
-                onClick={() =>
-                  setPhoneLineEditor({ alias: '', phoneE164: '', waPhoneNumberId: '', wabaId: '', defaultProgramId: '', isActive: true })
-                }
+                onClick={() => {
+                  setPhoneLineConflict(null);
+                  setPhoneLineSaveError(null);
+                  setPhoneLineSaveStatus(null);
+                  setPhoneLineMoveError(null);
+                  setPhoneLineMoveStatus(null);
+                  setPhoneLineEditor({ alias: '', phoneE164: '', waPhoneNumberId: '', wabaId: '', defaultProgramId: '', isActive: true });
+                }}
                 style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
               >
                 + Agregar número
@@ -2438,7 +2513,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     <td style={{ padding: 10, fontSize: 13 }}>{l.lastOutboundAt || '—'}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>
                       <button
-                        onClick={() => setPhoneLineEditor({ ...l })}
+                        onClick={() => {
+                          setPhoneLineConflict(null);
+                          setPhoneLineSaveError(null);
+                          setPhoneLineSaveStatus(null);
+                          setPhoneLineMoveError(null);
+                          setPhoneLineMoveStatus(null);
+                          setPhoneLineEditor({ ...l });
+                        }}
                         style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc', background: '#fff' }}
                       >
                         Editar
@@ -2474,8 +2556,21 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   placeholder="phoneE164 (E.164 Chile, ej: +56994830202)"
                   style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
                 />
-                <input value={phoneLineEditor.waPhoneNumberId} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, waPhoneNumberId: e.target.value })} placeholder="waPhoneNumberId (required)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
-                <input value={phoneLineEditor.wabaId || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, wabaId: e.target.value })} placeholder="wabaId" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                <input
+                  value={phoneLineEditor.waPhoneNumberId}
+                  onChange={(e) => {
+                    setPhoneLineConflict(null);
+                    setPhoneLineEditor({ ...phoneLineEditor, waPhoneNumberId: e.target.value });
+                  }}
+                  placeholder="waPhoneNumberId (required, numérico)"
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                />
+                <input
+                  value={phoneLineEditor.wabaId || ''}
+                  onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, wabaId: e.target.value })}
+                  placeholder="wabaId (numérico, opcional)"
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                />
                 <select value={phoneLineEditor.defaultProgramId || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, defaultProgramId: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
                   <option value="">Default Program</option>
                   {programs.map((p) => (
@@ -2503,6 +2598,28 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               </div>
               {phoneLineSaveStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{phoneLineSaveStatus}</div> : null}
               {phoneLineSaveError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{phoneLineSaveError}</div> : null}
+              {phoneLineConflict ? (
+                <div style={{ marginTop: 10, border: '1px solid #f3c4a6', background: '#fff7f1', borderRadius: 10, padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: '#7a3b00', marginBottom: 6 }}>Conflicto: waPhoneNumberId duplicado</div>
+                  <div style={{ fontSize: 12, color: '#7a3b00' }}>
+                    Este <span style={{ fontFamily: 'monospace' }}>waPhoneNumberId</span> ya está activo en el workspace:{' '}
+                    <strong>{phoneLineConflict.conflictWorkspaceName || phoneLineConflict.conflictWorkspaceId}</strong>.
+                    Para evitar mezclar tenants, WhatsApp inbound queda bloqueado por ambigüedad.
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      onClick={() => movePhoneLineFromConflict().catch(() => {})}
+                      disabled={movingPhoneLine}
+                      style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #7a3b00', background: '#fff', fontSize: 12, fontWeight: 900 }}
+                    >
+                      {movingPhoneLine ? 'Moviendo…' : 'Mover a este workspace'}
+                    </button>
+                    <div style={{ fontSize: 12, color: '#7a3b00' }}>Acción segura: archiva el número en el workspace anterior (no delete).</div>
+                  </div>
+                  {phoneLineMoveStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{phoneLineMoveStatus}</div> : null}
+                  {phoneLineMoveError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{phoneLineMoveError}</div> : null}
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
