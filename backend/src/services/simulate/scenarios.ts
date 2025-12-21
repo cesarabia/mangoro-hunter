@@ -90,8 +90,8 @@ export const SCENARIOS: ScenarioDefinition[] = [
       {
         inboundText: '✅ PUENTE ALTO / REGION METROPOLITANA / RUT 12.345.678-9',
         expect: {
+          contactFields: ['comuna', 'ciudad', 'region'],
           outbound: {
-            lastTextContains: ['puente alto'],
             lastTextNotContains: ['comuna/ciudad', 'comuna y ciudad'],
           },
         },
