@@ -88,7 +88,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
     programSlug: 'recruitment',
     steps: [
       {
-        inboundText: '✅ PUENTE ALTO / REGION METROPOLITANA / RUT 12.345.678-9',
+        inboundText: '✅ Santiago/Ñuñoa / Región Metropolitana / RUT 12.345.678-9',
         expect: {
           contactFields: ['comuna', 'ciudad', 'region'],
           outbound: {
