@@ -205,10 +205,12 @@ export async function handleInboundWhatsAppMessage(
   const phoneLine = await prisma.phoneLine
     .findFirst({
       where: { id: phoneLineId, workspaceId, archivedAt: null },
-      select: { defaultProgramId: true },
+      select: { defaultProgramId: true, inboundMode: true as any },
     })
     .catch(() => null);
-  const defaultProgramId = phoneLine?.defaultProgramId || null;
+  const inboundMode = String((phoneLine as any)?.inboundMode || 'DEFAULT').toUpperCase();
+  const useDefaultProgram = inboundMode !== 'MENU';
+  const defaultProgramId = useDefaultProgram ? phoneLine?.defaultProgramId || null : null;
   const waId = normalizeWhatsAppId(params.from) || params.from;
   const normalizedSender = normalizeWhatsAppId(waId);
   const adminAllowlist = getAdminWaIdAllowlist(config);

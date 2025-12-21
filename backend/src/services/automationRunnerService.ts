@@ -3,7 +3,7 @@ import { prisma } from '../db/client';
 import { serializeJson } from '../utils/json';
 import { executeAgentResponse, ExecutorTransportMode } from './agent/commandExecutorService';
 import { runAgent } from './agent/agentRuntimeService';
-import { stableHash, stripAccents } from './agent/tools';
+import { resolveLocation, stableHash, stripAccents, validateRut } from './agent/tools';
 
 type ProgramSummary = { id: string; name: string; slug: string };
 
@@ -38,6 +38,28 @@ function resolveProgramChoice(inboundText: string, programs: ProgramSummary[]): 
   return null;
 }
 
+function normalizeInboundMode(value: unknown): 'DEFAULT' | 'MENU' {
+  const upper = String(value || '').trim().toUpperCase();
+  return upper === 'MENU' ? 'MENU' : 'DEFAULT';
+}
+
+function parseProgramMenuIdsJson(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: string[] = [];
+    for (const item of parsed) {
+      const id = String(item || '').trim();
+      if (!id) continue;
+      if (!out.includes(id)) out.push(id);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 async function maybeHandleProgramSelection(params: {
   app: FastifyInstance;
   workspaceId: string;
@@ -51,10 +73,28 @@ async function maybeHandleProgramSelection(params: {
   if (params.conversation.programId) return { handled: false };
 
   const programsAll = await listActivePrograms(params.workspaceId);
-  const programs = params.conversation.isAdmin
+  let programs = params.conversation.isAdmin
     ? programsAll
     : programsAll.filter((p) => normalizeLoose(p.slug) !== 'admin');
   if (programs.length === 0) return { handled: false };
+
+  // PhoneLine can scope which Programs are selectable (inbound menu).
+  if (!params.conversation.isAdmin && params.conversation.phoneLineId) {
+    const line = await prisma.phoneLine
+      .findFirst({
+        where: { id: params.conversation.phoneLineId, workspaceId: params.workspaceId, archivedAt: null },
+        select: { inboundMode: true as any, programMenuIdsJson: true as any },
+      })
+      .catch(() => null);
+    const inboundMode = normalizeInboundMode((line as any)?.inboundMode);
+    if (inboundMode === 'MENU') {
+      const allowedIds = parseProgramMenuIdsJson((line as any)?.programMenuIdsJson);
+      if (allowedIds.length > 0) {
+        const filtered = programs.filter((p) => allowedIds.includes(p.id));
+        if (filtered.length > 0) programs = filtered;
+      }
+    }
+  }
 
   // Admin conversations should never show a program menu; default to the "admin" program when present.
   if (params.conversation.isAdmin) {
@@ -346,6 +386,34 @@ export async function runAutomations(params: {
   });
   if (!conversation) return;
   if (conversation.workspaceId !== params.workspaceId) return;
+
+  // Data quality pre-pass (determinista): si el inbound trae comuna/ciudad o RUT válido, persistirlo antes del agente
+  // para evitar loops (“me falta comuna/ciudad”) cuando ya lo enviaron.
+  if (params.eventType === 'INBOUND_MESSAGE' && conversation.contact && typeof params.inboundText === 'string') {
+    const inboundText = params.inboundText.trim();
+    if (inboundText) {
+      const contactUpdates: Record<string, any> = {};
+
+      const loc = resolveLocation(inboundText, 'CL');
+      if (loc.confidence >= 0.7) {
+        if (!conversation.contact.comuna && loc.comuna) contactUpdates.comuna = loc.comuna;
+        if (!conversation.contact.ciudad && loc.ciudad) contactUpdates.ciudad = loc.ciudad;
+        if (!conversation.contact.region && loc.region) contactUpdates.region = loc.region;
+      }
+
+      if (!conversation.contact.rut) {
+        const rut = validateRut(inboundText);
+        if (rut.valid && rut.normalized) contactUpdates.rut = rut.normalized;
+      }
+
+      if (Object.keys(contactUpdates).length > 0) {
+        await prisma.contact
+          .update({ where: { id: conversation.contactId }, data: contactUpdates })
+          .catch(() => null);
+        Object.assign(conversation.contact as any, contactUpdates);
+      }
+    }
+  }
 
   const lastInbound = await prisma.message.findFirst({
     where: { conversationId: conversation.id, direction: 'INBOUND' },

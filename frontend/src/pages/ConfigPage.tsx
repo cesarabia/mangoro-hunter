@@ -127,6 +127,16 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [ssclinicalNurseLeaderStatus, setSsclinicalNurseLeaderStatus] = useState<string | null>(null);
   const [ssclinicalNurseLeaderError, setSsclinicalNurseLeaderError] = useState<string | null>(null);
 
+  const [workspaceStages, setWorkspaceStages] = useState<any[]>([]);
+  const [workspaceStagesLoading, setWorkspaceStagesLoading] = useState(false);
+  const [workspaceStagesError, setWorkspaceStagesError] = useState<string | null>(null);
+  const [workspaceStagesIncludeArchived, setWorkspaceStagesIncludeArchived] = useState<boolean>(false);
+  const [newStageSlug, setNewStageSlug] = useState<string>('');
+  const [newStageLabelEs, setNewStageLabelEs] = useState<string>('');
+  const [newStageSaving, setNewStageSaving] = useState(false);
+  const [newStageStatus, setNewStageStatus] = useState<string | null>(null);
+  const [newStageError, setNewStageError] = useState<string | null>(null);
+
   const [cloneSourceWorkspaceId, setCloneSourceWorkspaceId] = useState<string>('');
   const [clonePrograms, setClonePrograms] = useState<boolean>(true);
   const [cloneAutomations, setCloneAutomations] = useState<boolean>(true);
@@ -292,6 +302,23 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setWorkspaceDetailsError(err.message || 'No se pudo cargar configuración del workspace');
     }
   };
+  const loadWorkspaceStages = async (opts?: { includeArchived?: boolean }) => {
+    setWorkspaceStagesError(null);
+    setWorkspaceStagesLoading(true);
+    try {
+      const includeArchived =
+        typeof opts?.includeArchived === 'boolean' ? opts.includeArchived : workspaceStagesIncludeArchived;
+      const data: any = await apiClient.get(
+        includeArchived ? '/api/workspaces/current/stages?includeArchived=true' : '/api/workspaces/current/stages',
+      );
+      setWorkspaceStages(Array.isArray(data?.stages) ? data.stages : []);
+    } catch (err: any) {
+      setWorkspaceStages([]);
+      setWorkspaceStagesError(err.message || 'No se pudieron cargar los estados');
+    } finally {
+      setWorkspaceStagesLoading(false);
+    }
+  };
   const saveSsclinicalNurseLeaderEmail = async () => {
     if (ssclinicalNurseLeaderSaving) return;
     setSsclinicalNurseLeaderSaving(true);
@@ -310,6 +337,68 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setSsclinicalNurseLeaderError(err.message || 'No se pudo guardar');
     } finally {
       setSsclinicalNurseLeaderSaving(false);
+    }
+  };
+
+  const normalizeStageSlug = (value: string) => {
+    return value
+      .trim()
+      .replace(/\s+/g, '_')
+      .replace(/-+/g, '_')
+      .replace(/__+/g, '_')
+      .toUpperCase()
+      .slice(0, 64);
+  };
+
+  const createWorkspaceStage = async () => {
+    if (newStageSaving) return;
+    setNewStageSaving(true);
+    setNewStageStatus(null);
+    setNewStageError(null);
+    try {
+      const slug = normalizeStageSlug(newStageSlug);
+      const labelEs = newStageLabelEs.trim();
+      if (!slug) throw new Error('Slug requerido.');
+      if (!/^[A-Z0-9][A-Z0-9_]*$/.test(slug)) throw new Error('Slug inválido. Usa A-Z, 0-9 y _ (ej: EN_PROCESO).');
+      if (!labelEs) throw new Error('Label requerido.');
+      const sorted = (Array.isArray(workspaceStages) ? workspaceStages : [])
+        .filter((s: any) => !s?.archivedAt)
+        .sort((a: any, b: any) => Number(a.order || 0) - Number(b.order || 0));
+      const lastOrder = sorted.length > 0 ? Number(sorted[sorted.length - 1].order || 0) : 0;
+      const nextOrder = lastOrder + 10;
+      await apiClient.post('/api/workspaces/current/stages', { slug, labelEs, order: nextOrder });
+      setNewStageSlug('');
+      setNewStageLabelEs('');
+      setNewStageStatus('Stage creado.');
+      await loadWorkspaceStages();
+    } catch (err: any) {
+      setNewStageError(err.message || 'No se pudo crear el stage');
+    } finally {
+      setNewStageSaving(false);
+    }
+  };
+
+  const patchWorkspaceStage = async (stageId: string, patch: any) => {
+    await apiClient.patch(`/api/workspaces/current/stages/${stageId}`, patch);
+    await loadWorkspaceStages();
+  };
+
+  const moveWorkspaceStage = async (stageId: string, direction: -1 | 1) => {
+    if (!stageId) return;
+    const visible = (Array.isArray(workspaceStages) ? workspaceStages : [])
+      .filter((s: any) => !s?.archivedAt)
+      .sort((a: any, b: any) => Number(a.order || 0) - Number(b.order || 0));
+    const idx = visible.findIndex((s: any) => String(s.id) === String(stageId));
+    const swapIdx = idx + direction;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= visible.length) return;
+    const a = visible[idx];
+    const b = visible[swapIdx];
+    try {
+      await apiClient.patch(`/api/workspaces/current/stages/${a.id}`, { order: Number(b.order || 0) });
+      await apiClient.patch(`/api/workspaces/current/stages/${b.id}`, { order: Number(a.order || 0) });
+      await loadWorkspaceStages();
+    } catch (err: any) {
+      setWorkspaceStagesError(err.message || 'No se pudo reordenar');
     }
   };
   const loadUsers = async () => {
@@ -836,6 +925,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   useEffect(() => {
     loadWorkspaces().catch(() => {});
     loadWorkspaceDetails().catch(() => {});
+    loadWorkspaceStages().catch(() => {});
     loadPrograms().catch(() => {});
     loadPhoneLines().catch(() => {});
     loadAutomations().catch(() => {});
@@ -844,11 +934,18 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
   useEffect(() => {
     loadWorkspaceDetails().catch(() => {});
+    loadWorkspaceStages().catch(() => {});
   }, [workspaceId]);
+
+  useEffect(() => {
+    if (tab !== 'workspace') return;
+    loadWorkspaceStages({ includeArchived: workspaceStagesIncludeArchived }).catch(() => {});
+  }, [workspaceStagesIncludeArchived]);
 
   useEffect(() => {
     if (tab === 'workspace') {
       loadWorkspaceDetails().catch(() => {});
+      loadWorkspaceStages().catch(() => {});
       if (isWorkspaceAdmin) loadUsers().catch(() => {});
     }
     if (tab === 'users') {
@@ -1086,13 +1183,18 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     try {
       const isSandboxWs = Boolean(currentWorkspace?.isSandbox);
       const normalizedPhone = normalizeChilePhoneE164(phoneLineEditor.phoneE164 || '');
+      const inboundMode = String(phoneLineEditor.inboundMode || 'DEFAULT').trim().toUpperCase() === 'MENU' ? 'MENU' : 'DEFAULT';
+      const programMenuIdsRaw = Array.isArray(phoneLineEditor.programMenuIds) ? phoneLineEditor.programMenuIds : [];
+      const programMenuIds = inboundMode === 'MENU' ? programMenuIdsRaw.map((id: any) => String(id)).filter(Boolean) : [];
       const payload = {
         alias: String(phoneLineEditor.alias || '').trim(),
         phoneE164: normalizedPhone,
         waPhoneNumberId: String(phoneLineEditor.waPhoneNumberId || '').trim(),
         wabaId: phoneLineEditor.wabaId ? String(phoneLineEditor.wabaId).trim() : null,
         defaultProgramId: phoneLineEditor.defaultProgramId ? String(phoneLineEditor.defaultProgramId).trim() : null,
-        isActive: Boolean(phoneLineEditor.isActive)
+        inboundMode,
+        programMenuIds: inboundMode === 'MENU' ? programMenuIds : null,
+        isActive: Boolean(phoneLineEditor.isActive),
       };
       if (!payload.alias) throw new Error('alias es requerido');
       if (!payload.waPhoneNumberId) throw new Error('waPhoneNumberId es requerido');
@@ -1173,6 +1275,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         waPhoneNumberId: String(phoneLineEditor.waPhoneNumberId || '').trim(),
         wabaId: phoneLineEditor.wabaId ? String(phoneLineEditor.wabaId).trim() : null,
         defaultProgramId: phoneLineEditor.defaultProgramId ? String(phoneLineEditor.defaultProgramId).trim() : null,
+        inboundMode: String(phoneLineEditor.inboundMode || 'DEFAULT'),
+        programMenuIds: Array.isArray(phoneLineEditor.programMenuIds) ? phoneLineEditor.programMenuIds : [],
         isActive: Boolean(phoneLineEditor.isActive),
       });
 
@@ -1519,8 +1623,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             <div>{currentWorkspace?.createdAt || '—'}</div>
           </div>
 
-          {String(currentWorkspace?.id || workspaceId) === 'ssclinical' && isWorkspaceAdmin ? (
-            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+	          {String(currentWorkspace?.id || workspaceId) === 'ssclinical' && isWorkspaceAdmin ? (
+	            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
               <div style={{ fontWeight: 900, marginBottom: 6 }}>SSCLINICAL — Asignación automática</div>
               <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
                 Cuando el <b>Stage</b> de una conversación cambia a <b>INTERESADO</b>, una Automation puede asignar automáticamente la conversación a la <b>enfermera líder</b> configurada aquí.
@@ -1565,11 +1669,165 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               {ssclinicalNurseLeaderStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{ssclinicalNurseLeaderStatus}</div> : null}
               {ssclinicalNurseLeaderError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{ssclinicalNurseLeaderError}</div> : null}
             </div>
-          ) : null}
+	          ) : null}
 
-          <button
-            onClick={() => exportConfig().catch(() => {})}
-            style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', width: 240 }}
+	          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+	            <div style={{ fontWeight: 900, marginBottom: 6 }}>Estados (Stages)</div>
+	            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+	              Define las <b>etapas</b> disponibles para conversaciones y Automations con trigger <b>STAGE_CHANGED</b>. El valor guardado es el <b>slug</b>.
+	            </div>
+
+	            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+	              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
+	                <input
+	                  type="checkbox"
+	                  checked={workspaceStagesIncludeArchived}
+	                  onChange={(e) => setWorkspaceStagesIncludeArchived(e.target.checked)}
+	                />
+	                Mostrar archivados
+	              </label>
+	              <button
+	                type="button"
+	                onClick={() => loadWorkspaceStages().catch(() => {})}
+	                style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+	              >
+	                Refrescar
+	              </button>
+	              {workspaceStagesLoading ? <span style={{ fontSize: 12, color: '#666' }}>Cargando…</span> : null}
+	            </div>
+
+	            {workspaceStagesError ? <div style={{ fontSize: 12, color: '#b93800', marginBottom: 8 }}>{workspaceStagesError}</div> : null}
+
+	            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+	              {(Array.isArray(workspaceStages) ? workspaceStages : [])
+	                .filter((s: any) => (workspaceStagesIncludeArchived ? true : !s?.archivedAt))
+	                .sort((a: any, b: any) => Number(a.order || 0) - Number(b.order || 0))
+	                .map((s: any, idx: number, arr: any[]) => {
+	                  const archived = Boolean(s?.archivedAt);
+	                  const active = s?.isActive !== false && !archived;
+	                  return (
+	                    <div
+	                      key={s.id}
+	                      style={{
+	                        border: '1px solid #eee',
+	                        borderRadius: 10,
+	                        padding: 10,
+	                        background: archived ? '#fafafa' : '#fff',
+	                        display: 'flex',
+	                        gap: 10,
+	                        alignItems: 'center',
+	                        flexWrap: 'wrap'
+	                      }}
+	                    >
+	                      <div style={{ minWidth: 180 }}>
+	                        <div style={{ fontSize: 12, color: '#666' }}>Slug</div>
+	                        <div style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 800 }}>{String(s.slug || '—')}</div>
+	                      </div>
+	                      <div style={{ flex: 1, minWidth: 220 }}>
+	                        <div style={{ fontSize: 12, color: '#666' }}>Label</div>
+	                        <div style={{ fontSize: 13, fontWeight: 700 }}>{String(s.labelEs || s.slug || '—')}</div>
+	                      </div>
+	                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+	                        <button
+	                          type="button"
+	                          onClick={() => moveWorkspaceStage(String(s.id), -1)}
+	                          disabled={idx === 0 || archived}
+	                          style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+	                        >
+	                          ↑
+	                        </button>
+	                        <button
+	                          type="button"
+	                          onClick={() => moveWorkspaceStage(String(s.id), 1)}
+	                          disabled={idx === arr.length - 1 || archived}
+	                          style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+	                        >
+	                          ↓
+	                        </button>
+	                        <button
+	                          type="button"
+	                          onClick={() => {
+	                            const next = window.prompt('Nuevo label (visible en CRM):', String(s.labelEs || ''));
+	                            if (next === null) return;
+	                            patchWorkspaceStage(String(s.id), { labelEs: next }).catch(() => {});
+	                          }}
+	                          style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+	                        >
+	                          Editar
+	                        </button>
+	                        <button
+	                          type="button"
+	                          onClick={() => patchWorkspaceStage(String(s.id), { isActive: !active }).catch(() => {})}
+	                          disabled={archived}
+	                          style={{
+	                            padding: '4px 10px',
+	                            borderRadius: 8,
+	                            border: '1px solid #ccc',
+	                            background: active ? '#eaf7ee' : '#fff5f5',
+	                            color: active ? '#1a7f37' : '#b93800',
+	                            fontSize: 12,
+	                            fontWeight: 800
+	                          }}
+	                        >
+	                          {active ? 'Activo' : 'Inactivo'}
+	                        </button>
+	                        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: '#555' }}>
+	                          <input
+	                            type="checkbox"
+	                            checked={Boolean(s?.isTerminal)}
+	                            onChange={(e) => patchWorkspaceStage(String(s.id), { isTerminal: e.target.checked }).catch(() => {})}
+	                            disabled={archived}
+	                          />
+	                          Terminal
+	                        </label>
+	                        <button
+	                          type="button"
+	                          onClick={() => patchWorkspaceStage(String(s.id), { archived: !archived }).catch(() => {})}
+	                          style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+	                        >
+	                          {archived ? 'Restaurar' : 'Archivar'}
+	                        </button>
+	                      </div>
+	                    </div>
+	                  );
+	                })}
+	            </div>
+
+	            <div style={{ marginTop: 12, borderTop: '1px solid #eee', paddingTop: 12 }}>
+	              <div style={{ fontWeight: 800, marginBottom: 6 }}>Agregar estado</div>
+	              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+	                <input
+	                  value={newStageSlug}
+	                  onChange={(e) => setNewStageSlug(e.target.value)}
+	                  placeholder="Slug (ej: PREPARANDO_ENVIO)"
+	                  style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc', minWidth: 240 }}
+	                />
+	                <input
+	                  value={newStageLabelEs}
+	                  onChange={(e) => setNewStageLabelEs(e.target.value)}
+	                  placeholder="Label (visible en CRM)"
+	                  style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc', minWidth: 240, flex: 1 }}
+	                />
+	                <button
+	                  type="button"
+	                  onClick={() => createWorkspaceStage().catch(() => {})}
+	                  disabled={newStageSaving}
+	                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 900, fontSize: 12 }}
+	                >
+	                  {newStageSaving ? 'Creando…' : 'Crear'}
+	                </button>
+	              </div>
+	              <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
+	                Consejo: usa slugs en mayúsculas con guión bajo (<span style={{ fontFamily: 'monospace' }}>A-Z 0-9 _</span>).
+	              </div>
+	              {newStageStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{newStageStatus}</div> : null}
+	              {newStageError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{newStageError}</div> : null}
+	            </div>
+	          </div>
+
+	          <button
+	            onClick={() => exportConfig().catch(() => {})}
+	            style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', width: 240 }}
           >
             Exportar configuración
           </button>
@@ -2524,7 +2782,16 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   setPhoneLineSaveStatus(null);
                   setPhoneLineMoveError(null);
                   setPhoneLineMoveStatus(null);
-                  setPhoneLineEditor({ alias: '', phoneE164: '', waPhoneNumberId: '', wabaId: '', defaultProgramId: '', isActive: true });
+                  setPhoneLineEditor({
+                    alias: '',
+                    phoneE164: '',
+                    waPhoneNumberId: '',
+                    wabaId: '',
+                    defaultProgramId: '',
+                    inboundMode: 'DEFAULT',
+                    programMenuIds: [],
+                    isActive: true,
+                  });
                 }}
                 style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
               >
@@ -2553,6 +2820,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     wabaId <span title="ID de WABA (WhatsApp Business Account).">ⓘ</span>
                   </th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Programa por defecto</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Entrada</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Estado</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Último inbound</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Último outbound</th>
@@ -2601,6 +2869,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 	                        ))}
 	                      </select>
 	                    </td>
+                    <td style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                      {String(l.inboundMode || 'DEFAULT').toUpperCase() === 'MENU'
+                        ? `Menú${Array.isArray(l.programMenuIds) && l.programMenuIds.length ? ` (${l.programMenuIds.length})` : ''}`
+                        : 'Default'}
+                    </td>
                     <td style={{ padding: 10, fontSize: 13 }}>
 	                      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
 	                        <input
@@ -2685,13 +2958,22 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 	                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
 	                />
 	                <select value={phoneLineEditor.defaultProgramId || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, defaultProgramId: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
-	                  <option value="">Programa por defecto</option>
+	                  <option value="">Programa por defecto (modo Default)</option>
 	                  {programs.filter((p: any) => p && p.isActive).map((p) => (
 	                    <option key={p.id} value={p.id}>
 	                      {p.name}
 	                    </option>
 	                  ))}
 	                </select>
+                  <select
+                    value={String(phoneLineEditor.inboundMode || 'DEFAULT').toUpperCase() === 'MENU' ? 'MENU' : 'DEFAULT'}
+                    onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, inboundMode: e.target.value })}
+                    style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                    aria-label="Modo de entrada"
+                  >
+                    <option value="DEFAULT">Entrada: usar Program por defecto</option>
+                    <option value="MENU">Entrada: mostrar menú de Programs</option>
+                  </select>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input
                     type="checkbox"
@@ -2706,6 +2988,52 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 Regla: no reutilices el mismo <span style={{ fontFamily: 'monospace' }}>waPhoneNumberId</span> en dos workspaces activos a la vez.
                 Si necesitas mover la línea a otro workspace, primero desactívala/archívala en el workspace anterior.
               </div>
+              {String(phoneLineEditor.inboundMode || 'DEFAULT').toUpperCase() === 'MENU' ? (
+                <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 10, padding: 10, background: '#fff' }}>
+                  <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Menú de Programs (opcional)</div>
+                  <div style={{ fontSize: 12, color: '#666' }}>
+                    Si seleccionas Programs aquí, el menú inicial mostrará solo esos. Si no seleccionas ninguno, se mostrarán todos los Programs activos.
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {programs
+                      .filter((p: any) => p && p.isActive && String(p.slug || '').toLowerCase() !== 'admin')
+                      .map((p: any) => {
+                        const current = Array.isArray((phoneLineEditor as any).programMenuIds)
+                          ? ((phoneLineEditor as any).programMenuIds as any[]).map((id) => String(id))
+                          : [];
+                        const checked = current.includes(String(p.id));
+                        return (
+                          <label
+                            key={p.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              fontSize: 12,
+                              border: '1px solid #eee',
+                              borderRadius: 999,
+                              padding: '4px 8px',
+                              background: checked ? '#f6ffed' : '#fff',
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const next = checked ? current.filter((id) => id !== String(p.id)) : [...current, String(p.id)];
+                                setPhoneLineEditor({ ...phoneLineEditor, programMenuIds: next });
+                              }}
+                            />
+                            {p.name}
+                          </label>
+                        );
+                      })}
+                    {programs.filter((p: any) => p && p.isActive && String(p.slug || '').toLowerCase() !== 'admin').length === 0 ? (
+                      <div style={{ fontSize: 12, color: '#666' }}>— No hay Programs activos.</div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
               {Boolean((phoneLineEditor as any).needsAttention) ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: '#b93800', fontWeight: 800 }}>
                   ⚠ requiere revisión: corrige <span style={{ fontFamily: 'monospace' }}>phoneE164</span> y guarda para poder activarlo.

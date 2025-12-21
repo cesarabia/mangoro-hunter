@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiClient } from '../api/client';
 
 interface ConversationViewProps {
@@ -94,17 +94,6 @@ const isSuspiciousCandidateName = (value?: string | null) => {
   return false;
 };
 
-const SSCLINICAL_STAGE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'NUEVO', label: 'Nuevo' },
-  { value: 'INFO', label: 'Info' },
-  { value: 'CALIFICADO', label: 'Calificado' },
-  { value: 'INTERESADO', label: 'Interesado' },
-  { value: 'EN_COORDINACION', label: 'En coordinación' },
-  { value: 'CONFIRMADO', label: 'Confirmado' },
-  { value: 'CERRADO', label: 'Cerrado' },
-  { value: 'NO_CONTACTAR', label: 'No contactar' },
-];
-
 export const ConversationView: React.FC<ConversationViewProps> = ({
   conversation,
   onMessageSent,
@@ -151,6 +140,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [stageValue, setStageValue] = useState<string>('');
   const [stageSaving, setStageSaving] = useState(false);
   const [stageError, setStageError] = useState<string | null>(null);
+  const [workspaceStages, setWorkspaceStages] = useState<any[]>([]);
+  const [workspaceStagesLoaded, setWorkspaceStagesLoaded] = useState(false);
+  const [workspaceStagesError, setWorkspaceStagesError] = useState<string | null>(null);
   const [safeModeModalOpen, setSafeModeModalOpen] = useState(false);
   const [safeModeBlockedReason, setSafeModeBlockedReason] = useState<string | null>(null);
   const [safeModeTargetWaId, setSafeModeTargetWaId] = useState<string | null>(null);
@@ -198,6 +190,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setStageValue('');
       setStageSaving(false);
       setStageError(null);
+      setWorkspaceStages([]);
+      setWorkspaceStagesLoaded(false);
+      setWorkspaceStagesError(null);
       setSafeModeModalOpen(false);
       setSafeModeBlockedReason(null);
       setSafeModeTargetWaId(null);
@@ -235,9 +230,20 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     setProgramId(conversation.program?.id || conversation.programId || '');
     setProgramSaving(false);
     setProgramError(null);
-    setStageValue(conversation.conversationStage || conversation.stage || '');
+    const nextStageRaw = String(conversation.conversationStage || conversation.stage || '').trim();
+    const nextStage = nextStageRaw
+      ? nextStageRaw
+          .replace(/\s+/g, '_')
+          .replace(/-+/g, '_')
+          .replace(/__+/g, '_')
+          .toUpperCase()
+      : '';
+    setStageValue(nextStage);
     setStageSaving(false);
     setStageError(null);
+    setWorkspaceStages([]);
+    setWorkspaceStagesLoaded(false);
+    setWorkspaceStagesError(null);
     setSafeModeModalOpen(false);
     setSafeModeBlockedReason(null);
     setSafeModeTargetWaId(null);
@@ -274,6 +280,26 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         setWorkspaceUsersError(err.message || 'No se pudieron cargar usuarios');
       });
   }, [detailsOpen, canAssignConversation, isAdmin, workspaceUsersLoaded, conversation?.id]);
+
+  useEffect(() => {
+    if (!detailsOpen) return;
+    if (!canAssignConversation) return;
+    if (isAdmin) return;
+    if (workspaceStagesLoaded) return;
+    apiClient
+      .get('/api/workspaces/current/stages')
+      .then((data: any) => {
+        const list = Array.isArray(data?.stages) ? data.stages : [];
+        setWorkspaceStages(list);
+        setWorkspaceStagesLoaded(true);
+        setWorkspaceStagesError(null);
+      })
+      .catch((err: any) => {
+        setWorkspaceStages([]);
+        setWorkspaceStagesLoaded(true);
+        setWorkspaceStagesError(err.message || 'No se pudieron cargar stages');
+      });
+  }, [detailsOpen, canAssignConversation, isAdmin, workspaceStagesLoaded, conversation?.id]);
 
   const handleAssignmentUpdate = async (nextUserId: string) => {
     if (!conversation) return;
@@ -545,7 +571,6 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const templateGeneralFollowup = templateConfig.templateGeneralFollowup || null;
   const programSlug = conversation?.program?.slug || '';
   const programName = conversation?.program?.name || '';
-  const isSsclinical = String(conversation?.workspaceId || '').toLowerCase() === 'ssclinical';
   const isInterviewContext = programSlug === 'interview' || aiMode === 'INTERVIEW';
   const requiredTemplate =
     isInterviewContext ? templateInterviewInvite : templateGeneralFollowup;
@@ -564,6 +589,35 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     { key: 'OFF', label: 'Manual' }
   ];
   const programOptions = Array.isArray(programs) ? programs : [];
+  const activeStageOptions = useMemo(() => {
+    const list = Array.isArray(workspaceStages) ? workspaceStages : [];
+    return list
+      .filter((s: any) => !s?.archivedAt && s?.isActive !== false)
+      .map((s: any) => {
+        const value = String(s?.slug || '').trim();
+        const label = String(s?.labelEs || s?.slug || '').trim() || value;
+        return { value, label };
+      })
+      .filter((opt: any) => opt.value);
+  }, [workspaceStages]);
+  const stageLabelBySlug = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const opt of activeStageOptions) {
+      map.set(opt.value, opt.label);
+    }
+    return map;
+  }, [activeStageOptions]);
+  const rawStage = String(conversation?.conversationStage || conversation?.stage || '').trim();
+  const normalizedStage = rawStage
+    ? rawStage
+        .replace(/\s+/g, '_')
+        .replace(/-+/g, '_')
+        .replace(/__+/g, '_')
+        .toUpperCase()
+    : '';
+  const stageDisplay = normalizedStage
+    ? stageLabelBySlug.get(normalizedStage) || stageLabelBySlug.get(rawStage) || normalizedStage
+    : '—';
 
   useEffect(() => {
     if (!conversation) {
@@ -753,7 +807,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 <span style={{ fontSize: 12, color: '#555' }}>
                   Estado: <strong>{conversation?.status || 'NEW'}</strong>
                 </span>
-                {isSsclinical && canAssignConversation && !isAdmin ? (
+                {canAssignConversation && !isAdmin && activeStageOptions.length > 0 ? (
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
                     Stage:
                     <select
@@ -764,7 +818,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                       data-guide-id="conversation-stage-select"
                     >
                       <option value="">—</option>
-                      {SSCLINICAL_STAGE_OPTIONS.map((opt) => (
+                      {activeStageOptions.map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>
@@ -773,7 +827,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   </label>
                 ) : (
                   <span style={{ fontSize: 12, color: '#555' }}>
-                    Stage: <strong>{conversation?.conversationStage || conversation?.stage || '—'}</strong>
+                    Stage: <strong>{stageDisplay}</strong>
                   </span>
                 )}
                 <span style={{ fontSize: 12, color: '#555' }}>
@@ -824,6 +878,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   </select>
                 </label>
                 {programError ? <span style={{ fontSize: 12, color: '#b93800' }}>{programError}</span> : null}
+                {workspaceStagesError ? <span style={{ fontSize: 12, color: '#b93800' }}>{workspaceStagesError}</span> : null}
                 {stageError ? <span style={{ fontSize: 12, color: '#b93800' }}>{stageError}</span> : null}
                 {workspaceUsersError ? <span style={{ fontSize: 12, color: '#b93800' }}>{workspaceUsersError}</span> : null}
                 {assignmentError ? <span style={{ fontSize: 12, color: '#b93800' }}>{assignmentError}</span> : null}

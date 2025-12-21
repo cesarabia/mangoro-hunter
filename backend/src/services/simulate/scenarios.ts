@@ -44,10 +44,20 @@ export type ScenarioStep = {
       /** Optional override; by default the scenario generates a unique waPhoneNumberId. */
       waPhoneNumberId?: string;
     };
+    inboundProgramMenu?: {
+      /** Optional override; by default the scenario generates a unique waPhoneNumberId. */
+      waPhoneNumberId?: string;
+    };
     platformSuperadminGate?: boolean;
     ssclinicalStageAssign?: {
       workspaceId?: string;
     };
+    stageAdminConfigurable?: {
+      workspaceId?: string;
+      slug?: string;
+    };
+    inviteExistingUserAccept?: boolean;
+    copilotArchiveRestore?: boolean;
   };
 };
 
@@ -242,6 +252,29 @@ export const SCENARIOS: ScenarioDefinition[] = [
     ],
   },
   {
+    id: 'inbound_program_menu',
+    name: 'PhoneLines: inbound modo Menú de Programs',
+    description:
+      'Valida que un PhoneLine con inboundMode=MENU muestre un menú limitado a Programs permitidos y permita asignar Program por opción.',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check inbound program menu', expect: { inboundProgramMenu: {} } },
+    ],
+  },
+  {
+    id: 'invite_existing_user_accept',
+    name: 'Invites: aceptar usuario existente',
+    description:
+      'Valida que un usuario ya existente pueda aceptar una invitación sin reset de password (accept-existing).',
+    steps: [{ action: 'WORKSPACE_CHECK', inboundText: 'check invite accept existing', expect: { inviteExistingUserAccept: true } }],
+  },
+  {
+    id: 'copilot_archive_restore',
+    name: 'Copilot: archivar y restaurar thread',
+    description:
+      'Valida que un hilo de Copilot se pueda archivar y restaurar, y que el historial lo refleje.',
+    steps: [{ action: 'WORKSPACE_CHECK', inboundText: 'check copilot archive restore', expect: { copilotArchiveRestore: true } }],
+  },
+  {
     id: 'ssclinical_onboarding',
     name: 'SSClinical: setup onboarding (multi-cliente)',
     description:
@@ -305,6 +338,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check ssclinical stage assign',
         expect: { ssclinicalStageAssign: { workspaceId: 'ssclinical' } },
+      },
+    ],
+  },
+  {
+    id: 'stage_admin_configurable',
+    name: 'Stages: configurables por workspace',
+    description:
+      'Crea un Stage custom y valida que se pueda setear en una conversación (sin hardcode).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check stage configurable',
+        expect: { stageAdminConfigurable: { workspaceId: 'scenario-stage-config', slug: 'PREPARANDO_ENVIO' } },
       },
     ],
   },

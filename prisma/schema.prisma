@@ -35,6 +35,7 @@ model Workspace {
   isSandbox   Boolean       @default(false)
   ssclinicalNurseLeaderEmail String?
   archivedAt  DateTime?
+  stages      WorkspaceStage[]
   memberships Membership[]
   invites     WorkspaceInvite[]
   phoneLines  PhoneLine[]
@@ -56,6 +57,24 @@ model Workspace {
   configChanges ConfigChangeLog[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
+}
+
+model WorkspaceStage {
+  id          String    @id @default(cuid())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  workspaceId String
+  slug        String
+  labelEs     String
+  order       Int       @default(0)
+  isActive    Boolean   @default(true)
+  isTerminal  Boolean   @default(false)
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@index([createdAt])
 }
 
 model ConfigChangeLog {
@@ -122,6 +141,8 @@ model PhoneLine {
   wabaId          String?
   defaultProgram  Program?  @relation("PhoneLineDefaultProgram", fields: [defaultProgramId], references: [id])
   defaultProgramId String?
+  inboundMode     String    @default("DEFAULT")
+  programMenuIdsJson String?
   isActive        Boolean   @default(true)
   needsAttention  Boolean   @default(false)
   lastInboundAt   DateTime?

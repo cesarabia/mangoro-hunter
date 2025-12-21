@@ -383,7 +383,18 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             const email = String(wsSetup.ownerEmail || '').trim().toLowerCase();
             const user = await prisma.user.findUnique({ where: { email }, select: { id: true } }).catch(() => null);
             if (!user?.id) {
-              assertions.push({ ok: false, message: `owner user ${email} missing` });
+              const invite = await prisma.workspaceInvite
+                .findFirst({
+                  where: { workspaceId: targetWorkspaceId, email, role: 'OWNER', archivedAt: null, acceptedAt: null, expiresAt: { gt: new Date() } } as any,
+                  select: { id: true },
+                })
+                .catch(() => null);
+              assertions.push({
+                ok: Boolean(invite?.id),
+                message: invite?.id
+                  ? `owner user ${email} pendiente (invite existe; falta aceptar)`
+                  : `owner user ${email} missing`,
+              });
             } else {
               const memberships = await prisma.membership.findMany({
                 where: { userId: user.id, archivedAt: null },
@@ -801,6 +812,441 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         }
       }
 
+      const inboundProgramMenu = (step.expect as any)?.inboundProgramMenu;
+      if (inboundProgramMenu && typeof inboundProgramMenu === 'object') {
+        const waPhoneNumberId =
+          String((inboundProgramMenu as any)?.waPhoneNumberId || '').trim() ||
+          `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+        const wsId = 'scenario-inbound-program-menu';
+        const lineId = 'scenario-inbound-program-menu-line';
+        const now = new Date();
+
+        await prisma.workspace
+          .upsert({
+            where: { id: wsId },
+            create: { id: wsId, name: 'Scenario Inbound Program Menu', isSandbox: false, archivedAt: null } as any,
+            update: { name: 'Scenario Inbound Program Menu', isSandbox: false, archivedAt: null } as any,
+          })
+          .catch(() => {});
+
+        const createProgram = async (slug: string, name: string) => {
+          return prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug } } as any,
+              create: {
+                workspaceId: wsId,
+                name,
+                slug,
+                description: 'Scenario program (menu)',
+                isActive: true,
+                archivedAt: null,
+                agentSystemPrompt:
+                  'Eres un agente de prueba. Responde en español de forma breve. Siempre incluye un SEND_MESSAGE si corresponde.',
+              } as any,
+              update: {
+                name,
+                description: 'Scenario program (menu)',
+                isActive: true,
+                archivedAt: null,
+                agentSystemPrompt:
+                  'Eres un agente de prueba. Responde en español de forma breve. Siempre incluye un SEND_MESSAGE si corresponde.',
+              } as any,
+              select: { id: true, name: true, slug: true },
+            })
+            .catch(() => null);
+        };
+
+        const progA = await createProgram('scenario-menu-a', 'Scenario Menu A');
+        const progB = await createProgram('scenario-menu-b', 'Scenario Menu B');
+        const progC = await createProgram('scenario-menu-c', 'Scenario Menu C');
+
+        if (!progA?.id || !progB?.id || !progC?.id) {
+          assertions.push({ ok: false, message: 'inboundProgramMenu: no se pudieron crear Programs de escenario' });
+        } else {
+          await prisma.phoneLine
+            .upsert({
+              where: { id: lineId },
+              create: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Inbound Menu',
+                phoneE164: null,
+                waPhoneNumberId,
+                wabaId: null,
+                defaultProgramId: progC.id,
+                inboundMode: 'MENU',
+                programMenuIdsJson: JSON.stringify([progA.id, progB.id]),
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              update: {
+                workspaceId: wsId,
+                alias: 'Scenario Inbound Menu',
+                phoneE164: null,
+                waPhoneNumberId,
+                wabaId: null,
+                defaultProgramId: progC.id,
+                inboundMode: 'MENU',
+                programMenuIdsJson: JSON.stringify([progA.id, progB.id]),
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+            })
+            .catch(() => {});
+
+          // Use a sandbox waId so SAFE MODE does not block NULL transport scenarios.
+          // We intentionally avoid synthetic "real-looking" phone numbers in DEV.
+          const waFrom = 'sandbox';
+          const contact = await prisma.contact
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: waFrom } } as any,
+              create: { workspaceId: wsId, waId: waFrom, phone: null, archivedAt: null } as any,
+              update: { archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const conversation = contact?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: lineId,
+                    programId: null,
+                    contactId: contact.id,
+                    status: 'NEW',
+                    conversationStage: 'SANDBOX_SCENARIO',
+                    channel: 'system',
+                    isAdmin: false,
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+          if (!conversation?.id) {
+            assertions.push({ ok: false, message: 'inboundProgramMenu: no se pudo crear Conversation' });
+          } else {
+            const msg1 = await prisma.message
+              .create({
+                data: {
+                  conversationId: conversation.id,
+                  direction: 'INBOUND',
+                  text: 'Hola',
+                  rawPayload: JSON.stringify({ simulated: true, scenario: 'inbound_program_menu', step: 1 }),
+                  timestamp: new Date(),
+                  read: false,
+                },
+                select: { id: true },
+              })
+              .catch(() => null);
+
+            await runAutomations({
+              app,
+              workspaceId: wsId,
+              eventType: 'INBOUND_MESSAGE',
+              conversationId: conversation.id,
+              inboundMessageId: msg1?.id || null,
+              inboundText: 'Hola',
+              transportMode: 'NULL',
+            });
+
+            const convAfterMenu = await prisma.conversation
+              .findUnique({
+                where: { id: conversation.id },
+                select: { conversationStage: true, programId: true },
+              })
+              .catch(() => null);
+            assertions.push({
+              ok: String(convAfterMenu?.conversationStage || '') === 'PROGRAM_SELECTION',
+              message:
+                String(convAfterMenu?.conversationStage || '') === 'PROGRAM_SELECTION'
+                  ? 'inboundProgramMenu: stage PROGRAM_SELECTION OK'
+                  : `inboundProgramMenu: expected stage PROGRAM_SELECTION, got ${String(convAfterMenu?.conversationStage || '—')}`,
+            });
+            assertions.push({
+              ok: !convAfterMenu?.programId,
+              message: !convAfterMenu?.programId ? 'inboundProgramMenu: programId sigue null (menú)' : 'inboundProgramMenu: programId no debería setearse antes de elegir',
+            });
+
+            const lastOut = await prisma.message
+              .findFirst({
+                where: { conversationId: conversation.id, direction: 'OUTBOUND' },
+                orderBy: { timestamp: 'desc' },
+                select: { text: true, transcriptText: true },
+              })
+              .catch(() => null);
+            const outText = String(lastOut?.transcriptText || lastOut?.text || '');
+            assertions.push({
+              ok: outText.includes('1)') && outText.includes('Scenario Menu A') && outText.includes('Scenario Menu B'),
+              message: outText ? 'inboundProgramMenu: menú contiene A/B' : 'inboundProgramMenu: no se encontró outbound menú',
+            });
+            assertions.push({
+              ok: !outText.includes('Scenario Menu C'),
+              message: !outText.includes('Scenario Menu C') ? 'inboundProgramMenu: menú NO incluye C' : 'inboundProgramMenu: menú incluye Program no permitido (C)',
+            });
+
+            const msg2 = await prisma.message
+              .create({
+                data: {
+                  conversationId: conversation.id,
+                  direction: 'INBOUND',
+                  text: '1',
+                  rawPayload: JSON.stringify({ simulated: true, scenario: 'inbound_program_menu', step: 2 }),
+                  timestamp: new Date(),
+                  read: false,
+                },
+                select: { id: true },
+              })
+              .catch(() => null);
+            await runAutomations({
+              app,
+              workspaceId: wsId,
+              eventType: 'INBOUND_MESSAGE',
+              conversationId: conversation.id,
+              inboundMessageId: msg2?.id || null,
+              inboundText: '1',
+              transportMode: 'NULL',
+            });
+
+            const convAfterPick = await prisma.conversation
+              .findUnique({ where: { id: conversation.id }, select: { programId: true } })
+              .catch(() => null);
+            const pickedOk = Boolean(convAfterPick?.programId) && String(convAfterPick?.programId) === String(progA.id);
+            assertions.push({
+              ok: pickedOk,
+              message: pickedOk ? 'inboundProgramMenu: programId asignado por opción OK (1 => A)' : `inboundProgramMenu: expected programId=${progA.id}, got ${String(convAfterPick?.programId || '—')}`,
+            });
+
+            // Cleanup: archive-only to keep DEV tidy.
+            await prisma.conversation.updateMany({ where: { id: conversation.id }, data: { archivedAt: now } as any }).catch(() => {});
+            if (contact?.id) {
+              await prisma.contact.updateMany({ where: { id: contact.id }, data: { archivedAt: now } as any }).catch(() => {});
+            }
+          }
+
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { isActive: false, archivedAt: now } as any }).catch(() => {});
+          await prisma.program.updateMany({ where: { workspaceId: wsId, slug: { in: ['scenario-menu-a', 'scenario-menu-b', 'scenario-menu-c'] } }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      const inviteExistingUserAccept = (step.expect as any)?.inviteExistingUserAccept;
+      if (inviteExistingUserAccept) {
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        if (!userId) {
+          assertions.push({ ok: false, message: 'inviteExistingUserAccept: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'inviteExistingUserAccept: auth header missing' });
+        } else {
+          const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, passwordHash: true } }).catch(() => null);
+          const email = String(user?.email || '').trim().toLowerCase();
+          if (!email) {
+            assertions.push({ ok: false, message: 'inviteExistingUserAccept: no se pudo resolver email del usuario' });
+          } else {
+            const wsId = 'scenario-invite-existing-user';
+            const now = new Date();
+            await prisma.workspace
+              .upsert({
+                where: { id: wsId },
+                create: { id: wsId, name: 'Scenario Invite Existing User', isSandbox: false, archivedAt: null } as any,
+                update: { name: 'Scenario Invite Existing User', isSandbox: false, archivedAt: null } as any,
+              })
+              .catch(() => {});
+
+            const token = `scenario-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+            const invite = await prisma.workspaceInvite
+              .create({
+                data: {
+                  workspaceId: wsId,
+                  email,
+                  role: 'MEMBER',
+                  assignedOnly: false,
+                  token,
+                  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                  archivedAt: null,
+                } as any,
+                select: { token: true, id: true },
+              })
+              .catch(() => null);
+            if (!invite?.token) {
+              assertions.push({ ok: false, message: 'inviteExistingUserAccept: no se pudo crear invite' });
+            } else {
+              const beforeHash = String(user?.passwordHash || '');
+              const res = await app.inject({
+                method: 'POST',
+                url: `/api/invites/${encodeURIComponent(invite.token)}/accept-existing`,
+                headers: { authorization: authHeader, 'content-type': 'application/json', 'x-workspace-id': 'default' },
+                payload: JSON.stringify({}),
+              });
+              const ok = res.statusCode === 200;
+              assertions.push({
+                ok,
+                message: ok ? 'inviteExistingUserAccept: accept-existing 200 OK' : `inviteExistingUserAccept: accept-existing failed (${res.statusCode})`,
+              });
+
+              const after = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } }).catch(() => null);
+              const hashOk = String(after?.passwordHash || '') === beforeHash;
+              assertions.push({
+                ok: hashOk,
+                message: hashOk ? 'inviteExistingUserAccept: passwordHash no cambia (OK)' : 'inviteExistingUserAccept: passwordHash cambió (NO OK)',
+              });
+
+              const membership = await prisma.membership
+                .findFirst({ where: { userId, workspaceId: wsId, archivedAt: null }, select: { role: true } })
+                .catch(() => null);
+              const membershipOk = Boolean(membership) && String(membership?.role || '').toUpperCase() === 'MEMBER';
+              assertions.push({
+                ok: membershipOk,
+                message: membershipOk ? 'inviteExistingUserAccept: membership creada (MEMBER)' : 'inviteExistingUserAccept: membership missing/invalid',
+              });
+
+              // Cleanup: archive-only.
+              await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+              await prisma.workspaceInvite.updateMany({ where: { id: invite.id }, data: { archivedAt: now } as any }).catch(() => {});
+              await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+            }
+          }
+        }
+      }
+
+      const copilotArchiveRestore = (step.expect as any)?.copilotArchiveRestore;
+      if (copilotArchiveRestore) {
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const access = await resolveWorkspaceAccess(request);
+        const wsId = access.workspaceId || 'default';
+        if (!authHeader) {
+          assertions.push({ ok: false, message: 'copilotArchiveRestore: auth header missing' });
+        } else {
+          const createRes = await app.inject({
+            method: 'POST',
+            url: '/api/copilot/threads',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId, 'content-type': 'application/json' },
+            payload: JSON.stringify({ title: `Scenario Copilot Archive ${new Date().toISOString()}` }),
+          });
+          let createdJson: any = null;
+          try {
+            createdJson = JSON.parse(String(createRes.body || ''));
+          } catch {
+            createdJson = null;
+          }
+          const threadId = createdJson?.id ? String(createdJson.id) : '';
+          assertions.push({
+            ok: createRes.statusCode === 200 && Boolean(threadId),
+            message: createRes.statusCode === 200 && threadId ? 'copilotArchiveRestore: thread creado OK' : `copilotArchiveRestore: create thread failed (${createRes.statusCode})`,
+          });
+
+          if (threadId) {
+            const listActive = await app.inject({
+              method: 'GET',
+              url: '/api/copilot/threads',
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            });
+            const activeArr = (() => {
+              try {
+                const parsed = JSON.parse(String(listActive.body || '[]'));
+                return Array.isArray(parsed) ? parsed : [];
+              } catch {
+                return [];
+              }
+            })();
+            assertions.push({
+              ok: activeArr.some((t: any) => String(t?.id || '') === threadId),
+              message: activeArr.some((t: any) => String(t?.id || '') === threadId) ? 'copilotArchiveRestore: thread aparece en activos' : 'copilotArchiveRestore: thread no aparece en activos',
+            });
+
+            const archRes = await app.inject({
+              method: 'PATCH',
+              url: `/api/copilot/threads/${encodeURIComponent(threadId)}`,
+              headers: { authorization: authHeader, 'x-workspace-id': wsId, 'content-type': 'application/json' },
+              payload: JSON.stringify({ archived: true }),
+            });
+            assertions.push({
+              ok: archRes.statusCode === 200,
+              message: archRes.statusCode === 200 ? 'copilotArchiveRestore: archivar OK' : `copilotArchiveRestore: archivar failed (${archRes.statusCode})`,
+            });
+
+            const listAfterArchive = await app.inject({
+              method: 'GET',
+              url: '/api/copilot/threads',
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            });
+            const activeAfter = (() => {
+              try {
+                const parsed = JSON.parse(String(listAfterArchive.body || '[]'));
+                return Array.isArray(parsed) ? parsed : [];
+              } catch {
+                return [];
+              }
+            })();
+            assertions.push({
+              ok: !activeAfter.some((t: any) => String(t?.id || '') === threadId),
+              message: !activeAfter.some((t: any) => String(t?.id || '') === threadId) ? 'copilotArchiveRestore: thread NO aparece en activos tras archivar' : 'copilotArchiveRestore: thread sigue en activos tras archivar',
+            });
+
+            const listArchived = await app.inject({
+              method: 'GET',
+              url: '/api/copilot/threads?includeArchived=1',
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            });
+            const archivedArr = (() => {
+              try {
+                const parsed = JSON.parse(String(listArchived.body || '[]'));
+                return Array.isArray(parsed) ? parsed : [];
+              } catch {
+                return [];
+              }
+            })();
+            const archivedRow = archivedArr.find((t: any) => String(t?.id || '') === threadId) || null;
+            assertions.push({
+              ok: Boolean(archivedRow) && Boolean(archivedRow?.archivedAt),
+              message: Boolean(archivedRow) && archivedRow?.archivedAt ? 'copilotArchiveRestore: thread aparece en archivados' : 'copilotArchiveRestore: thread no aparece en archivados',
+            });
+
+            const restoreRes = await app.inject({
+              method: 'PATCH',
+              url: `/api/copilot/threads/${encodeURIComponent(threadId)}`,
+              headers: { authorization: authHeader, 'x-workspace-id': wsId, 'content-type': 'application/json' },
+              payload: JSON.stringify({ archived: false }),
+            });
+            assertions.push({
+              ok: restoreRes.statusCode === 200,
+              message: restoreRes.statusCode === 200 ? 'copilotArchiveRestore: restaurar OK' : `copilotArchiveRestore: restore failed (${restoreRes.statusCode})`,
+            });
+
+            const listAfterRestore = await app.inject({
+              method: 'GET',
+              url: '/api/copilot/threads',
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            });
+            const afterRestoreArr = (() => {
+              try {
+                const parsed = JSON.parse(String(listAfterRestore.body || '[]'));
+                return Array.isArray(parsed) ? parsed : [];
+              } catch {
+                return [];
+              }
+            })();
+            assertions.push({
+              ok: afterRestoreArr.some((t: any) => String(t?.id || '') === threadId),
+              message: afterRestoreArr.some((t: any) => String(t?.id || '') === threadId) ? 'copilotArchiveRestore: thread vuelve a activos (OK)' : 'copilotArchiveRestore: thread no volvió a activos',
+            });
+
+            // Cleanup: archive again to keep history tidy.
+            await app.inject({
+              method: 'PATCH',
+              url: `/api/copilot/threads/${encodeURIComponent(threadId)}`,
+              headers: { authorization: authHeader, 'x-workspace-id': wsId, 'content-type': 'application/json' },
+              payload: JSON.stringify({ archived: true }),
+            });
+          }
+        }
+      }
+
       const platformGate = (step.expect as any)?.platformSuperadminGate;
       if (platformGate) {
         const userId = request.user?.userId ? String(request.user.userId) : '';
@@ -910,12 +1356,39 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           message: leaderMembership?.id ? 'ssclinicalStageAssign: leader membership OK' : 'ssclinicalStageAssign: leader membership missing in workspace',
         });
 
-        const phoneLine = await prisma.phoneLine
+        let phoneLine = await prisma.phoneLine
           .findFirst({ where: { workspaceId: wsId, archivedAt: null, isActive: true }, select: { id: true } })
           .catch(() => null);
+        let tempPhoneLineId: string | null = null;
+        if (!phoneLine?.id) {
+          const id = `scenario-ssclinical-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id,
+                workspaceId: wsId,
+                alias: 'Scenario SSClinical (temp)',
+                phoneE164: null,
+                waPhoneNumberId,
+                wabaId: null,
+                defaultProgramId: null,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          tempPhoneLineId = phoneLine?.id || null;
+        }
         assertions.push({
           ok: Boolean(phoneLine?.id),
-          message: phoneLine?.id ? 'ssclinicalStageAssign: phoneLine OK' : 'ssclinicalStageAssign: no active phoneLine in workspace',
+          message: phoneLine?.id
+            ? tempPhoneLineId
+              ? 'ssclinicalStageAssign: phoneLine temporal creada por scenario'
+              : 'ssclinicalStageAssign: phoneLine OK'
+            : 'ssclinicalStageAssign: no active phoneLine in workspace',
         });
 
         if (ws?.id && !ws.archivedAt && phoneLine?.id && leaderMembership?.id && hasAssignRule) {
@@ -976,7 +1449,154 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             // Cleanup: archive-only.
             await prisma.conversation.updateMany({ where: { id: conv.id }, data: { archivedAt: now } as any }).catch(() => {});
             await prisma.contact.updateMany({ where: { id: contact?.id || '' }, data: { archivedAt: now } as any }).catch(() => {});
+            if (tempPhoneLineId) {
+              await prisma.phoneLine.updateMany({ where: { id: tempPhoneLineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+            }
           }
+        }
+      }
+
+      const stageAdminConfigurable = (step.expect as any)?.stageAdminConfigurable;
+      if (stageAdminConfigurable && typeof stageAdminConfigurable === 'object') {
+        const wsId = String((stageAdminConfigurable as any)?.workspaceId || 'scenario-stage-config').trim() || 'scenario-stage-config';
+        const slugRaw = String((stageAdminConfigurable as any)?.slug || 'PREPARANDO_ENVIO').trim();
+        const slug = slugRaw
+          .replace(/\s+/g, '_')
+          .replace(/-+/g, '_')
+          .replace(/__+/g, '_')
+          .toUpperCase()
+          .slice(0, 64);
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'stageAdminConfigurable: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'stageAdminConfigurable: auth header missing' });
+        } else if (!slug) {
+          assertions.push({ ok: false, message: 'stageAdminConfigurable: slug missing' });
+        } else {
+          const lineId = `${wsId}-line`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Stage Config', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Stage Config', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.phoneLine
+            .upsert({
+              where: { id: lineId },
+              create: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Stage',
+                phoneE164: null,
+                waPhoneNumberId,
+                wabaId: null,
+                defaultProgramId: null,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              update: {
+                workspaceId: wsId,
+                alias: 'Scenario Stage',
+                phoneE164: null,
+                waPhoneNumberId,
+                wabaId: null,
+                defaultProgramId: null,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+            })
+            .catch(() => {});
+
+          const createStageRes = await app.inject({
+            method: 'POST',
+            url: '/api/workspaces/current/stages',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            payload: { slug, labelEs: 'Preparando envío', order: 55 },
+          });
+          const createOk = createStageRes.statusCode === 200 || createStageRes.statusCode === 409;
+          assertions.push({
+            ok: createOk,
+            message: createOk
+              ? `stageAdminConfigurable: create stage ${slug} OK (${createStageRes.statusCode})`
+              : `stageAdminConfigurable: create stage failed (${createStageRes.statusCode})`,
+          });
+
+          const contactWaId = `sandbox-stage-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+          const contact = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, waId: contactWaId, displayName: 'Scenario Stage Contact', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const conv = contact?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: lineId,
+                    programId: null,
+                    contactId: contact.id,
+                    status: 'NEW',
+                    conversationStage: 'NEW_INTAKE',
+                    channel: 'system',
+                    isAdmin: false,
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+          if (!conv?.id) {
+            assertions.push({ ok: false, message: 'stageAdminConfigurable: no se pudo crear conversación' });
+          } else {
+            const patchRes = await app.inject({
+              method: 'PATCH',
+              url: `/api/conversations/${conv.id}/stage`,
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+              payload: { stage: slug, reason: 'scenario' },
+            });
+            const patchOk = patchRes.statusCode === 200;
+            assertions.push({
+              ok: patchOk,
+              message: patchOk ? 'stageAdminConfigurable: PATCH conversation stage OK' : `stageAdminConfigurable: PATCH failed (${patchRes.statusCode})`,
+            });
+
+            const updated = await prisma.conversation
+              .findUnique({ where: { id: conv.id }, select: { conversationStage: true } })
+              .catch(() => null);
+            const stageOk = String(updated?.conversationStage || '') === slug;
+            assertions.push({
+              ok: stageOk,
+              message: stageOk
+                ? `stageAdminConfigurable: conversation stage set OK (${slug})`
+                : `stageAdminConfigurable: expected stage=${slug}, got ${String(updated?.conversationStage || '—')}`,
+            });
+
+            // Cleanup: archive-only.
+            await prisma.conversation.updateMany({ where: { id: conv.id }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.contact.updateMany({ where: { id: contact?.id || '' }, data: { archivedAt: now } as any }).catch(() => {});
+          }
+
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { isActive: false, archivedAt: now } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
         }
       }
 

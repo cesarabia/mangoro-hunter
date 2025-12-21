@@ -3,8 +3,7 @@
 Este es el **único** archivo que el Owner necesita para revisar DEV (sin terminal).
 
 ## Build stamp (DEV)
-- `gitSha`: `9b967ac`
-- `startedAt`: `2025-12-21T00:29:45.655Z`
+- Ver en UI: `Ayuda / QA → Build / Health` (gitSha + startedAt).
 
 ## Restricción crítica (SAFE OUTBOUND MODE)
 - DEV debe operar en **ALLOWLIST_ONLY**.
@@ -13,13 +12,11 @@ Este es el **único** archivo que el Owner necesita para revisar DEV (sin termin
   - Test: `56994830202`
 
 ## Qué cambió en esta iteración (UX + Review Mode)
-- Hotfix UI: se corrigió crash de React en Inbox (“Cannot access 'Oe' before initialization”) causado por referencia en TDZ dentro de `ConversationView`.
-- Inbox/Chat: vista **chat-first** con botón `Detalles` (evita encabezados largos); mensajes/adjuntos **wrap** (sin scroll horizontal).
-- Program vs Modo: se removió el selector “Modo del candidato” de la UI; el **Program** es la única fuente visible.
-- Nueva pantalla `Ayuda / QA` (topbar) con: build/health, SAFE MODE + allowlist, checklist click-only, logs recientes y botón `Run Smoke Scenarios` (sandbox / NullTransport).
-- Logs: nuevo endpoint `GET /api/logs/outbound-messages` para ver bloqueos (blockedReason) y dedupe.
-- Platform: rol global `SUPERADMIN` (solo `cesarabia@gmail.com`) para el módulo “Clientes/Plataforma”.
-- SSClinical: setting `Nurse Leader Email` + automation `STAGE_CHANGED` que asigna automáticamente al pasar a stage `INTERESADO`.
+- **SAFE MODE hardening (DEV):** bootstrap fuerza `ALLOWLIST_ONLY` y allowlist efectiva solo admin/test (evita molestar números reales).
+- **Estados/Stages por workspace:** `WorkspaceStage` (archive-only) + UI para crear/ordenar/activar/desactivar.
+- **PhoneLines:** `inboundMode` (`DEFAULT` / `MENU`) + allowlist opcional de Programs para el menú.
+- **Scenarios/QA:** escenarios nuevos y DoD auto en PASS (incluye `inbound_program_menu` y `stage_admin_configurable`).
+- SSClinical: seed de workspace + Programs base + invites (archive-only) y stage `INTERESADO` auto-asigna nurse leader (si está configurado).
 
 ## QA DEV (click-only) — PASS/FAIL
 Revisar desde `https://hunter.mangoro.app`:
@@ -44,3 +41,5 @@ Revisar desde `https://hunter.mangoro.app`:
 
 ## Docs tocados en esta iteración
 - `docs/DEV_PACKET.md`
+- `docs/PLATFORM_DESIGN.md`
+- `docs/STATUS.md`

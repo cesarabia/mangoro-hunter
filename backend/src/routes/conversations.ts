@@ -16,6 +16,7 @@ import { getContactDisplayName } from '../utils/contactDisplay';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { stableHash } from '../services/agent/tools';
 import { runAutomations } from '../services/automationRunnerService';
+import { isKnownActiveStage, normalizeStageSlug } from '../services/workspaceStageService';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -358,6 +359,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     if (!/^[A-Za-z0-9][A-Za-z0-9 _-]*$/.test(stageRaw)) {
       return reply.code(400).send({ error: '"stage" inválido. Usa letras/números/espacios/_/-' });
     }
+    const stageSlug = normalizeStageSlug(stageRaw);
+    if (!stageSlug) return reply.code(400).send({ error: '"stage" inválido.' });
 
     const reasonRaw = typeof body?.reason === 'string' ? body.reason.trim() : '';
     const reason = reasonRaw ? reasonRaw.slice(0, 140) : null;
@@ -369,19 +372,34 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     if (!conversation) return reply.code(404).send({ error: 'Conversation not found' });
     if (conversation.isAdmin) return reply.code(400).send({ error: 'No aplica a conversación admin' });
 
+    // If the workspace has configured stages, validate against active slugs.
+    const hasAnyStageConfig = await prisma.workspaceStage
+      .findFirst({ where: { workspaceId: access.workspaceId, archivedAt: null }, select: { id: true } })
+      .then((r) => Boolean(r?.id))
+      .catch(() => false);
+    if (hasAnyStageConfig) {
+      const ok = await isKnownActiveStage(access.workspaceId, stageSlug).catch(() => false);
+      if (!ok) {
+        return reply.code(400).send({
+          error: `Stage "${stageSlug}" no existe o está inactivo para este workspace. Configúralo en Configuración → Workspace → Estados.`,
+          code: 'STAGE_UNKNOWN',
+        });
+      }
+    }
+
     await prisma.conversation.update({
       where: { id },
       data: {
-        conversationStage: stageRaw,
+        conversationStage: stageSlug,
         stageReason: reason || 'manual',
         updatedAt: new Date(),
       },
     });
 
     const reasonSuffix = reason ? ` (motivo: ${reason})` : '';
-    await logSystemMessage(id, `🏷️ Stage actualizado: ${stageRaw}${reasonSuffix}`, {
+    await logSystemMessage(id, `🏷️ Stage actualizado: ${stageSlug}${reasonSuffix}`, {
       stageUpdate: true,
-      stage: stageRaw,
+      stage: stageSlug,
       reason,
       actor,
     });
@@ -400,7 +418,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       request.log.warn({ err, conversationId: id }, 'STAGE_CHANGED automations failed');
     }
 
-    return { ok: true, stage: stageRaw, automationError };
+    return { ok: true, stage: stageSlug, automationError };
   });
 
   app.patch('/:id/contact-name', { preValidation: [app.authenticate] }, async (request, reply) => {

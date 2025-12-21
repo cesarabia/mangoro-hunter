@@ -1,13 +1,21 @@
 import { prisma } from '../db/client';
 import { hashPassword } from './passwordService';
+import crypto from 'node:crypto';
 import {
   DEFAULT_ADMIN_AI_PROMPT,
   DEFAULT_INTERVIEW_AI_PROMPT,
   DEFAULT_SALES_AI_PROMPT,
-  getSystemConfig
+  getAdminWaIdAllowlist,
+  getOutboundAllowlist,
+  getOutboundPolicy,
+  getSystemConfig,
+  getTestWaIdAllowlist,
+  updateAuthorizedNumbersConfig,
+  updateOutboundSafetyConfig,
 } from './configService';
 import { getEffectiveOpenAiKey } from './aiService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
+import { ensureWorkspaceStages } from './workspaceStageService';
 
 async function ensureWorkspace(id: string, name: string, isSandbox: boolean) {
   const existing = await prisma.workspace.findUnique({ where: { id } }).catch(() => null);
@@ -24,6 +32,46 @@ async function ensureMembership(userId: string, workspaceId: string, role: strin
     where: { userId_workspaceId: { userId, workspaceId } },
     create: { userId, workspaceId, role, archivedAt: null } as any,
     update: { role, archivedAt: null } as any,
+  });
+}
+
+async function ensureWorkspaceInvite(params: {
+  workspaceId: string;
+  email: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER';
+  assignedOnly?: boolean;
+}) {
+  const email = params.email.trim().toLowerCase();
+  const role = params.role;
+  const assignedOnly = role === 'MEMBER' ? Boolean(params.assignedOnly) : false;
+  const now = new Date();
+
+  const existing = await prisma.workspaceInvite.findFirst({
+    where: {
+      workspaceId: params.workspaceId,
+      email,
+      role,
+      assignedOnly,
+      archivedAt: null,
+      acceptedAt: null,
+      expiresAt: { gt: now },
+    } as any,
+    select: { id: true },
+  });
+  if (existing?.id) return existing;
+
+  const token = crypto.randomBytes(18).toString('base64url');
+  const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  return prisma.workspaceInvite.create({
+    data: {
+      workspaceId: params.workspaceId,
+      email,
+      role,
+      assignedOnly,
+      token,
+      expiresAt,
+    } as any,
+    select: { id: true },
   });
 }
 
@@ -144,10 +192,41 @@ export async function ensureAdminUser(): Promise<void> {
     });
   }
 
-  const config = await getSystemConfig().catch(() => null);
+  let config = await getSystemConfig().catch(() => null);
+
+  // DEV safety: enforce allowlist-only with exactly admin+test numbers, to avoid molesting real candidates.
+  const appEnv = String(process.env.APP_ENV || '').toLowerCase().trim();
+  const isProd = appEnv === 'production' || appEnv === 'prod';
+  if (!isProd && config) {
+    const desiredAdmin = ['56982345846'];
+    const desiredTest = ['56994830202'];
+    const currentAdmin = getAdminWaIdAllowlist(config);
+    const currentTest = getTestWaIdAllowlist(config);
+    const currentExtraAllowlist = getOutboundAllowlist(config);
+
+    const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((v, idx) => v === b[idx]);
+    const needsNumbers = !sameList(currentAdmin, desiredAdmin) || !sameList(currentTest, desiredTest);
+    const needsPolicy = getOutboundPolicy(config) !== 'ALLOWLIST_ONLY';
+    const needsOutboundAllowlistClear = currentExtraAllowlist.length > 0;
+
+    if (needsNumbers) {
+      await updateAuthorizedNumbersConfig({ adminNumbers: desiredAdmin, testNumbers: desiredTest }).catch(() => {});
+    }
+    if (needsPolicy || needsOutboundAllowlistClear) {
+      await updateOutboundSafetyConfig({ outboundPolicy: 'ALLOWLIST_ONLY', outboundAllowlist: [], outboundAllowAllUntil: null }).catch(() => {});
+    }
+    if (needsNumbers || needsPolicy || needsOutboundAllowlistClear) {
+      config = await getSystemConfig().catch(() => config);
+    }
+  }
 
   await ensureWorkspace('default', 'Hunter Internal', false);
   await ensureWorkspace('sandbox', 'Platform Sandbox', true);
+  if (!isProd) {
+    await ensureWorkspace('ssclinical', 'SSClinical', false);
+  }
+  await ensureWorkspaceStages('default').catch(() => {});
+  await ensureWorkspaceStages('sandbox').catch(() => {});
   await ensureMembership(admin.id, 'default', 'OWNER');
   await ensureMembership(admin.id, 'sandbox', 'OWNER');
 
@@ -271,8 +350,46 @@ Objetivo: apoyar a vendedores con pitch, objeciones y registro de visitas/ventas
       select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any },
     });
     if (ssclinical && !ssclinical.archivedAt) {
+      await ensureWorkspaceStages('ssclinical').catch(() => {});
       // Ensure inbound RUN_AGENT exists (workspace setup).
       await ensureDefaultAutomationRule({ workspaceId: 'ssclinical', enabled: hasKey }).catch(() => {});
+
+      // Seed SSClinical Programs (no-op if already exist).
+      await ensureProgram({
+        workspaceId: 'ssclinical',
+        name: 'Coordinadora Salud — Suero Hidratante y Sueroterapia',
+        slug: 'coordinadora-ssclinical-suero-hidratante-y-terapia',
+        agentSystemPrompt:
+          'Eres Coordinadora de SSClinical (salud). Objetivo: informar y coordinar, pedir solo datos necesarios y guiar al siguiente paso. Responde breve y en español.',
+      }).catch(() => {});
+      await ensureProgram({
+        workspaceId: 'ssclinical',
+        name: 'Enfermera Líder',
+        slug: 'enfermera-lider-coordinadora',
+        agentSystemPrompt:
+          'Eres Enfermera Líder (SSClinical). Objetivo: coordinar casos, validar información clínica básica y definir próximos pasos. Responde breve y en español.',
+      }).catch(() => {});
+      await ensureProgram({
+        workspaceId: 'ssclinical',
+        name: 'Enfermera Domicilio',
+        slug: 'enfermera-domicilio',
+        agentSystemPrompt:
+          'Eres Enfermera Domicilio (SSClinical). Objetivo: coordinar visita, confirmar disponibilidad y registrar observaciones. Responde breve y en español.',
+      }).catch(() => {});
+      await ensureProgram({
+        workspaceId: 'ssclinical',
+        name: 'Médico (Orden médica)',
+        slug: 'medico-orden-medica',
+        agentSystemPrompt:
+          'Eres Médico (SSClinical). Objetivo: revisar/solicitar orden médica y orientar al siguiente paso. Responde breve y en español.',
+      }).catch(() => {});
+
+      // Seed pilot invites (archive-only; no crea usuarios automáticamente).
+      await ensureWorkspaceInvite({ workspaceId: 'ssclinical', email: 'csarabia@ssclinical.cl', role: 'OWNER' }).catch(() => {});
+      await ensureWorkspaceInvite({ workspaceId: 'ssclinical', email: 'contacto@ssclinical.cl', role: 'MEMBER', assignedOnly: true }).catch(() => {});
+
+      // Ensure at least one internal ADMIN/OWNER membership exists to support the pilot (and allow auto-assignment).
+      await ensureMembership(admin.id, 'ssclinical', 'ADMIN').catch(() => {});
 
       // Ensure nurse leader email is set (best-effort: first OWNER/ADMIN).
       const currentLeader = String((ssclinical as any).ssclinicalNurseLeaderEmail || '').trim();

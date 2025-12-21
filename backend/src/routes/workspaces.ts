@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { prisma } from '../db/client';
 import { resolveWorkspaceAccess, isWorkspaceOwner, isWorkspaceAdmin } from '../services/workspaceAuthService';
 import { serializeJson } from '../utils/json';
+import { ensureWorkspaceStages, listWorkspaceStages, normalizeStageSlug } from '../services/workspaceStageService';
 
 export async function registerWorkspaceRoutes(app: FastifyInstance) {
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
@@ -429,5 +430,147 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       .catch(() => {});
 
     return summary;
+  });
+
+  app.get('/current/stages', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    const includeArchived = String((request.query as any)?.includeArchived || '').toLowerCase() === 'true';
+    const stages = await listWorkspaceStages({ workspaceId: access.workspaceId, includeArchived }).catch(() => []);
+    return { ok: true, stages };
+  });
+
+  app.post('/current/stages', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+
+    const body = request.body as { slug?: string; labelEs?: string; order?: number };
+    const slug = normalizeStageSlug(body?.slug);
+    const labelEs = String(body?.labelEs || '').trim();
+    const order = typeof body?.order === 'number' && Number.isFinite(body.order) ? Math.round(body.order) : null;
+    if (!slug) return reply.code(400).send({ error: '"slug" es requerido.' });
+    if (!/^[A-Z0-9][A-Z0-9_]*$/.test(slug)) {
+      return reply.code(400).send({ error: '"slug" inválido. Usa A-Z, 0-9 y _ (ej: EN_PROCESO).' });
+    }
+    if (!labelEs) return reply.code(400).send({ error: '"labelEs" es requerido.' });
+    if (labelEs.length > 80) return reply.code(400).send({ error: '"labelEs" es demasiado largo (max 80).' });
+
+    await ensureWorkspaceStages(access.workspaceId).catch(() => {});
+
+    const existing = await prisma.workspaceStage
+      .findUnique({ where: { workspaceId_slug: { workspaceId: access.workspaceId, slug } } })
+      .catch(() => null);
+    if (existing && !existing.archivedAt) {
+      return reply.code(409).send({ error: `Stage "${slug}" ya existe.` });
+    }
+
+    const created = await prisma.workspaceStage
+      .upsert({
+        where: { workspaceId_slug: { workspaceId: access.workspaceId, slug } },
+        create: {
+          workspaceId: access.workspaceId,
+          slug,
+          labelEs,
+          order: order ?? 0,
+          isActive: true,
+          isTerminal: false,
+          archivedAt: null,
+        } as any,
+        update: {
+          labelEs,
+          ...(order === null ? {} : { order }),
+          archivedAt: null,
+          isActive: true,
+          updatedAt: new Date(),
+        } as any,
+      })
+      .catch((err: any) => {
+        request.log.warn({ err, slug }, 'Failed to upsert workspace stage');
+        throw err;
+      });
+
+    await prisma.configChangeLog
+      .create({
+        data: {
+          workspaceId: access.workspaceId,
+          userId,
+          type: 'WORKSPACE_STAGE_CREATED',
+          beforeJson: existing ? serializeJson({ id: existing.id, slug: existing.slug, labelEs: existing.labelEs, order: existing.order, isActive: existing.isActive, archivedAt: existing.archivedAt ? true : false }) : null,
+          afterJson: serializeJson({ id: created.id, slug: created.slug, labelEs: created.labelEs, order: created.order, isActive: created.isActive, archivedAt: created.archivedAt ? true : false }),
+        },
+      })
+      .catch(() => {});
+
+    const stages = await listWorkspaceStages({ workspaceId: access.workspaceId, includeArchived: true }).catch(() => []);
+    return { ok: true, stages };
+  });
+
+  app.patch('/current/stages/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+
+    const { id } = request.params as { id: string };
+    const body = request.body as {
+      labelEs?: string;
+      order?: number;
+      isActive?: boolean;
+      isTerminal?: boolean;
+      archived?: boolean;
+    };
+
+    const existing = await prisma.workspaceStage.findFirst({
+      where: { id, workspaceId: access.workspaceId },
+    });
+    if (!existing) return reply.code(404).send({ error: 'Stage no encontrado.' });
+
+    const patch: any = {};
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'labelEs')) {
+      const label = String(body?.labelEs || '').trim();
+      if (!label) return reply.code(400).send({ error: '"labelEs" es requerido.' });
+      if (label.length > 80) return reply.code(400).send({ error: '"labelEs" es demasiado largo (max 80).' });
+      patch.labelEs = label;
+    }
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'order')) {
+      const o = body?.order;
+      if (typeof o !== 'number' || !Number.isFinite(o)) return reply.code(400).send({ error: '"order" inválido.' });
+      patch.order = Math.round(o);
+    }
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'isActive')) {
+      if (typeof body?.isActive !== 'boolean') return reply.code(400).send({ error: '"isActive" inválido.' });
+      patch.isActive = body.isActive;
+    }
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'isTerminal')) {
+      if (typeof body?.isTerminal !== 'boolean') return reply.code(400).send({ error: '"isTerminal" inválido.' });
+      patch.isTerminal = body.isTerminal;
+    }
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'archived')) {
+      if (typeof body?.archived !== 'boolean') return reply.code(400).send({ error: '"archived" inválido.' });
+      patch.archivedAt = body.archived ? new Date() : null;
+      if (body.archived) {
+        patch.isActive = false;
+      }
+    }
+    patch.updatedAt = new Date();
+
+    const updated = await prisma.workspaceStage.update({
+      where: { id: existing.id },
+      data: patch,
+    });
+
+    await prisma.configChangeLog
+      .create({
+        data: {
+          workspaceId: access.workspaceId,
+          userId,
+          type: 'WORKSPACE_STAGE_UPDATED',
+          beforeJson: serializeJson({ id: existing.id, slug: existing.slug, labelEs: existing.labelEs, order: existing.order, isActive: existing.isActive, isTerminal: existing.isTerminal, archivedAt: existing.archivedAt ? true : false }),
+          afterJson: serializeJson({ id: updated.id, slug: updated.slug, labelEs: updated.labelEs, order: updated.order, isActive: updated.isActive, isTerminal: updated.isTerminal, archivedAt: updated.archivedAt ? true : false }),
+        },
+      })
+      .catch(() => {});
+
+    const stages = await listWorkspaceStages({ workspaceId: access.workspaceId, includeArchived: true }).catch(() => []);
+    return { ok: true, stages };
   });
 }

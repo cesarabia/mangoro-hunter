@@ -20,6 +20,28 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     }
   };
 
+  const normalizeInboundMode = (value: unknown): 'DEFAULT' | 'MENU' => {
+    const upper = String(value || '').trim().toUpperCase();
+    return upper === 'MENU' ? 'MENU' : 'DEFAULT';
+  };
+
+  const parseProgramMenuIdsJson = (raw: unknown): string[] => {
+    if (!raw || typeof raw !== 'string') return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      const out: string[] = [];
+      for (const item of parsed) {
+        const id = String(item || '').trim();
+        if (!id) continue;
+        if (!out.includes(id)) out.push(id);
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  };
+
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const includeArchivedRaw = (request.query as any)?.includeArchived;
@@ -37,6 +59,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
         waPhoneNumberId: true,
         wabaId: true,
         defaultProgramId: true,
+        inboundMode: true as any,
+        programMenuIdsJson: true as any,
         isActive: true,
         needsAttention: true,
         lastInboundAt: true,
@@ -48,6 +72,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     });
     return lines.map((l) => ({
       ...l,
+      inboundMode: normalizeInboundMode((l as any).inboundMode),
+      programMenuIds: parseProgramMenuIdsJson((l as any).programMenuIdsJson),
       lastInboundAt: l.lastInboundAt ? l.lastInboundAt.toISOString() : null,
       lastOutboundAt: l.lastOutboundAt ? l.lastOutboundAt.toISOString() : null,
       archivedAt: l.archivedAt ? l.archivedAt.toISOString() : null,
@@ -97,6 +123,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
       waPhoneNumberId?: string;
       wabaId?: string | null;
       defaultProgramId?: string | null;
+      inboundMode?: string;
+      programMenuIds?: string[] | null;
       isActive?: boolean;
     };
 
@@ -138,6 +166,25 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
       }
     }
 
+    const inboundMode = normalizeInboundMode(body.inboundMode);
+    let programMenuIds: string[] = [];
+    if (inboundMode === 'MENU' && Array.isArray(body.programMenuIds)) {
+      for (const raw of body.programMenuIds) {
+        const id = String(raw || '').trim();
+        if (!id) continue;
+        if (!programMenuIds.includes(id)) programMenuIds.push(id);
+      }
+      programMenuIds = programMenuIds.slice(0, 20);
+      if (programMenuIds.length > 0) {
+        const valid = await prisma.program.findMany({
+          where: { workspaceId: access.workspaceId, id: { in: programMenuIds }, archivedAt: null, isActive: true },
+          select: { id: true },
+        });
+        const set = new Set(valid.map((p) => p.id));
+        programMenuIds = programMenuIds.filter((id) => set.has(id));
+      }
+    }
+
     const created = await prisma.phoneLine.create({
       data: {
         workspaceId: access.workspaceId,
@@ -146,11 +193,15 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
         waPhoneNumberId,
         wabaId: body.wabaId ? String(body.wabaId).trim() : null,
         defaultProgramId: body.defaultProgramId ? String(body.defaultProgramId).trim() : null,
+        inboundMode,
+        programMenuIdsJson: inboundMode === 'MENU' && programMenuIds.length > 0 ? serializeJson(programMenuIds) : null,
         isActive,
       },
     });
     return {
       ...created,
+      inboundMode: normalizeInboundMode((created as any).inboundMode),
+      programMenuIds: parseProgramMenuIdsJson((created as any).programMenuIdsJson),
       lastInboundAt: created.lastInboundAt ? created.lastInboundAt.toISOString() : null,
       lastOutboundAt: created.lastOutboundAt ? created.lastOutboundAt.toISOString() : null,
       archivedAt: created.archivedAt ? created.archivedAt.toISOString() : null,
@@ -171,6 +222,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
       waPhoneNumberId?: string;
       wabaId?: string | null;
       defaultProgramId?: string | null;
+      inboundMode?: string;
+      programMenuIds?: string[] | null;
       isActive?: boolean;
       archived?: boolean;
     };
@@ -196,10 +249,45 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     if (typeof body.waPhoneNumberId === 'string') data.waPhoneNumberId = body.waPhoneNumberId.trim();
     if (typeof body.wabaId !== 'undefined') data.wabaId = body.wabaId ? String(body.wabaId).trim() : null;
     if (typeof body.defaultProgramId !== 'undefined') data.defaultProgramId = body.defaultProgramId ? String(body.defaultProgramId).trim() : null;
+    if (typeof body.inboundMode !== 'undefined') data.inboundMode = normalizeInboundMode(body.inboundMode);
     if (typeof body.isActive === 'boolean') data.isActive = body.isActive;
     if (typeof body.archived === 'boolean') {
       data.archivedAt = body.archived ? new Date() : null;
       if (body.archived) data.isActive = false;
+    }
+
+    const nextInboundMode =
+      typeof data.inboundMode === 'string'
+        ? normalizeInboundMode(data.inboundMode)
+        : normalizeInboundMode((existing as any).inboundMode);
+    const hasProgramMenuIds = Object.prototype.hasOwnProperty.call(body || {}, 'programMenuIds');
+    const hasInboundMode = Object.prototype.hasOwnProperty.call(body || {}, 'inboundMode');
+    if (hasProgramMenuIds || hasInboundMode) {
+      if (nextInboundMode !== 'MENU') {
+        data.programMenuIdsJson = null;
+      } else if (hasProgramMenuIds) {
+        let programMenuIds: string[] = [];
+        if (Array.isArray(body.programMenuIds)) {
+          for (const raw of body.programMenuIds) {
+            const id = String(raw || '').trim();
+            if (!id) continue;
+            if (!programMenuIds.includes(id)) programMenuIds.push(id);
+          }
+        }
+        programMenuIds = programMenuIds.slice(0, 20);
+        if (programMenuIds.length > 0) {
+          const valid = await prisma.program.findMany({
+            where: { workspaceId: access.workspaceId, id: { in: programMenuIds }, archivedAt: null, isActive: true },
+            select: { id: true },
+          });
+          const set = new Set(valid.map((p) => p.id));
+          programMenuIds = programMenuIds.filter((id) => set.has(id));
+        }
+        data.programMenuIdsJson = programMenuIds.length > 0 ? serializeJson(programMenuIds) : null;
+      } else {
+        // inboundMode changed to MENU but no list provided: keep existing list.
+        data.programMenuIdsJson = (existing as any).programMenuIdsJson || null;
+      }
     }
 
     const nextWaPhoneNumberId = typeof data.waPhoneNumberId === 'string' ? String(data.waPhoneNumberId) : String(existing.waPhoneNumberId);
@@ -245,6 +333,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     });
     return {
       ...updated,
+      inboundMode: normalizeInboundMode((updated as any).inboundMode),
+      programMenuIds: parseProgramMenuIdsJson((updated as any).programMenuIdsJson),
       lastInboundAt: updated.lastInboundAt ? updated.lastInboundAt.toISOString() : null,
       lastOutboundAt: updated.lastOutboundAt ? updated.lastOutboundAt.toISOString() : null,
       archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null,
@@ -270,6 +360,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
       waPhoneNumberId?: string;
       wabaId?: string | null;
       defaultProgramId?: string | null;
+      inboundMode?: string;
+      programMenuIds?: string[] | null;
       isActive?: boolean;
     };
 
@@ -301,6 +393,25 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
       phoneE164 = normalizeChilePhoneE164(typeof body.phoneE164 === 'string' ? body.phoneE164 : '');
     } catch (err: any) {
       return reply.code(400).send({ error: err?.message || 'phoneE164 inválido.' });
+    }
+
+    const inboundMode = normalizeInboundMode(body.inboundMode);
+    let programMenuIds: string[] = [];
+    if (inboundMode === 'MENU' && Array.isArray(body.programMenuIds)) {
+      for (const raw of body.programMenuIds) {
+        const id = String(raw || '').trim();
+        if (!id) continue;
+        if (!programMenuIds.includes(id)) programMenuIds.push(id);
+      }
+      programMenuIds = programMenuIds.slice(0, 20);
+      if (programMenuIds.length > 0) {
+        const valid = await prisma.program.findMany({
+          where: { workspaceId: access.workspaceId, id: { in: programMenuIds }, archivedAt: null, isActive: true },
+          select: { id: true },
+        });
+        const set = new Set(valid.map((p) => p.id));
+        programMenuIds = programMenuIds.filter((id) => set.has(id));
+      }
     }
 
     // Permission on source workspace (global ADMIN OR membership OWNER).
@@ -365,6 +476,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
                 waPhoneNumberId,
                 wabaId: body.wabaId ? String(body.wabaId).trim() : null,
                 defaultProgramId: body.defaultProgramId ? String(body.defaultProgramId).trim() : null,
+                inboundMode,
+                programMenuIdsJson: inboundMode === 'MENU' && programMenuIds.length > 0 ? serializeJson(programMenuIds) : null,
                 isActive,
                 archivedAt: null,
               },
@@ -377,6 +490,8 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
                 waPhoneNumberId,
                 wabaId: body.wabaId ? String(body.wabaId).trim() : null,
                 defaultProgramId: body.defaultProgramId ? String(body.defaultProgramId).trim() : null,
+                inboundMode,
+                programMenuIdsJson: inboundMode === 'MENU' && programMenuIds.length > 0 ? serializeJson(programMenuIds) : null,
                 isActive,
               },
             });

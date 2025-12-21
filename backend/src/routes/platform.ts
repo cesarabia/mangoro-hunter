@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { prisma } from '../db/client';
 import { serializeJson } from '../utils/json';
+import { ensureWorkspaceStages } from '../services/workspaceStageService';
 
 function slugifyWorkspaceId(value: string): string {
   return String(value || '')
@@ -125,6 +126,7 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
       data: { id: slug, name, isSandbox: Boolean(body?.isSandbox) },
       select: { id: true, name: true, isSandbox: true, createdAt: true, archivedAt: true },
     });
+    await ensureWorkspaceStages(created.id).catch(() => {});
 
     const ownerUser = await prisma.user.findUnique({ where: { email: ownerEmail }, select: { id: true } }).catch(() => null);
     if (ownerUser?.id) {

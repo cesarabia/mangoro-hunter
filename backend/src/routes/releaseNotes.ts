@@ -176,6 +176,10 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'ssclinical_onboarding',
       'platform_superadmin_gate',
       'ssclinical_stage_assign',
+      'stage_admin_configurable',
+      'inbound_program_menu',
+      'invite_existing_user_accept',
+      'copilot_archive_restore',
     ];
 
     const scenarioRuns = await prisma.scenarioRunLog

@@ -120,9 +120,15 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
     - **Usuario existente**: debe **iniciar sesión** y aceptar (endpoint `accept-existing`), sin cambiar credenciales.
 
 ### 5.2 Canales y conversaciones
-- **PhoneLine**: alias + `waPhoneNumberId` + defaultProgram  
+- **PhoneLine**: alias + `waPhoneNumberId` + defaultProgram + **modo de entrada**  
+  - `inboundMode=DEFAULT`: si la conversación no tiene Program, aplica `defaultProgramId`.  
+  - `inboundMode=MENU`: si la conversación no tiene Program, el sistema muestra un **menú corto (1/2/3)** para que el usuario elija (y luego fija `conversation.programId`).  
+  - `programMenuIds` (opcional): limita qué Programs aparecen en ese menú (si está vacío, muestra todos los activos).  
 - **Contact**: contactDisplayName (WhatsApp) + candidateName (extraído) + candidateNameManual (override humano)  
-- **Conversation**: status (NEW/OPEN/CLOSED) + stage + programId + phoneLineId + flags y metadata  
+- **WorkspaceStage** (catálogo por workspace, configurable desde UI):  
+  - `slug` (ID estable), `labelEs` (texto humano), `order`, `isActive`, `isTerminal`, `archivedAt`.  
+  - Seed idempotente: set genérico + set SSClinical (incluye `INTERESADO`).  
+- **Conversation**: status (NEW/OPEN/CLOSED) + `conversationStage` (slug) + programId + phoneLineId + flags y metadata  
   - `assignedToId`: asignación (para `MEMBER assignedOnly`).  
 - **Message**: inbound/outbound + waMessageId idempotente + media/transcriptText + timestamp  
 
@@ -348,15 +354,22 @@ Tabs:
 - Copilot abre y puede navegar/diagnosticar
 
 ### 10.2 Scenarios (automatizables, sandbox)
-- `location_loop_rm`: no repetir ask comuna/ciudad; completar comuna/ciudad.
+- `admin_hola_responde` / `test_hola_responde`: validan respuesta a números allowlist.
+- `location_loop_rm`: no repetir ask comuna/ciudad ante formatos mixtos.
 - `displayname_garbage`: “Más información” no contamina candidateName.
-- `anti_loop_dedupe`: segundo outbound bloqueado por guardrail.
-- `safe_mode_block`: outbound real bloqueado fuera allowlist (safe fail).
+- `program_menu_dedupe`: dedupeKey evita re-envíos del menú (anti-loop).
+- `safe_mode_block`: outbound bloqueado fuera allowlist (SAFE MODE).
 - `window_24h_template`: fuera de 24h bloquea SESSION_TEXT.
-- `no_contactar`: bloquea cualquier SEND_MESSAGE.
-- `program_menu_select`: si no hay program y hay >1, pedir menú y set program.
-- `program_switch_inbound`: al cambiar Program, el siguiente inbound corre con el Program nuevo (assert por `programSlug`).
-- `program_switch_suggest`: al cambiar Program, “Sugerir” usa el Program nuevo (assert por `programSlug`).
+- `no_contactar_block`: bloquea cualquier SEND_MESSAGE.
+- `program_select_assign`: conversación sin Program → menú 1/2/3 → asignación.
+- `program_switch_suggest_and_inbound`: consistencia total al cambiar Program (Sugerir + inbound).
+- `platform_superadmin_gate`: /api/platform/* solo SUPERADMIN.
+- `ssclinical_onboarding`: seed SSClinical (Programs + inbound RUN_AGENT + invites).
+- `ssclinical_stage_assign`: stage INTERESADO auto-asigna nurse leader.
+- `stage_admin_configurable`: stages configurables por workspace (create + set).
+- `inbound_program_menu`: PhoneLine inboundMode=MENU limita Programs del menú.
+- `invite_existing_user_accept`: aceptar invite de usuario existente (sin reset password).
+- `copilot_archive_restore`: archivar/restaurar hilos de Copilot.
 
 ### 10.3 Unit/integration
 - Tools: normalizeText/resolveLocation/validateRut/pii sanitize

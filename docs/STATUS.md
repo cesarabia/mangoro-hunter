@@ -20,6 +20,9 @@
 ### Multi-line WhatsApp
 - Routing inbound por `phone_number_id` → `PhoneLine` (safe-fail si no existe).
 - Outbound desde la línea asociada a la conversación (usa `phoneLine.waPhoneNumberId`).
+- `PhoneLine.inboundMode`:
+  - `DEFAULT`: aplica `defaultProgramId` si la conversación no tiene Program.
+  - `MENU`: muestra menú de Programs y asigna por opción (1/2/3), con allowlist opcional por línea.
 
 ### Programs como flows
 - Programs CRUD por workspace.
@@ -36,6 +39,7 @@
 - Fix de crash por “Rules of Hooks” (App ya no queda en blanco).
 - Download Review Pack (zip) desde Owner Review.
 - SSClinical (pilot): setting `Nurse Leader Email` + stage `INTERESADO` dispara auto-asignación vía Automation `STAGE_CHANGED`.
+- Estados/Stages configurables por workspace (UI + API) vía `WorkspaceStage` (archive-only).
 
 ## Qué falta (para “Agent OS v1 completo”)
 - (Opcional) Integraciones por workspace (OpenAI/WhatsApp) si se requiere multi‑cliente con credenciales separadas.
