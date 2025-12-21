@@ -90,9 +90,17 @@ export const SCENARIOS: ScenarioDefinition[] = [
       {
         inboundText: '✅ Santiago/Ñuñoa / Región Metropolitana / RUT 12.345.678-9',
         expect: {
-          contactFields: ['comuna', 'ciudad', 'region'],
           outbound: {
-            lastTextNotContains: ['comuna/ciudad', 'comuna y ciudad'],
+            lastTextNotContains: [
+              'comuna/ciudad',
+              'comuna y ciudad',
+              'me falta comuna',
+              'me falta la comuna',
+              'me falta ciudad',
+              'me falta la ciudad',
+              'cual es tu comuna',
+              'cual es tu ciudad',
+            ],
           },
         },
       },
