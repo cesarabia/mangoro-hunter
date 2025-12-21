@@ -3,8 +3,8 @@
 Este es el **único** archivo que el Owner necesita para revisar DEV (sin terminal).
 
 ## Build stamp (DEV)
-- `gitSha`: `1f6dd25`
-- `startedAt`: `2025-12-18T11:33:50.531Z`
+- `gitSha`: `9b967ac`
+- `startedAt`: `2025-12-21T00:29:45.655Z`
 
 ## Restricción crítica (SAFE OUTBOUND MODE)
 - DEV debe operar en **ALLOWLIST_ONLY**.
@@ -18,6 +18,8 @@ Este es el **único** archivo que el Owner necesita para revisar DEV (sin termin
 - Program vs Modo: se removió el selector “Modo del candidato” de la UI; el **Program** es la única fuente visible.
 - Nueva pantalla `Ayuda / QA` (topbar) con: build/health, SAFE MODE + allowlist, checklist click-only, logs recientes y botón `Run Smoke Scenarios` (sandbox / NullTransport).
 - Logs: nuevo endpoint `GET /api/logs/outbound-messages` para ver bloqueos (blockedReason) y dedupe.
+- Platform: rol global `SUPERADMIN` (solo `cesarabia@gmail.com`) para el módulo “Clientes/Plataforma”.
+- SSClinical: setting `Nurse Leader Email` + automation `STAGE_CHANGED` que asigna automáticamente al pasar a stage `INTERESADO`.
 
 ## QA DEV (click-only) — PASS/FAIL
 Revisar desde `https://hunter.mangoro.app`:

@@ -15,6 +15,7 @@
 ### Multi-tenant / Workspaces
 - Aislamiento por `workspaceId` en conversaciones, mensajes, logs, programs, automations y phone lines.
 - Roles por membership (OWNER/ADMIN/MEMBER/VIEWER) y UI con workspace switcher.
+- Platform SUPERADMIN (solo `cesarabia@gmail.com`) para “Clientes/Plataforma” y endpoints `/api/platform/*`.
 
 ### Multi-line WhatsApp
 - Routing inbound por `phone_number_id` → `PhoneLine` (safe-fail si no existe).
@@ -29,14 +30,17 @@
 - Topbar con navegación: Inbox / Inactivos / Simulador / Agenda / Configuración.
 - Configuración con tabs (Workspace / Integraciones / Usuarios / Números WhatsApp / Programs / Automations / Uso & Costos / Logs).
 - Ayuda (no técnica) + QA/Owner Review (técnica) separadas y click-only.
-- Copilot CRM (MVP): ayuda + diagnóstico + navegación + historial persistente por hilo.
+- Copilot CRM:
+  - Nivel 1: ayuda + diagnóstico + navegación + historial persistente por hilo.
+  - Nivel 2 (MVP): propuestas con Confirmar/Cancelar + ejecución idempotente + auditoría (CopilotRunLog).
 - Fix de crash por “Rules of Hooks” (App ya no queda en blanco).
 - Download Review Pack (zip) desde Owner Review.
+- SSClinical (pilot): setting `Nurse Leader Email` + stage `INTERESADO` dispara auto-asignación vía Automation `STAGE_CHANGED`.
 
 ## Qué falta (para “Agent OS v1 completo”)
 - (Opcional) Integraciones por workspace (OpenAI/WhatsApp) si se requiere multi‑cliente con credenciales separadas.
-- Copilot Nivel 2 (acciones con confirmación + auditoría + permisos).
-- Scenarios más amplios (reclutamiento/entrevista/ventas) con asserts de contenido y stages.
+- Ampliar catálogo de acciones Copilot Nivel 2 (usuarios/invitaciones + templates) y permisos finos por rol.
+- Scenarios más amplios (reclutamiento/entrevista/ventas) con asserts de contenido, stages y assignedOnly completo.
 
 ## Riesgos conocidos
 - DEV y PROD comparten riesgos si usan la misma DB/WhatsApp:
@@ -47,7 +51,7 @@
 ## Próximas 3 tareas recomendadas (con criterio)
 1) **Separar DEV/PROD de verdad (DB + subdominio + webhooks)**.
    - Criterio: reduce riesgo de incidentes con números reales y permite releases sin miedo.
-2) **Copilot Nivel 2 (comandos con confirmación)**.
-   - Criterio: acelera operación (crear programs/automations, diagnosticar y ejecutar acciones) sin tocar terminal.
+2) **Catálogo Copilot Nivel 2 + onboarding multi-cliente**.
+   - Criterio: acelera operación (usuarios/invites/plantillas) sin tocar terminal y reduce confusión de roles.
 3) **Scenarios de negocio (reclutamiento/entrevista/ventas)** con asserts de calidad.
    - Criterio: evita regresiones en lo que importa al usuario final.

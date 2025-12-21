@@ -108,7 +108,9 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
 
 ### 5.1 Identidad y acceso
 - **User**: credenciales + rol global (mínimo)  
+  - `platformRole`: `SUPERADMIN|NONE` (gating de “Clientes/Plataforma” y endpoints `/api/platform/*`).  
 - **Workspace**: tenant (incluye `isSandbox`)  
+  - Settings por workspace (ej: `ssclinicalNurseLeaderEmail` para asignación automática en SSClinical).  
 - **Membership**: rol por workspace (OWNER|ADMIN|MEMBER|VIEWER), soft-archive (no delete)  
   - `assignedOnly`: si `true` y rol=MEMBER, el usuario solo ve/gestiona conversaciones asignadas (`Conversation.assignedToId`).  
 - **WorkspaceInvite** (archive-only): invitación expirable por email+rol para entrar a un workspace.  
@@ -121,6 +123,7 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
 - **PhoneLine**: alias + `waPhoneNumberId` + defaultProgram  
 - **Contact**: contactDisplayName (WhatsApp) + candidateName (extraído) + candidateNameManual (override humano)  
 - **Conversation**: status (NEW/OPEN/CLOSED) + stage + programId + phoneLineId + flags y metadata  
+  - `assignedToId`: asignación (para `MEMBER assignedOnly`).  
 - **Message**: inbound/outbound + waMessageId idempotente + media/transcriptText + timestamp  
 
 ### 5.3 Agent OS runtime & auditoría

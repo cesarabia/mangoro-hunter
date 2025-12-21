@@ -408,7 +408,18 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             } else {
               const memberUser = await prisma.user.findUnique({ where: { email: memberEmail }, select: { id: true, email: true } }).catch(() => null);
               if (!memberUser?.id) {
-                assertions.push({ ok: false, message: `assignmentFlow: user ${memberEmail} missing (acepta la invitación)` });
+                const invite = await prisma.workspaceInvite
+                  .findFirst({
+                    where: { workspaceId: targetWorkspaceId, email: memberEmail, archivedAt: null, acceptedAt: null, expiresAt: { gt: new Date() } } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null);
+                assertions.push({
+                  ok: Boolean(invite?.id),
+                  message: invite?.id
+                    ? `assignmentFlow: user ${memberEmail} pendiente (invite existe; falta aceptar)`
+                    : `assignmentFlow: user ${memberEmail} missing (acepta la invitación)`,
+                });
               } else {
                 const memberMembership = await prisma.membership
                   .findFirst({
