@@ -46,14 +46,9 @@ function actionsIncludeRunAgent(actionsJson: string | null | undefined): boolean
 async function isPlatformAdmin(request: any): Promise<boolean> {
   const userId = request.user?.userId ? String(request.user.userId) : null;
   if (!userId) return false;
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, role: true } });
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { platformRole: true, email: true } });
   if (!user) return false;
-  if (String(user.role || '').toUpperCase() === 'ADMIN') return true;
-  const allow = String(process.env.PLATFORM_OWNER_EMAILS || 'cesarabia@gmail.com')
-    .split(',')
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-  return allow.includes(String(user.email || '').toLowerCase());
+  return String(user.platformRole || '').toUpperCase() === 'SUPERADMIN';
 }
 
 export async function registerPlatformRoutes(app: FastifyInstance) {
@@ -345,6 +340,40 @@ Reglas: no entregar diagnóstico; solo requisitos y próximos pasos.
         .catch(() => {});
     }
 
+    // SSClinical: stage -> nurse leader assignment automation (triggered from UI stage changes).
+    const stageRules = await prisma.automationRule.findMany({
+      where: { workspaceId: wsId, trigger: 'STAGE_CHANGED', archivedAt: null },
+      select: { id: true, enabled: true, actionsJson: true, name: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    const hasAssignNurseLeader = stageRules.some((r) => {
+      const raw = safeJsonParse(r.actionsJson) ?? [];
+      if (!Array.isArray(raw)) return false;
+      return raw.some((a: any) => String(a?.type || '').toUpperCase() === 'ASSIGN_TO_NURSE_LEADER');
+    });
+    if (!hasAssignNurseLeader) {
+      await prisma.automationRule
+        .create({
+          data: {
+            workspaceId: wsId,
+            name: 'SSClinical: Stage INTERESADO -> asignar enfermera líder',
+            enabled: true,
+            priority: 110,
+            trigger: 'STAGE_CHANGED',
+            scopePhoneLineId: null,
+            scopeProgramId: null,
+            conditionsJson: serializeJson([{ field: 'conversation.stage', op: 'equals', value: 'INTERESADO' }]),
+            actionsJson: serializeJson([
+              {
+                type: 'ASSIGN_TO_NURSE_LEADER',
+                note: 'Caso marcado como INTERESADO. Revisar y coordinar próximos pasos.',
+              },
+            ]),
+          },
+        })
+        .catch(() => {});
+    }
+
     const pilotOwnerEmail = normalizeEmail('csarabia@ssclinical.cl');
     const pilotMemberEmail = normalizeEmail('contacto@ssclinical.cl');
 
@@ -408,6 +437,22 @@ Reglas: no entregar diagnóstico; solo requisitos y próximos pasos.
       for (const m of others) {
         await prisma.membership.update({ where: { id: m.id }, data: { archivedAt: new Date() } }).catch(() => {});
         archivedMemberships.push({ workspaceId: m.workspaceId });
+      }
+    }
+
+    // Default nurse leader email (can be adjusted in Config -> Workspace).
+    if (pilotOwnerEmail) {
+      const leaderExisting = await prisma.workspace
+        .findUnique({ where: { id: wsId }, select: { ssclinicalNurseLeaderEmail: true as any } })
+        .catch(() => null);
+      const leaderEmail = String((leaderExisting as any)?.ssclinicalNurseLeaderEmail || '').trim();
+      if (!leaderEmail) {
+        await prisma.workspace
+          .update({
+            where: { id: wsId },
+            data: { ssclinicalNurseLeaderEmail: pilotOwnerEmail } as any,
+          })
+          .catch(() => {});
       }
     }
 

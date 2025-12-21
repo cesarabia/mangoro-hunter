@@ -312,9 +312,16 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
     const access = await resolveWorkspaceAccess(request);
     const userId = request.user?.userId || null;
     if (!userId) return [];
+    const includeArchived = (() => {
+      const q: any = (request as any).query || {};
+      const raw = q.includeArchived ?? q.include_archived ?? null;
+      if (raw === null || typeof raw === 'undefined') return false;
+      const t = String(raw).trim().toLowerCase();
+      return t === '1' || t === 'true' || t === 'yes' || t === 'si' || t === 'sí';
+    })();
 
     const threads = await prisma.copilotThread.findMany({
-      where: { workspaceId: access.workspaceId, userId, archivedAt: null },
+      where: { workspaceId: access.workspaceId, userId, ...(includeArchived ? {} : { archivedAt: null }) },
       orderBy: { updatedAt: 'desc' },
       take: 50,
       select: {
@@ -322,6 +329,7 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
         title: true,
         createdAt: true,
         updatedAt: true,
+        archivedAt: true,
         runs: {
           orderBy: { createdAt: 'desc' },
           take: 1,
@@ -335,6 +343,7 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
       title: t.title,
       createdAt: t.createdAt.toISOString(),
       updatedAt: t.updatedAt.toISOString(),
+      archivedAt: t.archivedAt ? t.archivedAt.toISOString() : null,
       lastRunAt: t.runs?.[0]?.createdAt ? t.runs[0].createdAt.toISOString() : null,
       lastUserText: t.runs?.[0]?.inputText || null,
       lastAssistantText: t.runs?.[0]?.responseText || null,
@@ -367,12 +376,13 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
     if (!userId) return reply.code(400).send({ error: 'Usuario inválido.' });
 
     const thread = await prisma.copilotThread.findFirst({
-      where: { id, workspaceId: access.workspaceId, userId, archivedAt: null },
+      where: { id, workspaceId: access.workspaceId, userId },
       select: {
         id: true,
         title: true,
         createdAt: true,
         updatedAt: true,
+        archivedAt: true,
         runs: {
           orderBy: { createdAt: 'asc' },
           take: 200,
@@ -399,6 +409,7 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
       title: thread.title,
       createdAt: thread.createdAt.toISOString(),
       updatedAt: thread.updatedAt.toISOString(),
+      archivedAt: (thread as any).archivedAt ? new Date((thread as any).archivedAt).toISOString() : null,
       runs: runs.map((r: any) => ({
         id: r.id,
         createdAt: r?.createdAt instanceof Date ? r.createdAt.toISOString() : new Date(r.createdAt).toISOString(),

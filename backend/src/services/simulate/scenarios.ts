@@ -44,6 +44,10 @@ export type ScenarioStep = {
       /** Optional override; by default the scenario generates a unique waPhoneNumberId. */
       waPhoneNumberId?: string;
     };
+    platformSuperadminGate?: boolean;
+    ssclinicalStageAssign?: {
+      workspaceId?: string;
+    };
   };
 };
 
@@ -274,6 +278,25 @@ export const SCENARIOS: ScenarioDefinition[] = [
             assignmentFlow: { memberEmail: 'contacto@ssclinical.cl' },
           },
         },
+      },
+    ],
+  },
+  {
+    id: 'platform_superadmin_gate',
+    name: 'Platform: gate SUPERADMIN',
+    description: 'Valida que /api/platform/* esté protegido por platformRole=SUPERADMIN (sin mezclar ADMIN workspace).',
+    steps: [{ action: 'WORKSPACE_CHECK', inboundText: 'check platform superadmin gate', expect: { platformSuperadminGate: true } }],
+  },
+  {
+    id: 'ssclinical_stage_assign',
+    name: 'SSClinical: stage INTERESADO auto-asigna',
+    description:
+      'Valida que al cambiar Stage a INTERESADO se dispare la automation STAGE_CHANGED y se asigne automáticamente a la enfermera líder configurada.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check ssclinical stage assign',
+        expect: { ssclinicalStageAssign: { workspaceId: 'ssclinical' } },
       },
     ],
   },

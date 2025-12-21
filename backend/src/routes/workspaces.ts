@@ -8,18 +8,105 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const userId = request.user?.userId as string | undefined;
     if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
+    const platformRole = await prisma.user
+      .findUnique({ where: { id: userId }, select: { platformRole: true } })
+      .then((u) => String(u?.platformRole || '').toUpperCase())
+      .catch(() => '');
+    const isPlatformSuperAdmin = platformRole === 'SUPERADMIN';
+
     const memberships = await prisma.membership.findMany({
       where: { userId, archivedAt: null, workspace: { archivedAt: null } },
       include: { workspace: true },
       orderBy: { createdAt: 'asc' },
     });
-    return memberships.map((m) => ({
-      id: m.workspace.id,
-      name: m.workspace.name,
-      isSandbox: m.workspace.isSandbox,
-      createdAt: m.workspace.createdAt.toISOString(),
-      role: m.role,
-    }));
+    return memberships
+      .filter((m) => (m.workspace.isSandbox ? isPlatformSuperAdmin : true))
+      .map((m) => ({
+        id: m.workspace.id,
+        name: m.workspace.name,
+        isSandbox: m.workspace.isSandbox,
+        createdAt: m.workspace.createdAt.toISOString(),
+        role: m.role,
+      }));
+  });
+
+  app.get('/current', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    const workspace = (await prisma.workspace.findUnique({
+      where: { id: access.workspaceId },
+      select: {
+        id: true,
+        name: true,
+        isSandbox: true,
+        ssclinicalNurseLeaderEmail: true as any,
+        createdAt: true,
+        updatedAt: true,
+        archivedAt: true,
+      } as any,
+    })) as any;
+    if (!workspace || workspace.archivedAt) return reply.code(404).send({ error: 'Workspace no encontrado.' });
+    return {
+      id: workspace.id,
+      name: workspace.name,
+      isSandbox: Boolean(workspace.isSandbox),
+      ssclinicalNurseLeaderEmail: (workspace as any).ssclinicalNurseLeaderEmail || null,
+      createdAt: new Date(workspace.createdAt).toISOString(),
+      updatedAt: new Date(workspace.updatedAt).toISOString(),
+    };
+  });
+
+  app.patch('/current', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+
+    const body = request.body as { ssclinicalNurseLeaderEmail?: string | null };
+    const hasEmail = Object.prototype.hasOwnProperty.call(body || {}, 'ssclinicalNurseLeaderEmail');
+    if (!hasEmail) return reply.code(400).send({ error: '"ssclinicalNurseLeaderEmail" es requerido (string|null).' });
+
+    const raw = body?.ssclinicalNurseLeaderEmail;
+    const next =
+      raw === null
+        ? null
+        : typeof raw === 'string'
+          ? raw.trim().toLowerCase()
+          : null;
+    if (typeof raw === 'string' && next && (!next.includes('@') || next.length > 254)) {
+      return reply.code(400).send({ error: 'Email inválido.' });
+    }
+
+    const existing = await prisma.workspace.findUnique({
+      where: { id: access.workspaceId },
+      select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any },
+    });
+    if (!existing || existing.archivedAt) return reply.code(404).send({ error: 'Workspace no encontrado.' });
+
+    const updated = await prisma.workspace.update({
+      where: { id: access.workspaceId },
+      data: {
+        ssclinicalNurseLeaderEmail: typeof raw === 'string' ? (next || null) : null,
+        updatedAt: new Date(),
+      } as any,
+      select: { id: true, ssclinicalNurseLeaderEmail: true as any, updatedAt: true },
+    });
+
+    await prisma.configChangeLog
+      .create({
+        data: {
+          workspaceId: access.workspaceId,
+          userId,
+          type: 'WORKSPACE_SSCLINICAL_NURSE_LEADER',
+          beforeJson: serializeJson({ ssclinicalNurseLeaderEmail: (existing as any).ssclinicalNurseLeaderEmail || null }),
+          afterJson: serializeJson({ ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null }),
+        },
+      })
+      .catch(() => {});
+
+    return {
+      ok: true,
+      ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null,
+      updatedAt: updated.updatedAt.toISOString(),
+    };
   });
 
   app.post('/clone-from', { preValidation: [app.authenticate] }, async (request, reply) => {

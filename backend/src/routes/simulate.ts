@@ -790,6 +790,185 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         }
       }
 
+      const platformGate = (step.expect as any)?.platformSuperadminGate;
+      if (platformGate) {
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        if (!userId) {
+          assertions.push({ ok: false, message: 'platformSuperadminGate: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'platformSuperadminGate: auth header missing' });
+        } else {
+          const user = await prisma.user
+            .findUnique({ where: { id: userId }, select: { platformRole: true } })
+            .catch(() => null);
+          const expected = String(user?.platformRole || '').toUpperCase() === 'SUPERADMIN';
+
+          const meRes = await app.inject({
+            method: 'GET',
+            url: '/api/platform/me',
+            headers: { authorization: authHeader, 'x-workspace-id': 'default' },
+          });
+          let meJson: any = null;
+          try {
+            meJson = JSON.parse(String(meRes.body || ''));
+          } catch {
+            meJson = null;
+          }
+          const meOk = meRes.statusCode === 200 && typeof meJson?.platformAdmin === 'boolean';
+          assertions.push({
+            ok: meOk,
+            message: meOk ? 'platformSuperadminGate: /api/platform/me OK' : `platformSuperadminGate: /api/platform/me failed (${meRes.statusCode})`,
+          });
+          if (meOk) {
+            const pass = Boolean(meJson.platformAdmin) === expected;
+            assertions.push({
+              ok: pass,
+              message: pass ? `platformSuperadminGate: platformAdmin=${expected} OK` : `platformSuperadminGate: expected platformAdmin=${expected}, got ${String(meJson.platformAdmin)}`,
+            });
+          }
+
+          const wsRes = await app.inject({
+            method: 'GET',
+            url: '/api/platform/workspaces',
+            headers: { authorization: authHeader, 'x-workspace-id': 'default' },
+          });
+          const passCode = expected ? wsRes.statusCode === 200 : wsRes.statusCode === 403;
+          assertions.push({
+            ok: passCode,
+            message: passCode
+              ? `platformSuperadminGate: /api/platform/workspaces ${expected ? '200' : '403'} OK`
+              : `platformSuperadminGate: expected ${expected ? '200' : '403'}, got ${wsRes.statusCode}`,
+          });
+        }
+      }
+
+      const ssclinicalStageAssign = (step.expect as any)?.ssclinicalStageAssign;
+      if (ssclinicalStageAssign && typeof ssclinicalStageAssign === 'object') {
+        const wsId = String((ssclinicalStageAssign as any)?.workspaceId || 'ssclinical').trim() || 'ssclinical';
+        const now = new Date();
+
+        const ws = await prisma.workspace
+          .findUnique({
+            where: { id: wsId },
+            select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any },
+          } as any)
+          .catch(() => null);
+        assertions.push({
+          ok: Boolean(ws?.id) && !ws?.archivedAt,
+          message: ws?.id ? (ws.archivedAt ? `ssclinicalStageAssign: workspace ${wsId} archived` : `ssclinicalStageAssign: workspace ${wsId} OK`) : `ssclinicalStageAssign: workspace ${wsId} missing`,
+        });
+
+        const rules = await prisma.automationRule
+          .findMany({
+            where: { workspaceId: wsId, trigger: 'STAGE_CHANGED', enabled: true, archivedAt: null },
+            select: { id: true, actionsJson: true },
+          })
+          .catch(() => []);
+        const hasAssignRule = rules.some((r) => {
+          try {
+            const parsed = JSON.parse(String(r.actionsJson || '[]'));
+            if (!Array.isArray(parsed)) return false;
+            return parsed.some((a: any) => String(a?.type || '').toUpperCase() === 'ASSIGN_TO_NURSE_LEADER');
+          } catch {
+            return false;
+          }
+        });
+        assertions.push({
+          ok: hasAssignRule,
+          message: hasAssignRule ? 'ssclinicalStageAssign: automation STAGE_CHANGED -> ASSIGN_TO_NURSE_LEADER OK' : 'ssclinicalStageAssign: missing automation STAGE_CHANGED assignment',
+        });
+
+        const leaderEmail = String((ws as any)?.ssclinicalNurseLeaderEmail || '').trim().toLowerCase();
+        assertions.push({
+          ok: Boolean(leaderEmail),
+          message: leaderEmail ? `ssclinicalStageAssign: nurseLeaderEmail OK (${leaderEmail})` : 'ssclinicalStageAssign: nurseLeaderEmail missing (Config -> Workspace)',
+        });
+
+        const leaderUser = leaderEmail
+          ? await prisma.user.findUnique({ where: { email: leaderEmail }, select: { id: true } }).catch(() => null)
+          : null;
+        const leaderMembership =
+          leaderUser?.id
+            ? await prisma.membership
+                .findFirst({ where: { workspaceId: wsId, userId: leaderUser.id, archivedAt: null }, select: { id: true } })
+                .catch(() => null)
+            : null;
+        assertions.push({
+          ok: Boolean(leaderMembership?.id),
+          message: leaderMembership?.id ? 'ssclinicalStageAssign: leader membership OK' : 'ssclinicalStageAssign: leader membership missing in workspace',
+        });
+
+        const phoneLine = await prisma.phoneLine
+          .findFirst({ where: { workspaceId: wsId, archivedAt: null, isActive: true }, select: { id: true } })
+          .catch(() => null);
+        assertions.push({
+          ok: Boolean(phoneLine?.id),
+          message: phoneLine?.id ? 'ssclinicalStageAssign: phoneLine OK' : 'ssclinicalStageAssign: no active phoneLine in workspace',
+        });
+
+        if (ws?.id && !ws.archivedAt && phoneLine?.id && leaderMembership?.id && hasAssignRule) {
+          const contact = await prisma.contact
+            .create({
+              data: {
+                workspaceId: wsId,
+                displayName: 'Scenario SSClinical',
+                candidateName: null,
+                candidateNameManual: null,
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const conv = contact?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: phoneLine.id,
+                    programId: null,
+                    contactId: contact.id,
+                    status: 'NEW',
+                    conversationStage: 'NUEVO',
+                    channel: 'system',
+                    isAdmin: false,
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+          if (!conv?.id) {
+            assertions.push({ ok: false, message: 'ssclinicalStageAssign: no se pudo crear conversación de prueba' });
+          } else {
+            await prisma.conversation
+              .update({ where: { id: conv.id }, data: { conversationStage: 'INTERESADO', updatedAt: new Date() } as any })
+              .catch(() => {});
+            await runAutomations({
+              app,
+              workspaceId: wsId,
+              eventType: 'STAGE_CHANGED',
+              conversationId: conv.id,
+              transportMode: 'NULL',
+            });
+
+            const updated = await prisma.conversation
+              .findUnique({ where: { id: conv.id }, select: { assignedToId: true, conversationStage: true } })
+              .catch(() => null);
+            const assignedOk = Boolean(updated?.assignedToId) && String(updated?.assignedToId) === String(leaderUser?.id || '');
+            assertions.push({
+              ok: assignedOk,
+              message: assignedOk ? 'ssclinicalStageAssign: assignedToId OK (auto)' : `ssclinicalStageAssign: expected assignedToId=${String(leaderUser?.id || '—')}, got ${String(updated?.assignedToId || '—')}`,
+            });
+
+            // Cleanup: archive-only.
+            await prisma.conversation.updateMany({ where: { id: conv.id }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.contact.updateMany({ where: { id: contact?.id || '' }, data: { archivedAt: now } as any }).catch(() => {});
+          }
+        }
+      }
+
       const stepOk = assertions.every((a) => a.ok);
       ok = ok && stepOk;
       stepResults.push({

@@ -114,14 +114,18 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     }
   }, [tab]);
 
-  const workspaceId = useMemo(() => localStorage.getItem('workspaceId') || 'default', []);
+  const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') || 'default' : 'default';
   const isDev = typeof import.meta !== 'undefined' ? import.meta.env.MODE !== 'production' : true;
 
   const [workspaces, setWorkspaces] = useState<any[]>([]);
-  const currentWorkspace = useMemo(
-    () => workspaces.find((w) => String(w.id) === String(localStorage.getItem('workspaceId') || 'default')) || null,
-    [workspaces]
-  );
+  const currentWorkspace = useMemo(() => workspaces.find((w) => String(w.id) === String(workspaceId)) || null, [workspaces, workspaceId]);
+
+  const [workspaceDetails, setWorkspaceDetails] = useState<any | null>(null);
+  const [workspaceDetailsError, setWorkspaceDetailsError] = useState<string | null>(null);
+  const [ssclinicalNurseLeaderEmailDraft, setSsclinicalNurseLeaderEmailDraft] = useState<string>('');
+  const [ssclinicalNurseLeaderSaving, setSsclinicalNurseLeaderSaving] = useState(false);
+  const [ssclinicalNurseLeaderStatus, setSsclinicalNurseLeaderStatus] = useState<string | null>(null);
+  const [ssclinicalNurseLeaderError, setSsclinicalNurseLeaderError] = useState<string | null>(null);
 
   const [cloneSourceWorkspaceId, setCloneSourceWorkspaceId] = useState<string>('');
   const [clonePrograms, setClonePrograms] = useState<boolean>(true);
@@ -275,6 +279,38 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const loadWorkspaces = async () => {
     const data = await apiClient.get('/api/workspaces');
     setWorkspaces(Array.isArray(data) ? data : []);
+  };
+  const loadWorkspaceDetails = async () => {
+    setWorkspaceDetailsError(null);
+    try {
+      const data: any = await apiClient.get('/api/workspaces/current');
+      setWorkspaceDetails(data || null);
+      const email = typeof data?.ssclinicalNurseLeaderEmail === 'string' ? data.ssclinicalNurseLeaderEmail : '';
+      setSsclinicalNurseLeaderEmailDraft(email || '');
+    } catch (err: any) {
+      setWorkspaceDetails(null);
+      setWorkspaceDetailsError(err.message || 'No se pudo cargar configuración del workspace');
+    }
+  };
+  const saveSsclinicalNurseLeaderEmail = async () => {
+    if (ssclinicalNurseLeaderSaving) return;
+    setSsclinicalNurseLeaderSaving(true);
+    setSsclinicalNurseLeaderStatus(null);
+    setSsclinicalNurseLeaderError(null);
+    try {
+      const email = ssclinicalNurseLeaderEmailDraft.trim();
+      const res: any = await apiClient.patch('/api/workspaces/current', {
+        ssclinicalNurseLeaderEmail: email.length > 0 ? email : null,
+      });
+      const next = typeof res?.ssclinicalNurseLeaderEmail === 'string' ? res.ssclinicalNurseLeaderEmail : '';
+      setSsclinicalNurseLeaderEmailDraft(next || '');
+      setSsclinicalNurseLeaderStatus('Guardado.');
+      await loadWorkspaceDetails();
+    } catch (err: any) {
+      setSsclinicalNurseLeaderError(err.message || 'No se pudo guardar');
+    } finally {
+      setSsclinicalNurseLeaderSaving(false);
+    }
   };
   const loadUsers = async () => {
     const data = await apiClient.get('/api/users');
@@ -799,6 +835,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
   useEffect(() => {
     loadWorkspaces().catch(() => {});
+    loadWorkspaceDetails().catch(() => {});
     loadPrograms().catch(() => {});
     loadPhoneLines().catch(() => {});
     loadAutomations().catch(() => {});
@@ -806,6 +843,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   }, []);
 
   useEffect(() => {
+    loadWorkspaceDetails().catch(() => {});
+  }, [workspaceId]);
+
+  useEffect(() => {
+    if (tab === 'workspace') {
+      loadWorkspaceDetails().catch(() => {});
+      if (isWorkspaceAdmin) loadUsers().catch(() => {});
+    }
     if (tab === 'users') {
       loadUsers().catch(() => {});
       loadInvites().catch(() => {});
@@ -1459,20 +1504,69 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 720 }}>
           <div style={{ fontSize: 18, fontWeight: 700 }}>Workspace</div>
           <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12 }}>
-            <div style={{ fontSize: 12, color: '#666' }}>Workspace Name</div>
+            <div style={{ fontSize: 12, color: '#666' }}>Nombre del workspace</div>
             <div style={{ fontWeight: 600 }}>{currentWorkspace?.name || '—'}</div>
-            <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>Workspace ID</div>
+            <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>ID de workspace</div>
             <div style={{ fontFamily: 'monospace' }}>{currentWorkspace?.id || '—'}</div>
-            <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>isSandbox</div>
+            <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>Sandbox</div>
             <div>
               <input type="checkbox" checked={Boolean(currentWorkspace?.isSandbox)} readOnly={!isDev} disabled />
               <span style={{ marginLeft: 8, fontSize: 12, color: '#666' }}>
                 {isDev ? '(toggle disponible en dev; backend v1: solo lectura)' : '(solo lectura en production)'}
               </span>
             </div>
-            <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>CreatedAt</div>
+            <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>Creado</div>
             <div>{currentWorkspace?.createdAt || '—'}</div>
           </div>
+
+          {String(currentWorkspace?.id || workspaceId) === 'ssclinical' && isWorkspaceAdmin ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>SSCLINICAL — Asignación automática</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Cuando el <b>Stage</b> de una conversación cambia a <b>INTERESADO</b>, una Automation puede asignar automáticamente la conversación a la <b>enfermera líder</b> configurada aquí.
+              </div>
+              {workspaceDetailsError ? <div style={{ fontSize: 12, color: '#b93800', marginBottom: 8 }}>{workspaceDetailsError}</div> : null}
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                Email enfermera líder (debe existir como usuario en este workspace)
+                <input
+                  value={ssclinicalNurseLeaderEmailDraft}
+                  onChange={(e) => setSsclinicalNurseLeaderEmailDraft(e.target.value)}
+                  placeholder="Ej: enfermera.lider@ssclinical.cl"
+                  list="ssclinical-user-emails"
+                  style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                />
+                <datalist id="ssclinical-user-emails">
+                  {(users || [])
+                    .filter((u) => !u.archivedAt)
+                    .map((u) => String(u.email || '').trim())
+                    .filter(Boolean)
+                    .map((email) => (
+                      <option key={email} value={email} />
+                    ))}
+                </datalist>
+              </label>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => saveSsclinicalNurseLeaderEmail().catch(() => {})}
+                  disabled={ssclinicalNurseLeaderSaving}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 900, fontSize: 12 }}
+                >
+                  {ssclinicalNurseLeaderSaving ? 'Guardando…' : 'Guardar'}
+                </button>
+                {workspaceDetails?.ssclinicalNurseLeaderEmail ? (
+                  <div style={{ fontSize: 12, color: '#666' }}>
+                    Actual: <b>{String(workspaceDetails.ssclinicalNurseLeaderEmail)}</b>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#666' }}>Actual: —</div>
+                )}
+              </div>
+              {ssclinicalNurseLeaderStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{ssclinicalNurseLeaderStatus}</div> : null}
+              {ssclinicalNurseLeaderError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{ssclinicalNurseLeaderError}</div> : null}
+            </div>
+          ) : null}
+
           <button
             onClick={() => exportConfig().catch(() => {})}
             style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', width: 240 }}
@@ -2421,7 +2515,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 onClick={() => loadPhoneLines().catch(() => {})}
                 style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
               >
-                Refresh
+                Actualizar
               </button>
               <button
                 onClick={() => {
@@ -2442,18 +2536,26 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
           {phoneLinesError ? <div style={{ fontSize: 12, color: '#b93800' }}>{phoneLinesError}</div> : null}
           {phoneLinesStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{phoneLinesStatus}</div> : null}
 
-          <div style={{ border: '1px solid #eee', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ border: '1px solid #eee', borderRadius: 10, overflowX: 'auto', overflowY: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#fafafa', textAlign: 'left' }}>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Alias</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>phoneE164</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>waPhoneNumberId</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>wabaId</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Default Program</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Status</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Last inbound at</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Last outbound at</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                    phoneE164{' '}
+                    <span title="Número en formato E.164 (ej: +56994830202). No pegues tokens/credenciales aquí.">ⓘ</span>
+                  </th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                    waPhoneNumberId{' '}
+                    <span title="ID numérico de Meta (phone_number_id) asociado a esta línea de WhatsApp.">ⓘ</span>
+                  </th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                    wabaId <span title="ID de WABA (WhatsApp Business Account).">ⓘ</span>
+                  </th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Programa por defecto</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Estado</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Último inbound</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Último outbound</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
                 </tr>
               </thead>
@@ -2464,16 +2566,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 	                      const isArchived = Boolean(l.archivedAt);
 	                      const isActive = Boolean(l.isActive) && !isArchived;
 	                      const needsAttention = Boolean((l as any).needsAttention);
-	                      const statusLabel = isArchived ? 'Archived' : isActive ? 'Active' : 'Inactive';
+	                      const statusLabel = isArchived ? 'Archivado' : isActive ? 'Activo' : 'Inactivo';
 	                      return (
 	                        <>
 	                    <td style={{ padding: 10, fontSize: 13 }}>{l.alias}</td>
 	                    <td style={{ padding: 10, fontSize: 13 }}>
 	                      {l.phoneE164 || '—'}
 	                      {needsAttention ? (
-	                        <div style={{ marginTop: 4, fontSize: 11, color: '#b93800', fontWeight: 800 }}>
-	                          ⚠ needsAttention: revisa phoneE164
-	                        </div>
+	                        <div style={{ marginTop: 4, fontSize: 11, color: '#b93800', fontWeight: 800 }}>⚠ requiere revisión: phoneE164</div>
 	                      ) : null}
 	                    </td>
 	                    <td style={{ padding: 10, fontSize: 13 }}>
@@ -2585,7 +2685,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 	                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
 	                />
 	                <select value={phoneLineEditor.defaultProgramId || ''} onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, defaultProgramId: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
-	                  <option value="">Default Program</option>
+	                  <option value="">Programa por defecto</option>
 	                  {programs.filter((p: any) => p && p.isActive).map((p) => (
 	                    <option key={p.id} value={p.id}>
 	                      {p.name}
@@ -2599,7 +2699,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     checked={Boolean(phoneLineEditor.isActive)}
                     onChange={(e) => setPhoneLineEditor({ ...phoneLineEditor, isActive: e.target.checked })}
                   />
-                  Active
+                  Activo
                 </label>
               </div>
               <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
@@ -2608,7 +2708,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               </div>
               {Boolean((phoneLineEditor as any).needsAttention) ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: '#b93800', fontWeight: 800 }}>
-                  ⚠ needsAttention: este registro requiere revisión. Corrige <span style={{ fontFamily: 'monospace' }}>phoneE164</span> y guarda para poder activarlo.
+                  ⚠ requiere revisión: corrige <span style={{ fontFamily: 'monospace' }}>phoneE164</span> y guarda para poder activarlo.
                 </div>
               ) : null}
               <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
@@ -2660,15 +2760,15 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             </button>
           </div>
 
-          <div style={{ border: '1px solid #eee', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ border: '1px solid #eee', borderRadius: 10, overflowX: 'auto', overflowY: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#fafafa', textAlign: 'left' }}>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Name</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Nombre</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Slug</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Active</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Used as default in X lines</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>UpdatedAt</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Activo</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Default en # líneas</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Actualizado</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
                 </tr>
               </thead>
@@ -2725,7 +2825,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 <input value={programEditor.tone || ''} onChange={(e) => setProgramEditor({ ...programEditor, tone: e.target.value })} placeholder="Tono (opcional)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={Boolean(programEditor.isActive)} onChange={(e) => setProgramEditor({ ...programEditor, isActive: e.target.checked })} />
-                  Active
+                  Activo
                 </label>
               </div>
 

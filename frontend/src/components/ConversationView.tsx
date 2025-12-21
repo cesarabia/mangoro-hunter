@@ -94,6 +94,17 @@ const isSuspiciousCandidateName = (value?: string | null) => {
   return false;
 };
 
+const SSCLINICAL_STAGE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'NUEVO', label: 'Nuevo' },
+  { value: 'INFO', label: 'Info' },
+  { value: 'CALIFICADO', label: 'Calificado' },
+  { value: 'INTERESADO', label: 'Interesado' },
+  { value: 'EN_COORDINACION', label: 'En coordinación' },
+  { value: 'CONFIRMADO', label: 'Confirmado' },
+  { value: 'CERRADO', label: 'Cerrado' },
+  { value: 'NO_CONTACTAR', label: 'No contactar' },
+];
+
 export const ConversationView: React.FC<ConversationViewProps> = ({
   conversation,
   onMessageSent,
@@ -137,6 +148,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [programId, setProgramId] = useState<string>('');
   const [programSaving, setProgramSaving] = useState(false);
   const [programError, setProgramError] = useState<string | null>(null);
+  const [stageValue, setStageValue] = useState<string>('');
+  const [stageSaving, setStageSaving] = useState(false);
+  const [stageError, setStageError] = useState<string | null>(null);
   const [safeModeModalOpen, setSafeModeModalOpen] = useState(false);
   const [safeModeBlockedReason, setSafeModeBlockedReason] = useState<string | null>(null);
   const [safeModeTargetWaId, setSafeModeTargetWaId] = useState<string | null>(null);
@@ -181,6 +195,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setProgramId('');
       setProgramSaving(false);
       setProgramError(null);
+      setStageValue('');
+      setStageSaving(false);
+      setStageError(null);
       setSafeModeModalOpen(false);
       setSafeModeBlockedReason(null);
       setSafeModeTargetWaId(null);
@@ -218,6 +235,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     setProgramId(conversation.program?.id || conversation.programId || '');
     setProgramSaving(false);
     setProgramError(null);
+    setStageValue(conversation.conversationStage || conversation.stage || '');
+    setStageSaving(false);
+    setStageError(null);
     setSafeModeModalOpen(false);
     setSafeModeBlockedReason(null);
     setSafeModeTargetWaId(null);
@@ -334,6 +354,21 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setProgramError(err.message || 'No se pudo actualizar el Program');
     } finally {
       setProgramSaving(false);
+    }
+  };
+
+  const handleStageUpdate = async (nextStage: string) => {
+    if (!conversation || stageSaving) return;
+    setStageSaving(true);
+    setStageError(null);
+    try {
+      await apiClient.patch(`/api/conversations/${conversation.id}/stage`, { stage: nextStage });
+      setStageValue(nextStage);
+      onMessageSent();
+    } catch (err: any) {
+      setStageError(err.message || 'No se pudo actualizar el stage');
+    } finally {
+      setStageSaving(false);
     }
   };
 
@@ -510,6 +545,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const templateGeneralFollowup = templateConfig.templateGeneralFollowup || null;
   const programSlug = conversation?.program?.slug || '';
   const programName = conversation?.program?.name || '';
+  const isSsclinical = String(conversation?.workspaceId || '').toLowerCase() === 'ssclinical';
   const isInterviewContext = programSlug === 'interview' || aiMode === 'INTERVIEW';
   const requiredTemplate =
     isInterviewContext ? templateInterviewInvite : templateGeneralFollowup;
@@ -717,9 +753,29 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 <span style={{ fontSize: 12, color: '#555' }}>
                   Estado: <strong>{conversation?.status || 'NEW'}</strong>
                 </span>
-                <span style={{ fontSize: 12, color: '#555' }}>
-                  Stage: <strong>{conversation?.conversationStage || conversation?.stage || '—'}</strong>
-                </span>
+                {isSsclinical && canAssignConversation && !isAdmin ? (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+                    Stage:
+                    <select
+                      value={stageValue || ''}
+                      onChange={(e) => handleStageUpdate(e.target.value).catch(() => {})}
+                      disabled={stageSaving}
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                      data-guide-id="conversation-stage-select"
+                    >
+                      <option value="">—</option>
+                      {SSCLINICAL_STAGE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <span style={{ fontSize: 12, color: '#555' }}>
+                    Stage: <strong>{conversation?.conversationStage || conversation?.stage || '—'}</strong>
+                  </span>
+                )}
                 <span style={{ fontSize: 12, color: '#555' }}>
                   PhoneLine: <strong>{conversation?.phoneLine?.alias || conversation?.phoneLineId || '—'}</strong>
                 </span>
@@ -768,6 +824,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   </select>
                 </label>
                 {programError ? <span style={{ fontSize: 12, color: '#b93800' }}>{programError}</span> : null}
+                {stageError ? <span style={{ fontSize: 12, color: '#b93800' }}>{stageError}</span> : null}
                 {workspaceUsersError ? <span style={{ fontSize: 12, color: '#b93800' }}>{workspaceUsersError}</span> : null}
                 {assignmentError ? <span style={{ fontSize: 12, color: '#b93800' }}>{assignmentError}</span> : null}
               </div>

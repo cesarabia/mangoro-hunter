@@ -166,7 +166,8 @@ type ConditionRow = { field: string; op: string; value?: any };
 type ActionRow =
   | { type: 'RUN_AGENT'; agent?: string }
   | { type: 'SET_STATUS'; status: 'NEW' | 'OPEN' | 'CLOSED' }
-  | { type: 'ADD_NOTE'; note: string };
+  | { type: 'ADD_NOTE'; note: string }
+  | { type: 'ASSIGN_TO_NURSE_LEADER'; note?: string };
 
 function safeJsonParse(value: string | null | undefined): any {
   if (!value) return null;
@@ -450,6 +451,76 @@ export async function runAutomations(params: {
             });
           }
           outputs.push({ action: 'ADD_NOTE' });
+          continue;
+        }
+        if (action.type === 'ASSIGN_TO_NURSE_LEADER') {
+          if (conversation.isAdmin) {
+            outputs.push({ action: 'ASSIGN_TO_NURSE_LEADER', ok: false, error: 'admin_conversation' });
+            continue;
+          }
+          const workspace = await prisma.workspace
+            .findUnique({
+              where: { id: params.workspaceId },
+              select: { ssclinicalNurseLeaderEmail: true as any },
+            })
+            .catch(() => null);
+          const leaderEmailRaw = String((workspace as any)?.ssclinicalNurseLeaderEmail || '').trim().toLowerCase();
+          if (!leaderEmailRaw) {
+            outputs.push({ action: 'ASSIGN_TO_NURSE_LEADER', ok: false, error: 'missing_workspace_setting' });
+            continue;
+          }
+          const leaderUser = await prisma.user
+            .findUnique({ where: { email: leaderEmailRaw }, select: { id: true, email: true, name: true } })
+            .catch(() => null);
+          if (!leaderUser?.id) {
+            outputs.push({ action: 'ASSIGN_TO_NURSE_LEADER', ok: false, error: `user_not_found:${leaderEmailRaw}` });
+            continue;
+          }
+          const membership = await prisma.membership
+            .findFirst({
+              where: { workspaceId: params.workspaceId, userId: leaderUser.id, archivedAt: null },
+              select: { id: true, role: true },
+            })
+            .catch(() => null);
+          if (!membership?.id) {
+            outputs.push({ action: 'ASSIGN_TO_NURSE_LEADER', ok: false, error: `membership_not_found:${leaderEmailRaw}` });
+            continue;
+          }
+
+          const already = String(conversation.assignedToId || '') === String(leaderUser.id);
+          if (!already) {
+            await prisma.conversation.update({
+              where: { id: conversation.id },
+              data: { assignedToId: leaderUser.id, updatedAt: new Date() },
+            });
+          }
+
+          const label = leaderUser.name || leaderUser.email || leaderEmailRaw;
+          const noteText = String((action as any).note || '').trim();
+          const systemText = noteText
+            ? `👩‍⚕️ Asignación automática: ${label}\n${noteText}`
+            : `👩‍⚕️ Asignación automática: ${label}`;
+          await prisma.message
+            .create({
+              data: {
+                conversationId: conversation.id,
+                direction: 'OUTBOUND',
+                text: systemText,
+                rawPayload: serializeJson({ system: true, automationRuleId: rule.id, assignment: 'AUTO', assignedToUserId: leaderUser.id }),
+                timestamp: new Date(),
+                read: true,
+              },
+            })
+            .catch(() => {});
+          await prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } }).catch(() => {});
+
+          outputs.push({
+            action: 'ASSIGN_TO_NURSE_LEADER',
+            ok: true,
+            assignedToUserId: leaderUser.id,
+            email: leaderUser.email,
+            role: membership.role,
+          });
           continue;
         }
         if (action.type === 'RUN_AGENT') {

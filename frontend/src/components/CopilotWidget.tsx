@@ -46,6 +46,7 @@ type CopilotThreadSummary = {
   updatedAt?: string;
   lastRunAt?: string | null;
   lastUserText?: string | null;
+  archivedAt?: string | null;
 };
 
 type CopilotMessage = {
@@ -82,10 +83,12 @@ export const CopilotWidget: React.FC<{
     }
   });
   const [showHistory, setShowHistory] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState<'active' | 'archived'>('active');
   const [isMobile, setIsMobile] = useState(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const [actionBusyRunId, setActionBusyRunId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [threads, setThreads] = useState<CopilotThreadSummary[]>([]);
@@ -124,7 +127,7 @@ export const CopilotWidget: React.FC<{
   const loadThreads = async () => {
     setThreadsLoading(true);
     try {
-      const res: any = await apiClient.get('/api/copilot/threads');
+      const res: any = await apiClient.get('/api/copilot/threads?includeArchived=1');
       const list: CopilotThreadSummary[] = Array.isArray(res) ? res : [];
       setThreads(list);
       const stored = (() => {
@@ -134,8 +137,9 @@ export const CopilotWidget: React.FC<{
           return null;
         }
       })();
-      const preferred = stored && list.some((t) => t.id === stored) ? stored : null;
-      const next = preferred || (list[0]?.id ?? null);
+      const activeList = list.filter((t) => !t.archivedAt);
+      const preferred = stored && activeList.some((t) => t.id === stored) ? stored : null;
+      const next = preferred || (activeList[0]?.id ?? null);
       if (!threadId && next) setThreadId(next);
     } catch (err: any) {
       setThreads([]);
@@ -170,9 +174,24 @@ export const CopilotWidget: React.FC<{
         setMessages([]);
       }
       await loadThreads();
+      setHistoryFilter('archived');
       setShowHistory(true);
+      setToast('Hilo archivado. Ve a Historial → Archivados para revisarlo o restaurarlo.');
+      setTimeout(() => setToast(null), 4000);
     } catch (err: any) {
       setError(err.message || 'No se pudo archivar el hilo');
+    }
+  };
+
+  const restoreThread = async (id: string) => {
+    try {
+      await apiClient.patch(`/api/copilot/threads/${id}`, { archived: false });
+      await loadThreads();
+      setHistoryFilter('active');
+      setToast('Hilo restaurado.');
+      setTimeout(() => setToast(null), 3000);
+    } catch (err: any) {
+      setError(err.message || 'No se pudo restaurar el hilo');
     }
   };
 
@@ -229,6 +248,18 @@ export const CopilotWidget: React.FC<{
     }
     loadThread(threadId).catch(() => {});
   }, [open, threadId]);
+
+  const visibleThreads = useMemo(() => {
+    const list = Array.isArray(threads) ? threads : [];
+    if (historyFilter === 'archived') return list.filter((t) => Boolean(t.archivedAt));
+    return list.filter((t) => !t.archivedAt);
+  }, [threads, historyFilter]);
+
+  const threadArchived = useMemo(() => {
+    if (!threadId) return false;
+    const found = (threads || []).find((t) => t.id === threadId);
+    return Boolean(found?.archivedAt);
+  }, [threads, threadId]);
 
   const pushMessage = (m: Omit<CopilotMessage, 'id' | 'createdAt'>) => {
     setMessages((prev) => [
@@ -399,6 +430,7 @@ export const CopilotWidget: React.FC<{
         background: '#fafafa',
         borderTop: '1px solid #eee',
         borderRadius: '14px 14px 0 0',
+        boxShadow: '0 -10px 30px rgba(0,0,0,0.18)',
         zIndex: 59,
         display: 'flex',
         flexDirection: 'column',
@@ -416,6 +448,7 @@ export const CopilotWidget: React.FC<{
       flexDirection: 'column',
       minHeight: 0,
       overflowX: 'hidden',
+      boxShadow: dockSide === 'left' ? '10px 0 30px rgba(0,0,0,0.14)' : '-10px 0 30px rgba(0,0,0,0.14)',
     };
     if (dockSide === 'left') {
       return { ...shared, left: 0, borderRight: '1px solid #eee' };
@@ -495,6 +528,11 @@ export const CopilotWidget: React.FC<{
                     <span>Contexto: (sin conversación seleccionada)</span>
                   )}
                 </div>
+                {toast ? (
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#1a7f37', fontWeight: 800, whiteSpace: 'pre-wrap' }}>
+                    {toast}
+                  </div>
+                ) : null}
               </div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 {!isMobile ? (
@@ -628,14 +666,44 @@ export const CopilotWidget: React.FC<{
                   padding: 10,
                 }}
               >
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
-                  {threadsLoading ? 'Cargando…' : `${threads.length} hilos`}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+                  <button
+                    onClick={() => setHistoryFilter('active')}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 999,
+                      border: historyFilter === 'active' ? '1px solid #111' : '1px solid #ddd',
+                      background: historyFilter === 'active' ? '#111' : '#fff',
+                      color: historyFilter === 'active' ? '#fff' : '#111',
+                      fontSize: 12,
+                      cursor: 'pointer',
+                      fontWeight: 800,
+                    }}
+                  >
+                    Activos
+                  </button>
+                  <button
+                    onClick={() => setHistoryFilter('archived')}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 999,
+                      border: historyFilter === 'archived' ? '1px solid #111' : '1px solid #ddd',
+                      background: historyFilter === 'archived' ? '#111' : '#fff',
+                      color: historyFilter === 'archived' ? '#fff' : '#111',
+                      fontSize: 12,
+                      cursor: 'pointer',
+                      fontWeight: 800,
+                    }}
+                  >
+                    Archivados
+                  </button>
+                  <div style={{ fontSize: 12, color: '#666' }}>{threadsLoading ? 'Cargando…' : `${visibleThreads.length} hilos`}</div>
                 </div>
-                {threads.length === 0 ? (
+                {visibleThreads.length === 0 ? (
                   <div style={{ fontSize: 13, color: '#666' }}>Aún no hay hilos. Crea uno con “Nuevo”.</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {threads.map((t) => {
+                    {visibleThreads.map((t) => {
                       const active = threadId === t.id;
                       return (
                         <div
@@ -658,17 +726,31 @@ export const CopilotWidget: React.FC<{
                           </div>
                           <div style={{ marginTop: 4, fontSize: 12, color: '#666', display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                             <span>{formatThreadWhen(t.updatedAt || t.lastRunAt || null)}</span>
-                            <button
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                archiveThread(t.id).catch(() => {});
-                              }}
-                              style={{ padding: '2px 6px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 11 }}
-                              title="Archivar (no se borra)"
-                            >
-                              Archivar
-                            </button>
+                            {historyFilter === 'archived' ? (
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  restoreThread(t.id).catch(() => {});
+                                }}
+                                style={{ padding: '2px 6px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 11 }}
+                                title="Restaurar hilo"
+                              >
+                                Restaurar
+                              </button>
+                            ) : (
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  archiveThread(t.id).catch(() => {});
+                                }}
+                                style={{ padding: '2px 6px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 11 }}
+                                title="Archivar (no se borra)"
+                              >
+                                Archivar
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -770,13 +852,18 @@ export const CopilotWidget: React.FC<{
 
           <div style={{ padding: 12, borderTop: '1px solid #eee', background: '#fff' }}>
             {error ? <div style={{ marginBottom: 8, color: '#b93800', fontSize: 12 }}>{error}</div> : null}
+            {threadArchived && !showHistory ? (
+              <div style={{ marginBottom: 8, color: '#b93800', fontSize: 12 }}>
+                Este hilo está archivado. Para continuar, restaúralo desde Historial → Archivados o crea uno nuevo.
+              </div>
+            ) : null}
             <div style={{ display: 'flex', gap: 8 }}>
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Escribe…"
                 style={{ flex: 1, padding: 10, borderRadius: 10, border: '1px solid #ddd', minHeight: 42, maxHeight: 120 }}
-                disabled={showHistory}
+                disabled={showHistory || threadArchived}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
@@ -786,14 +873,14 @@ export const CopilotWidget: React.FC<{
               />
               <button
                 onClick={() => send().catch(() => {})}
-                disabled={loading || !input.trim() || showHistory}
+                disabled={loading || !input.trim() || showHistory || threadArchived}
                 style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 800 }}
               >
                 {loading ? '…' : 'Enviar'}
               </button>
             </div>
             <div style={{ marginTop: 6, fontSize: 11, color: '#777' }}>
-              Tip: Ctrl/⌘ + Enter para enviar. {showHistory ? 'Cierra “Historial” para chatear.' : ''}
+              Tip: Ctrl/⌘ + Enter para enviar. {showHistory ? 'Cierra “Historial” para chatear.' : threadArchived ? 'Restaura el hilo para chatear.' : ''}
             </div>
           </div>
         </div>

@@ -15,6 +15,7 @@ import { sendAdminNotification } from '../services/adminNotificationService';
 import { getContactDisplayName } from '../utils/contactDisplay';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { stableHash } from '../services/agent/tools';
+import { runAutomations } from '../services/automationRunnerService';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -340,6 +341,66 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     });
     await logSystemMessage(id, '👤 Asignación removida (sin responsable).', { assignment: 'UNSET', actor });
     return { ok: true, assignedToUserId: null };
+  });
+
+  app.patch('/:id/stage', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const actor = (request as any)?.user?.userId || null;
+    const { id } = request.params as { id: string };
+    const body = request.body as { stage?: string; reason?: string | null };
+
+    const stageRaw = typeof body?.stage === 'string' ? body.stage.trim() : '';
+    if (!stageRaw) return reply.code(400).send({ error: '"stage" es obligatorio.' });
+    if (stageRaw.length > 64) return reply.code(400).send({ error: '"stage" es demasiado largo (max 64).' });
+    if (!/^[A-Za-z0-9][A-Za-z0-9 _-]*$/.test(stageRaw)) {
+      return reply.code(400).send({ error: '"stage" inválido. Usa letras/números/espacios/_/-' });
+    }
+
+    const reasonRaw = typeof body?.reason === 'string' ? body.reason.trim() : '';
+    const reason = reasonRaw ? reasonRaw.slice(0, 140) : null;
+
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, workspaceId: access.workspaceId, archivedAt: null },
+      select: { id: true, isAdmin: true, conversationStage: true },
+    });
+    if (!conversation) return reply.code(404).send({ error: 'Conversation not found' });
+    if (conversation.isAdmin) return reply.code(400).send({ error: 'No aplica a conversación admin' });
+
+    await prisma.conversation.update({
+      where: { id },
+      data: {
+        conversationStage: stageRaw,
+        stageReason: reason || 'manual',
+        updatedAt: new Date(),
+      },
+    });
+
+    const reasonSuffix = reason ? ` (motivo: ${reason})` : '';
+    await logSystemMessage(id, `🏷️ Stage actualizado: ${stageRaw}${reasonSuffix}`, {
+      stageUpdate: true,
+      stage: stageRaw,
+      reason,
+      actor,
+    });
+
+    let automationError: string | null = null;
+    try {
+      await runAutomations({
+        app,
+        workspaceId: access.workspaceId,
+        eventType: 'STAGE_CHANGED',
+        conversationId: id,
+        transportMode: 'REAL',
+      });
+    } catch (err: any) {
+      automationError = err?.message || 'automation failed';
+      request.log.warn({ err, conversationId: id }, 'STAGE_CHANGED automations failed');
+    }
+
+    return { ok: true, stage: stageRaw, automationError };
   });
 
   app.patch('/:id/contact-name', { preValidation: [app.authenticate] }, async (request, reply) => {

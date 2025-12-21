@@ -11,7 +11,11 @@ import { DEFAULT_AI_PROMPT } from '../constants/ai';
 
 async function ensureWorkspace(id: string, name: string, isSandbox: boolean) {
   const existing = await prisma.workspace.findUnique({ where: { id } }).catch(() => null);
-  if (existing) return existing;
+  if (existing) {
+    const needsUpdate = existing.name !== name || existing.isSandbox !== isSandbox;
+    if (!needsUpdate) return existing;
+    return prisma.workspace.update({ where: { id }, data: { name, isSandbox } });
+  }
   return prisma.workspace.create({ data: { id, name, isSandbox } });
 }
 
@@ -143,9 +147,24 @@ export async function ensureAdminUser(): Promise<void> {
   const config = await getSystemConfig().catch(() => null);
 
   await ensureWorkspace('default', 'Hunter Internal', false);
-  await ensureWorkspace('sandbox', 'Sandbox', true);
+  await ensureWorkspace('sandbox', 'Platform Sandbox', true);
   await ensureMembership(admin.id, 'default', 'OWNER');
   await ensureMembership(admin.id, 'sandbox', 'OWNER');
+
+  // Platform SuperAdmin: only cesarabia@gmail.com.
+  const superadminEmail = 'cesarabia@gmail.com';
+  await prisma.user
+    .updateMany({
+      where: { platformRole: 'SUPERADMIN', email: { not: superadminEmail } } as any,
+      data: { platformRole: 'NONE' } as any,
+    })
+    .catch(() => {});
+  await prisma.user
+    .updateMany({
+      where: { email: superadminEmail } as any,
+      data: { platformRole: 'SUPERADMIN' } as any,
+    })
+    .catch(() => {});
 
   const phoneNumberId = config?.whatsappPhoneId || 'unknown';
   await ensurePhoneLine({ id: 'default', workspaceId: 'default', alias: 'Default', waPhoneNumberId: phoneNumberId });
@@ -244,4 +263,78 @@ Objetivo: apoyar a vendedores con pitch, objeciones y registro de visitas/ventas
   const hasKey = Boolean(config && getEffectiveOpenAiKey(config));
   await ensureDefaultAutomationRule({ workspaceId: 'default', enabled: hasKey });
   await ensureDefaultAutomationRule({ workspaceId: 'sandbox', enabled: hasKey });
+
+  // SSClinical pilot defaults (idempotent; never overwrite custom config).
+  try {
+    const ssclinical = await prisma.workspace.findUnique({
+      where: { id: 'ssclinical' },
+      select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any },
+    });
+    if (ssclinical && !ssclinical.archivedAt) {
+      // Ensure inbound RUN_AGENT exists (workspace setup).
+      await ensureDefaultAutomationRule({ workspaceId: 'ssclinical', enabled: hasKey }).catch(() => {});
+
+      // Ensure nurse leader email is set (best-effort: first OWNER/ADMIN).
+      const currentLeader = String((ssclinical as any).ssclinicalNurseLeaderEmail || '').trim();
+      if (!currentLeader) {
+        const leaderMembership = await prisma.membership.findFirst({
+          where: {
+            workspaceId: 'ssclinical',
+            archivedAt: null,
+            role: { in: ['OWNER', 'ADMIN'] },
+            user: { email: { contains: '@' } },
+          } as any,
+          include: { user: { select: { email: true } } },
+          orderBy: { createdAt: 'asc' },
+        });
+        const leaderEmail = String(leaderMembership?.user?.email || '').trim().toLowerCase();
+        if (leaderEmail) {
+          await prisma.workspace
+            .update({
+              where: { id: 'ssclinical' },
+              data: { ssclinicalNurseLeaderEmail: leaderEmail } as any,
+            })
+            .catch(() => {});
+        }
+      }
+
+      // Ensure stage assignment automation exists (SSClinical workflow).
+      const stageRules = await prisma.automationRule.findMany({
+        where: { workspaceId: 'ssclinical', trigger: 'STAGE_CHANGED', archivedAt: null },
+        select: { id: true, actionsJson: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      const hasAssign = stageRules.some((r) => {
+        try {
+          const parsed = JSON.parse(String(r.actionsJson || '[]'));
+          if (!Array.isArray(parsed)) return false;
+          return parsed.some((a: any) => String(a?.type || '').toUpperCase() === 'ASSIGN_TO_NURSE_LEADER');
+        } catch {
+          return false;
+        }
+      });
+      if (!hasAssign) {
+        await prisma.automationRule
+          .create({
+            data: {
+              workspaceId: 'ssclinical',
+              name: 'SSClinical: Stage INTERESADO -> asignar enfermera líder',
+              enabled: true,
+              priority: 110,
+              trigger: 'STAGE_CHANGED',
+              scopePhoneLineId: null,
+              scopeProgramId: null,
+              conditionsJson: JSON.stringify([{ field: 'conversation.stage', op: 'equals', value: 'INTERESADO' }]),
+              actionsJson: JSON.stringify([
+                { type: 'ASSIGN_TO_NURSE_LEADER', note: 'Caso marcado como INTERESADO. Revisar y coordinar próximos pasos.' },
+              ]),
+              archivedAt: null,
+            } as any,
+          })
+          .catch(() => {});
+      }
+    }
+  } catch {
+    // ignore; pilot workspace is optional
+  }
 }
