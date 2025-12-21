@@ -246,7 +246,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
           workspaceSetup: {
             workspaceId: 'ssclinical',
             programsSlugs: [
-              'coordinadora-salud-suero-hidratante-y-terapia',
+              'coordinadora-ssclinical-suero-hidratante-y-terapia',
               'enfermera-lider-coordinadora',
               'enfermera-domicilio',
               'medico-orden-medica',

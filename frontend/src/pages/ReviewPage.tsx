@@ -403,7 +403,7 @@ export const ReviewPage: React.FC<{
   const ssclinicalProgramsOk = useMemo(() => {
     if (!ssclinicalWorkspaceOk) return false;
     const required = [
-      'coordinadora-salud-suero-hidratante-y-terapia',
+      'coordinadora-ssclinical-suero-hidratante-y-terapia',
       'enfermera-lider-coordinadora',
       'enfermera-domicilio',
       'medico-orden-medica',

@@ -239,7 +239,7 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
 
     const programs = [
       {
-        slug: 'coordinadora-salud-suero-hidratante-y-terapia',
+        slug: 'coordinadora-ssclinical-suero-hidratante-y-terapia',
         name: 'Coordinadora Salud — Suero Hidratante y Terapia',
         prompt: `
 Programa: Coordinadora Salud (SSClinical).
