@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../db/client';
 import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceAuthService';
+import { listRecentNotificationEvents } from '../services/notificationService';
 
 function safeJsonParse(value: string | null | undefined): any {
   if (!value) return null;
@@ -218,6 +219,18 @@ export async function registerLogRoutes(app: FastifyInstance) {
       before: safeJsonParse(l.beforeJson),
       after: safeJsonParse(l.afterJson),
     }));
+  });
+
+  app.get('/notifications', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+
+    const limitRaw = (request.query as any)?.limit;
+    const limit = typeof limitRaw === 'string' ? parseInt(limitRaw, 10) : 50;
+    const take = Number.isFinite(limit) && limit > 0 && limit <= 200 ? limit : 50;
+
+    const events = await listRecentNotificationEvents({ workspaceId: access.workspaceId, limit: take });
+    return events;
   });
 
   app.get('/connector-calls', { preValidation: [app.authenticate] }, async (request, reply) => {

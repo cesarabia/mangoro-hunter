@@ -42,6 +42,8 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
       id: r.id,
       enabled: r.enabled,
       name: r.name,
+      description: (r as any).description || null,
+      exampleUseCase: (r as any).exampleUseCase || null,
       trigger: r.trigger,
       scopePhoneLineId: r.scopePhoneLineId,
       scopeProgramId: r.scopeProgramId,
@@ -91,6 +93,7 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
       data: {
         workspaceId: access.workspaceId,
         name: 'Automation básica RUN_AGENT INBOUND_MESSAGE',
+        description: 'Regla base: ante cualquier inbound, corre RUN_AGENT (Program por defecto o asignado).',
         enabled: true,
         priority: 100,
         trigger: 'INBOUND_MESSAGE',
@@ -125,6 +128,8 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
 
     const body = request.body as {
       name?: string;
+      description?: string | null;
+      exampleUseCase?: string | null;
       enabled?: boolean;
       priority?: number;
       trigger?: string;
@@ -155,6 +160,8 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
       data: {
         workspaceId: access.workspaceId,
         name,
+        description: typeof body.description === 'string' ? body.description.trim().slice(0, 280) : null,
+        exampleUseCase: typeof body.exampleUseCase === 'string' ? body.exampleUseCase.trim().slice(0, 280) : null,
         enabled: typeof body.enabled === 'boolean' ? body.enabled : true,
         priority,
         trigger,
@@ -169,6 +176,8 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
       id: created.id,
       enabled: created.enabled,
       name: created.name,
+      description: (created as any).description || null,
+      exampleUseCase: (created as any).exampleUseCase || null,
       trigger: created.trigger,
       scopePhoneLineId: created.scopePhoneLineId,
       scopeProgramId: created.scopeProgramId,
@@ -196,6 +205,12 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
     const body = request.body as any;
     const data: Record<string, any> = {};
     if (typeof body.name === 'string') data.name = body.name.trim();
+    if (typeof body.description !== 'undefined') {
+      data.description = typeof body.description === 'string' ? body.description.trim().slice(0, 280) : null;
+    }
+    if (typeof body.exampleUseCase !== 'undefined') {
+      data.exampleUseCase = typeof body.exampleUseCase === 'string' ? body.exampleUseCase.trim().slice(0, 280) : null;
+    }
     if (typeof body.enabled === 'boolean') data.enabled = body.enabled;
     if (typeof body.priority === 'number' && Number.isFinite(body.priority)) data.priority = Math.floor(body.priority);
     if (typeof body.trigger === 'string') data.trigger = body.trigger.trim();
@@ -212,6 +227,8 @@ export async function registerAutomationRoutes(app: FastifyInstance) {
       id: updated.id,
       enabled: updated.enabled,
       name: updated.name,
+      description: (updated as any).description || null,
+      exampleUseCase: (updated as any).exampleUseCase || null,
       trigger: updated.trigger,
       scopePhoneLineId: updated.scopePhoneLineId,
       scopeProgramId: updated.scopeProgramId,

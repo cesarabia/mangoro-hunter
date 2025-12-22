@@ -23,6 +23,7 @@
 - `PhoneLine.inboundMode`:
   - `DEFAULT`: aplica `defaultProgramId` si la conversación no tiene Program.
   - `MENU`: muestra menú de Programs y asigna por opción (1/2/3), con allowlist opcional por línea.
+  - Comando WhatsApp **“menu”**: muestra el menú aunque ya exista Program (cambio de flujo) y deja log `PROGRAM_SELECTION`.
 
 ### Programs como flows
 - Programs CRUD por workspace.
@@ -39,7 +40,9 @@
 - Fix de crash por “Rules of Hooks” (App ya no queda en blanco).
 - Download Review Pack (zip) desde Owner Review.
 - SSClinical (pilot): setting `Nurse Leader Email` + stage `INTERESADO` dispara auto-asignación vía Automation `STAGE_CHANGED`.
-- Estados/Stages configurables por workspace (UI + API) vía `WorkspaceStage` (archive-only).
+- Estados/Stages configurables por workspace (UI + API) vía `WorkspaceStage` (archive-only) con `isDefault` (exactamente 1 default activo).
+- Notificaciones in-app (campana): asignación manual y handoff `INTERESADO` crean `InAppNotification` + log `NOTIFICATION_CREATED`.
+- Copilot follow-up: si Copilot ofrece listar Programs/Automations y el usuario responde “sí”, ejecuta sin repreguntar (estado en `CopilotThread.stateJson`).
 
 ## Qué falta (para “Agent OS v1 completo”)
 - (Opcional) Integraciones por workspace (OpenAI/WhatsApp) si se requiere multi‑cliente con credenciales separadas.

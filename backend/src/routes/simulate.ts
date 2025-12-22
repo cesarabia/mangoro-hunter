@@ -957,15 +957,14 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             const convAfterMenu = await prisma.conversation
               .findUnique({
                 where: { id: conversation.id },
-                select: { conversationStage: true, programId: true },
+                select: { conversationStage: true, stageTags: true, programId: true },
               })
               .catch(() => null);
+            const tagsRaw = String((convAfterMenu as any)?.stageTags || '');
+            const hasPendingTag = tagsRaw.includes('program_menu_pending');
             assertions.push({
-              ok: String(convAfterMenu?.conversationStage || '') === 'PROGRAM_SELECTION',
-              message:
-                String(convAfterMenu?.conversationStage || '') === 'PROGRAM_SELECTION'
-                  ? 'inboundProgramMenu: stage PROGRAM_SELECTION OK'
-                  : `inboundProgramMenu: expected stage PROGRAM_SELECTION, got ${String(convAfterMenu?.conversationStage || '—')}`,
+              ok: hasPendingTag,
+              message: hasPendingTag ? 'inboundProgramMenu: pending tag OK' : 'inboundProgramMenu: pending tag missing',
             });
             assertions.push({
               ok: !convAfterMenu?.programId,
@@ -1247,6 +1246,117 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         }
       }
 
+      const copilotContextFollowup = (step.expect as any)?.copilotContextFollowup;
+      if (copilotContextFollowup) {
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const wsId = 'scenario-copilot-followup';
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'copilotContextFollowup: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'copilotContextFollowup: auth header missing' });
+        } else {
+          // Ensure a workspace with enough Automations to trigger the follow-up prompt (>6).
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Copilot Followup', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Copilot Followup', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const existingCount = await prisma.automationRule.count({ where: { workspaceId: wsId, archivedAt: null } }).catch(() => 0);
+          const needed = Math.max(0, 7 - existingCount);
+          for (let i = 0; i < needed; i++) {
+            await prisma.automationRule
+              .create({
+                data: {
+                  workspaceId: wsId,
+                  name: `Scenario rule ${i + 1}`,
+                  enabled: true,
+                  priority: 100 + i,
+                  trigger: 'INBOUND_MESSAGE',
+                  scopePhoneLineId: null,
+                  scopeProgramId: null,
+                  conditionsJson: '[]',
+                  actionsJson: JSON.stringify([{ type: 'ADD_NOTE', note: 'noop' }]),
+                  archivedAt: null,
+                } as any,
+              })
+              .catch(() => {});
+          }
+
+          const askRes = await app.inject({
+            method: 'POST',
+            url: '/api/copilot/chat',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId, 'content-type': 'application/json' },
+            payload: JSON.stringify({ text: 'explica automations', view: 'review', threadId: null }),
+          });
+          let askJson: any = null;
+          try {
+            askJson = JSON.parse(String(askRes.body || ''));
+          } catch {
+            askJson = null;
+          }
+          const threadId = String(askJson?.threadId || '').trim();
+          const askOk = askRes.statusCode === 200 && Boolean(threadId);
+          assertions.push({
+            ok: askOk,
+            message: askOk ? 'copilotContextFollowup: primer mensaje OK (thread creado)' : `copilotContextFollowup: /chat failed (${askRes.statusCode})`,
+          });
+          if (askOk) {
+            const replyText = String(askJson?.reply || '');
+            const prompted = replyText.toLowerCase().includes('responde') && replyText.toLowerCase().includes('si');
+            assertions.push({
+              ok: prompted,
+              message: prompted ? 'copilotContextFollowup: Copilot pidió confirmación (OK)' : 'copilotContextFollowup: Copilot no pidió confirmación',
+            });
+
+            const yesRes = await app.inject({
+              method: 'POST',
+              url: '/api/copilot/chat',
+              headers: { authorization: authHeader, 'x-workspace-id': wsId, 'content-type': 'application/json' },
+              payload: JSON.stringify({ text: 'sí', view: 'review', threadId }),
+            });
+            let yesJson: any = null;
+            try {
+              yesJson = JSON.parse(String(yesRes.body || ''));
+            } catch {
+              yesJson = null;
+            }
+            const yesOk = yesRes.statusCode === 200 && String(yesJson?.reply || '').includes(`Automations en workspace \"${wsId}\"`);
+            assertions.push({
+              ok: yesOk,
+              message: yesOk ? 'copilotContextFollowup: follow-up "sí" listó automations (OK)' : `copilotContextFollowup: follow-up failed (${yesRes.statusCode})`,
+            });
+
+            const thread = await prisma.copilotThread.findUnique({ where: { id: threadId }, select: { stateJson: true as any } }).catch(() => null);
+            const stateCleared = !thread?.stateJson;
+            assertions.push({
+              ok: stateCleared,
+              message: stateCleared ? 'copilotContextFollowup: stateJson limpiado (OK)' : 'copilotContextFollowup: stateJson sigue pendiente',
+            });
+
+            // Cleanup: archive-only.
+            await prisma.copilotThread.updateMany({ where: { id: threadId }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.copilotRunLog.updateMany({ where: { threadId }, data: { status: 'SUCCESS' } as any }).catch(() => {});
+          }
+
+          await prisma.automationRule.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
       const platformGate = (step.expect as any)?.platformSuperadminGate;
       if (platformGate) {
         const userId = request.user?.userId ? String(request.user.userId) : '';
@@ -1456,6 +1566,136 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         }
       }
 
+      const ssclinicalNotify = (step.expect as any)?.ssclinicalHandoffInteresadoNotification;
+      if (ssclinicalNotify && typeof ssclinicalNotify === 'object') {
+        const wsId = String((ssclinicalNotify as any)?.workspaceId || 'ssclinical').trim() || 'ssclinical';
+        const now = new Date();
+
+        const ws = await prisma.workspace
+          .findUnique({
+            where: { id: wsId },
+            select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any },
+          } as any)
+          .catch(() => null);
+        assertions.push({
+          ok: Boolean(ws?.id) && !ws?.archivedAt,
+          message: ws?.id ? (ws.archivedAt ? `ssclinicalNotify: workspace ${wsId} archived` : `ssclinicalNotify: workspace ${wsId} OK`) : `ssclinicalNotify: workspace ${wsId} missing`,
+        });
+
+        const leaderEmail = String((ws as any)?.ssclinicalNurseLeaderEmail || '').trim().toLowerCase();
+        if (!leaderEmail) {
+          assertions.push({ ok: false, message: 'ssclinicalNotify: nurseLeaderEmail missing' });
+        } else {
+          const leaderUser = await prisma.user.findUnique({ where: { email: leaderEmail }, select: { id: true } }).catch(() => null);
+          const leaderMembership = leaderUser?.id
+            ? await prisma.membership
+                .findFirst({ where: { workspaceId: wsId, userId: leaderUser.id, archivedAt: null }, select: { id: true } })
+                .catch(() => null)
+            : null;
+          assertions.push({
+            ok: Boolean(leaderMembership?.id),
+            message: leaderMembership?.id ? 'ssclinicalNotify: leader membership OK' : 'ssclinicalNotify: leader membership missing',
+          });
+
+          let phoneLine = await prisma.phoneLine.findFirst({
+            where: { workspaceId: wsId, archivedAt: null, isActive: true },
+            select: { id: true },
+          });
+          let tempPhoneLineId: string | null = null;
+          if (!phoneLine?.id) {
+            // For scenarios, create a temporary active PhoneLine to avoid depending on manual workspace setup.
+            // This does NOT send WhatsApp real (transportMode=NULL) and is archive-only cleaned up.
+            tempPhoneLineId = `scenario-ssclinical-notify-line-${Date.now()}`;
+            const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+            const created = await prisma.phoneLine
+              .create({
+                data: {
+                  id: tempPhoneLineId,
+                  workspaceId: wsId,
+                  alias: 'Scenario SSClinical (temp)',
+                  phoneE164: null,
+                  waPhoneNumberId,
+                  isActive: true,
+                  archivedAt: null,
+                  needsAttention: false,
+                } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            phoneLine = created?.id ? { id: created.id } : null;
+          }
+          if (!phoneLine?.id || !leaderUser?.id) {
+            assertions.push({ ok: false, message: 'ssclinicalNotify: phoneLine o leaderUser missing' });
+          } else {
+            const contact = await prisma.contact
+              .create({
+                data: { workspaceId: wsId, displayName: 'Scenario SSClinical Notify', comuna: 'Providencia', archivedAt: null } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            const conv = contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      programId: null,
+                      contactId: contact.id,
+                      status: 'NEW',
+                      conversationStage: 'NUEVO',
+                      channel: 'system',
+                      isAdmin: false,
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+            if (!conv?.id) {
+              assertions.push({ ok: false, message: 'ssclinicalNotify: no se pudo crear conversación' });
+            } else {
+              await prisma.conversation.update({ where: { id: conv.id }, data: { conversationStage: 'INTERESADO' } as any }).catch(() => {});
+              await runAutomations({
+                app,
+                workspaceId: wsId,
+                eventType: 'STAGE_CHANGED',
+                conversationId: conv.id,
+                transportMode: 'NULL',
+              });
+
+              const assigned = await prisma.conversation.findUnique({ where: { id: conv.id }, select: { assignedToId: true } }).catch(() => null);
+              const assignedOk = String(assigned?.assignedToId || '') === String(leaderUser.id || '');
+              assertions.push({
+                ok: assignedOk,
+                message: assignedOk ? 'ssclinicalNotify: assignedToId OK' : `ssclinicalNotify: expected assignedToId=${leaderUser.id}, got ${String(assigned?.assignedToId || '—')}`,
+              });
+
+              const notif = await prisma.inAppNotification
+                .findFirst({
+                  where: { workspaceId: wsId, userId: leaderUser.id, conversationId: conv.id, archivedAt: null },
+                  orderBy: { createdAt: 'desc' },
+                  select: { id: true, title: true },
+                })
+                .catch(() => null);
+              const notifOk = Boolean(notif?.id);
+              assertions.push({
+                ok: notifOk,
+                message: notifOk ? 'ssclinicalNotify: NOTIFICATION_CREATED OK' : 'ssclinicalNotify: missing in-app notification',
+              });
+
+              // Cleanup: archive-only.
+              await prisma.inAppNotification.updateMany({ where: { id: notif?.id || '' }, data: { archivedAt: now } as any }).catch(() => {});
+              await prisma.conversation.updateMany({ where: { id: conv.id }, data: { archivedAt: now } as any }).catch(() => {});
+              await prisma.contact.updateMany({ where: { id: contact?.id || '' }, data: { archivedAt: now } as any }).catch(() => {});
+            }
+
+            if (tempPhoneLineId) {
+              await prisma.phoneLine.updateMany({ where: { id: tempPhoneLineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+            }
+          }
+        }
+      }
+
       const stageAdminConfigurable = (step.expect as any)?.stageAdminConfigurable;
       if (stageAdminConfigurable && typeof stageAdminConfigurable === 'object') {
         const wsId = String((stageAdminConfigurable as any)?.workspaceId || 'scenario-stage-config').trim() || 'scenario-stage-config';
@@ -1595,6 +1835,113 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           }
 
           await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { isActive: false, archivedAt: now } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      const stageCrud = (step.expect as any)?.stageDefinitionsCrudBasic;
+      if (stageCrud && typeof stageCrud === 'object') {
+        const wsId = String((stageCrud as any)?.workspaceId || 'scenario-stage-crud').trim() || 'scenario-stage-crud';
+        const slugRaw = String((stageCrud as any)?.slug || 'PREPARANDO_ENVIO').trim();
+        const slug = slugRaw
+          .replace(/\s+/g, '_')
+          .replace(/-+/g, '_')
+          .replace(/__+/g, '_')
+          .toUpperCase()
+          .slice(0, 64);
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'stageDefinitionsCrudBasic: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'stageDefinitionsCrudBasic: auth header missing' });
+        } else if (!slug) {
+          assertions.push({ ok: false, message: 'stageDefinitionsCrudBasic: slug missing' });
+        } else {
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Stage CRUD', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Stage CRUD', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const createRes = await app.inject({
+            method: 'POST',
+            url: '/api/workspaces/current/stages',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            payload: { slug, labelEs: 'Preparando envío', order: 55, isDefault: false },
+          });
+          const createOk = createRes.statusCode === 200 || createRes.statusCode === 409;
+          assertions.push({
+            ok: createOk,
+            message: createOk ? `stageDefinitionsCrudBasic: create OK (${createRes.statusCode})` : `stageDefinitionsCrudBasic: create failed (${createRes.statusCode})`,
+          });
+
+          const listRes = await app.inject({
+            method: 'GET',
+            url: '/api/workspaces/current/stages?includeArchived=true',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+          });
+          let listJson: any = null;
+          try {
+            listJson = JSON.parse(String(listRes.body || ''));
+          } catch {
+            listJson = null;
+          }
+          const stages = Array.isArray(listJson?.stages) ? listJson.stages : [];
+          const target = stages.find((s: any) => String(s?.slug || '') === slug) || null;
+          assertions.push({ ok: Boolean(target?.id), message: target?.id ? 'stageDefinitionsCrudBasic: stage exists' : 'stageDefinitionsCrudBasic: stage missing' });
+
+          if (target?.id) {
+            const setDefaultRes = await app.inject({
+              method: 'PATCH',
+              url: `/api/workspaces/current/stages/${encodeURIComponent(String(target.id))}`,
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+              payload: { isDefault: true, order: 5 },
+            });
+            assertions.push({
+              ok: setDefaultRes.statusCode === 200,
+              message: setDefaultRes.statusCode === 200 ? 'stageDefinitionsCrudBasic: set default OK' : `stageDefinitionsCrudBasic: set default failed (${setDefaultRes.statusCode})`,
+            });
+
+            const afterRes = await app.inject({
+              method: 'GET',
+              url: '/api/workspaces/current/stages?includeArchived=false',
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            });
+            let afterJson: any = null;
+            try {
+              afterJson = JSON.parse(String(afterRes.body || ''));
+            } catch {
+              afterJson = null;
+            }
+            const afterStages = Array.isArray(afterJson?.stages) ? afterJson.stages : [];
+            const defaults = afterStages.filter((s: any) => Boolean(s?.isDefault));
+            const singleDefault = defaults.length === 1;
+            assertions.push({
+              ok: singleDefault,
+              message: singleDefault ? 'stageDefinitionsCrudBasic: 1 default OK' : `stageDefinitionsCrudBasic: expected 1 default, got ${defaults.length}`,
+            });
+            const defaultSlug = String(defaults[0]?.slug || '');
+            assertions.push({
+              ok: singleDefault && defaultSlug === slug,
+              message: singleDefault && defaultSlug === slug ? `stageDefinitionsCrudBasic: default=${slug} OK` : `stageDefinitionsCrudBasic: default mismatch (${defaultSlug || '—'})`,
+            });
+          }
+
+          // Cleanup: archive-only.
+          await prisma.workspaceStage.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
           await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
           await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
         }

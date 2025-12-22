@@ -52,12 +52,20 @@ export type ScenarioStep = {
     ssclinicalStageAssign?: {
       workspaceId?: string;
     };
+    ssclinicalHandoffInteresadoNotification?: {
+      workspaceId?: string;
+    };
     stageAdminConfigurable?: {
+      workspaceId?: string;
+      slug?: string;
+    };
+    stageDefinitionsCrudBasic?: {
       workspaceId?: string;
       slug?: string;
     };
     inviteExistingUserAccept?: boolean;
     copilotArchiveRestore?: boolean;
+    copilotContextFollowup?: boolean;
   };
 };
 
@@ -139,7 +147,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
     name: 'Anti-loop: dedupeKey evita duplicados',
     description: 'Dispara el menú de selección de Program dos veces y verifica que el segundo envío queda bloqueado.',
     steps: [
-      { inboundText: 'Hola', expect: { stage: 'PROGRAM_SELECTION', outbound: { sentDelta: 1 } } },
+      { inboundText: 'Hola', expect: { outbound: { sentDelta: 1, lastTextContains: ['¿Sobre qué programa', 'Responde con el número'] } } },
       { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'ANTI_LOOP' } } },
     ],
   },
@@ -151,7 +159,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
       {
         inboundText: 'Hola',
         inboundOffsetHours: -26,
-        expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'OUTSIDE_24H' }, stage: 'PROGRAM_SELECTION' },
+        expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'OUTSIDE_24H' } },
       },
     ],
   },
@@ -163,7 +171,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
     // Evita usar teléfonos sintéticos que parezcan reales: usamos un waId no-numérico solo para sandbox.
     contactWaId: 'sandbox-not-allowed',
     steps: [
-      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'SAFE_OUTBOUND' }, stage: 'PROGRAM_SELECTION' } },
+      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'SAFE_OUTBOUND' } } },
     ],
   },
   {
@@ -172,7 +180,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
     description: 'Si el contacto está NO_CONTACTAR, el sistema bloquea cualquier envío.',
     contactNoContact: true,
     steps: [
-      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'NO_CONTACTAR' }, stage: 'PROGRAM_SELECTION' } },
+      { inboundText: 'Hola', expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'NO_CONTACTAR' } } },
     ],
   },
   {
@@ -180,7 +188,7 @@ export const SCENARIOS: ScenarioDefinition[] = [
     name: 'Programs: menú y asignación por opción',
     description: 'Si una conversación no tiene Program y hay varios activos, muestra menú y asigna al elegir 1/2/3.',
     steps: [
-      { inboundText: 'Hola', expect: { stage: 'PROGRAM_SELECTION', outbound: { sentDelta: 1 } } },
+      { inboundText: 'Hola', expect: { outbound: { sentDelta: 1, lastTextContains: ['¿Sobre qué programa', 'Responde con el número'] } } },
       { inboundText: '1', expect: { programIdSet: true } },
     ],
   },
@@ -321,6 +329,62 @@ export const SCENARIOS: ScenarioDefinition[] = [
         },
       },
     ],
+  },
+  {
+    id: 'program_menu_command_menu',
+    name: 'Programs: comando "menu" (cambiar program)',
+    description:
+      'Valida que el mensaje "menu" muestre el menú incluso si ya hay un Program asignado, y que al elegir se cambie el Program.',
+    programSlug: 'recruitment',
+    contactWaId: 'sandbox',
+    steps: [
+      {
+        inboundText: 'menu',
+        expect: { outbound: { sentDelta: 1, lastTextContains: ['¿Sobre qué programa', 'Responde con el número'] } },
+      },
+      {
+        inboundText: 'sales',
+        expect: {
+          programIdSet: true,
+          agentRun: { eventType: 'PROGRAM_SELECTION', programSlug: 'sales' },
+          outbound: { sentDelta: 1, lastTextContains: ['Te atenderé con el programa', '¿En qué te puedo ayudar?'] },
+        },
+      },
+      { inboundText: 'Hola', expect: { agentRun: { eventType: 'INBOUND_MESSAGE', programSlug: 'sales' } } },
+    ],
+  },
+  {
+    id: 'stage_definitions_crud_basic',
+    name: 'Stages: CRUD básico (default + orden)',
+    description:
+      'Crea un stage, lo marca como default y valida que el workspace tenga exactamente 1 default activo.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check stage crud basic',
+        expect: { stageDefinitionsCrudBasic: { workspaceId: 'scenario-stage-crud', slug: 'PREPARANDO_ENVIO' } },
+      },
+    ],
+  },
+  {
+    id: 'ssclinical_handoff_interesado_notification',
+    name: 'SSClinical: INTERESADO -> asigna + notifica',
+    description:
+      'Valida que al marcar Stage INTERESADO se asigne a enfermera líder y se cree notificación in-app (NOTIFICATION_CREATED).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check ssclinical interesado notify',
+        expect: { ssclinicalHandoffInteresadoNotification: { workspaceId: 'ssclinical' } },
+      },
+    ],
+  },
+  {
+    id: 'copilot_context_followup',
+    name: 'Copilot: follow-up (sí) ejecuta lo prometido',
+    description:
+      'Valida que si Copilot ofrece listar Automations y el usuario responde "sí", lista sin repreguntar.',
+    steps: [{ action: 'WORKSPACE_CHECK', inboundText: 'check copilot followup', expect: { copilotContextFollowup: true } }],
   },
   {
     id: 'platform_superadmin_gate',

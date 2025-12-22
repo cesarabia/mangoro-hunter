@@ -12,6 +12,7 @@ import { PlatformPage } from './pages/PlatformPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CopilotWidget } from './components/CopilotWidget';
 import { GuideOverlay, GuideSpec } from './components/GuideOverlay';
+import { NotificationBell } from './components/NotificationBell';
 
 type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review' | 'platform';
 
@@ -651,6 +652,17 @@ const Layout: React.FC<{
           ) : null}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <NotificationBell
+            workspaceId={workspaceId}
+            onOpenConversation={(conversationId) => {
+              try {
+                localStorage.setItem('selectedConversationId', String(conversationId));
+              } catch {
+                // ignore
+              }
+              setView('inbox');
+            }}
+          />
           {identityLabel ? (
             <div
               style={{

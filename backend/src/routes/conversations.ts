@@ -17,6 +17,7 @@ import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceA
 import { stableHash } from '../services/agent/tools';
 import { runAutomations } from '../services/automationRunnerService';
 import { isKnownActiveStage, normalizeStageSlug } from '../services/workspaceStageService';
+import { createInAppNotification } from '../services/notificationService';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -333,6 +334,25 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       });
       const label = membership.user?.name || membership.user?.email || nextUserId;
       await logSystemMessage(id, `👤 Conversación asignada a: ${label}`, { assignment: 'SET', assignedToUserId: nextUserId, actor });
+
+      // In-app notification for the assignee (idempotent).
+      let contactLabel = 'Conversación';
+      try {
+        const withContact = await prisma.conversation.findUnique({ where: { id }, include: { contact: true } });
+        contactLabel = getContactDisplayName(withContact?.contact);
+      } catch {
+        // ignore
+      }
+      await createInAppNotification({
+        workspaceId: access.workspaceId,
+        userId: nextUserId,
+        conversationId: id,
+        type: 'CONVERSATION_ASSIGNED',
+        title: 'Nueva conversación asignada',
+        body: `Se te asignó: ${contactLabel}`,
+        data: { conversationId: id, assignedToUserId: nextUserId, source: 'manual' },
+        dedupeKey: `assign:manual:${id}:${nextUserId}`,
+      }).catch(() => {});
       return { ok: true, assignedToUserId: nextUserId };
     }
 

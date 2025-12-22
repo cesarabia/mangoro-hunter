@@ -10,6 +10,8 @@ import { getEffectiveOutboundAllowlist, getOutboundPolicy, getSystemConfig } fro
 import { sendAdminNotification } from '../adminNotificationService';
 import { getContactDisplayName } from '../../utils/contactDisplay';
 import { normalizeWhatsAppId } from '../../utils/whatsapp';
+import { coerceStageSlug } from '../workspaceStageService';
+import { runAutomations } from '../automationRunnerService';
 
 export type ExecutorTransportMode = 'REAL' | 'NULL';
 
@@ -262,6 +264,7 @@ export async function executeAgentResponse(params: {
         include: { contact: true, phoneLine: true },
       })
     : null;
+  let currentStage = baseConversation ? String((baseConversation as any).conversationStage || '') : '';
 
   const askedFieldCounts = conversationId
     ? await prisma.conversationAskedField.findMany({
@@ -314,14 +317,32 @@ export async function executeAgentResponse(params: {
     }
 
     if (cmd.command === 'SET_CONVERSATION_STAGE') {
+      const nextStage = await coerceStageSlug({
+        workspaceId: baseConversation?.workspaceId || params.workspaceId,
+        stageSlug: cmd.stage,
+      }).catch(() => String(cmd.stage));
+      const stageChanged = String(nextStage || '') !== String(currentStage || '');
       await prisma.conversation.update({
         where: { id: cmd.conversationId },
         data: {
-          conversationStage: cmd.stage,
+          conversationStage: nextStage,
           stageReason: cmd.reason || null,
           updatedAt: new Date(),
         },
       });
+      currentStage = String(nextStage || '');
+      if (stageChanged) {
+        // Trigger stage automations (e.g., SSClinical INTERESADO -> assign + notify).
+        await runAutomations({
+          app: params.app,
+          workspaceId: baseConversation?.workspaceId || params.workspaceId,
+          eventType: 'STAGE_CHANGED',
+          conversationId: cmd.conversationId,
+          transportMode: params.transportMode,
+        }).catch((err) => {
+          params.app.log.warn({ err, conversationId: cmd.conversationId }, 'STAGE_CHANGED automations failed (agent executor)');
+        });
+      }
       results.push({ ok: true });
       continue;
     }

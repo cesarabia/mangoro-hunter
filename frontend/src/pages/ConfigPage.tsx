@@ -133,6 +133,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [workspaceStagesIncludeArchived, setWorkspaceStagesIncludeArchived] = useState<boolean>(false);
   const [newStageSlug, setNewStageSlug] = useState<string>('');
   const [newStageLabelEs, setNewStageLabelEs] = useState<string>('');
+  const [newStageIsDefault, setNewStageIsDefault] = useState<boolean>(false);
   const [newStageSaving, setNewStageSaving] = useState(false);
   const [newStageStatus, setNewStageStatus] = useState<string | null>(null);
   const [newStageError, setNewStageError] = useState<string | null>(null);
@@ -245,6 +246,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
   const [automations, setAutomations] = useState<any[]>([]);
   const [automationEditor, setAutomationEditor] = useState<any | null>(null);
+  const [automationTemplatePickerOpen, setAutomationTemplatePickerOpen] = useState(false);
   const [automationRuns, setAutomationRuns] = useState<any[]>([]);
   const [automationStatus, setAutomationStatus] = useState<string | null>(null);
   const [automationError, setAutomationError] = useState<string | null>(null);
@@ -366,9 +368,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         .sort((a: any, b: any) => Number(a.order || 0) - Number(b.order || 0));
       const lastOrder = sorted.length > 0 ? Number(sorted[sorted.length - 1].order || 0) : 0;
       const nextOrder = lastOrder + 10;
-      await apiClient.post('/api/workspaces/current/stages', { slug, labelEs, order: nextOrder });
+      await apiClient.post('/api/workspaces/current/stages', { slug, labelEs, order: nextOrder, isDefault: newStageIsDefault });
       setNewStageSlug('');
       setNewStageLabelEs('');
+      setNewStageIsDefault(false);
       setNewStageStatus('Stage creado.');
       await loadWorkspaceStages();
     } catch (err: any) {
@@ -1454,6 +1457,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     try {
       const payload: any = {
         name: automationEditor.name,
+        description: typeof automationEditor.description === 'string' ? automationEditor.description : null,
+        exampleUseCase: typeof automationEditor.exampleUseCase === 'string' ? automationEditor.exampleUseCase : null,
         enabled: Boolean(automationEditor.enabled),
         priority: Number(automationEditor.priority || 100),
         trigger: automationEditor.trigger,
@@ -1481,6 +1486,57 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     } catch (err: any) {
       setAutomationError(err.message || 'No se pudo guardar');
     }
+  };
+
+  const openAutomationTemplate = (templateId: string) => {
+    const base = {
+      name: '',
+      description: '',
+      exampleUseCase: '',
+      enabled: true,
+      priority: 100,
+      trigger: 'INBOUND_MESSAGE',
+      scopePhoneLineId: '',
+      scopeProgramId: '',
+      conditions: [] as any[],
+      actions: [] as any[]
+    };
+
+    if (templateId === 'default_inbound_run_agent') {
+      setAutomationEditor({
+        ...base,
+        name: 'Default inbound → RUN_AGENT',
+        description: 'Regla base: ante cualquier inbound, corre RUN_AGENT (Program asignado o por defecto).',
+        trigger: 'INBOUND_MESSAGE',
+        actions: [{ type: 'RUN_AGENT', agent: 'program_default' }]
+      });
+      setAutomationTemplatePickerOpen(false);
+      return;
+    }
+
+    if (templateId === 'ssclinical_stage_interesado_assign') {
+      setAutomationEditor({
+        ...base,
+        name: 'SSClinical: Stage INTERESADO → asignar enfermera líder',
+        description: 'Cuando el caso pasa a INTERESADO, asigna automáticamente a la enfermera líder (según configuración del workspace).',
+        exampleUseCase: 'Ej: cliente pide coordinar visita → marcar INTERESADO → se asigna a enfermera líder.',
+        trigger: 'STAGE_CHANGED',
+        priority: 110,
+        conditions: [{ field: 'conversation.stage', op: 'equals', value: 'INTERESADO' }],
+        actions: [{ type: 'ASSIGN_TO_NURSE_LEADER', note: 'Caso INTERESADO. Revisar y coordinar.' }]
+      });
+      setAutomationTemplatePickerOpen(false);
+      return;
+    }
+
+    // Fallback: blank rule.
+    setAutomationEditor({
+      ...base,
+      name: '',
+      trigger: 'INBOUND_MESSAGE',
+      actions: [{ type: 'RUN_AGENT', agent: 'program_default' }]
+    });
+    setAutomationTemplatePickerOpen(false);
   };
 
   const loadRunsForAutomation = async (ruleId: string) => {
@@ -1705,6 +1761,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 	                .map((s: any, idx: number, arr: any[]) => {
 	                  const archived = Boolean(s?.archivedAt);
 	                  const active = s?.isActive !== false && !archived;
+	                  const isDefault = Boolean(s?.isDefault) && active;
 	                  return (
 	                    <div
 	                      key={s.id}
@@ -1725,7 +1782,24 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 	                      </div>
 	                      <div style={{ flex: 1, minWidth: 220 }}>
 	                        <div style={{ fontSize: 12, color: '#666' }}>Label</div>
-	                        <div style={{ fontSize: 13, fontWeight: 700 }}>{String(s.labelEs || s.slug || '—')}</div>
+	                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+	                          <div style={{ fontSize: 13, fontWeight: 700 }}>{String(s.labelEs || s.slug || '—')}</div>
+	                          {isDefault ? (
+	                            <span
+	                              title="Default: se usa al crear nuevas conversaciones si no hay stage"
+	                              style={{
+	                                fontSize: 11,
+	                                fontWeight: 900,
+	                                padding: '2px 8px',
+	                                borderRadius: 999,
+	                                background: '#111',
+	                                color: '#fff'
+	                              }}
+	                            >
+	                              Default
+	                            </span>
+	                          ) : null}
+	                        </div>
 	                      </div>
 	                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
 	                        <button
@@ -1754,6 +1828,23 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 	                          style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
 	                        >
 	                          Editar
+	                        </button>
+	                        <button
+	                          type="button"
+	                          onClick={() => patchWorkspaceStage(String(s.id), { isDefault: true }).catch(() => {})}
+	                          disabled={archived || !active || isDefault}
+	                          title="Marcar como default (stage inicial para nuevas conversaciones)"
+	                          style={{
+	                            padding: '4px 10px',
+	                            borderRadius: 8,
+	                            border: '1px solid #ccc',
+	                            background: isDefault ? '#eaf2ff' : '#fff',
+	                            color: '#111',
+	                            fontSize: 12,
+	                            fontWeight: 800
+	                          }}
+	                        >
+	                          {isDefault ? 'Default' : 'Hacer default'}
 	                        </button>
 	                        <button
 	                          type="button"
@@ -1816,6 +1907,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 	                >
 	                  {newStageSaving ? 'Creando…' : 'Crear'}
 	                </button>
+	                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
+	                  <input
+	                    type="checkbox"
+	                    checked={newStageIsDefault}
+	                    onChange={(e) => setNewStageIsDefault(e.target.checked)}
+	                  />
+	                  Default
+	                </label>
 	              </div>
 	              <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
 	                Consejo: usa slugs en mayúsculas con guión bajo (<span style={{ fontFamily: 'monospace' }}>A-Z 0-9 _</span>).
@@ -2897,7 +2996,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     </td>
                     <td style={{ padding: 10, fontSize: 13 }}>{l.lastInboundAt || '—'}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>{l.lastOutboundAt || '—'}</td>
-                    <td style={{ padding: 10, fontSize: 13 }}>
+                    <td style={{ padding: 10, fontSize: 13, whiteSpace: 'nowrap', minWidth: 170 }}>
                       <button
                         onClick={() => {
                           setPhoneLineConflict(null);
@@ -3408,35 +3507,64 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             <div style={{ fontSize: 18, fontWeight: 700 }}>Automations</div>
             <button
               data-guide-id="config-automations-new-rule"
-              onClick={() =>
-                setAutomationEditor({
-                  name: '',
-                  enabled: true,
-                  priority: 100,
-                  trigger: 'INBOUND_MESSAGE',
-                  scopePhoneLineId: '',
-                  scopeProgramId: '',
-                  conditions: [],
-                  actions: [{ type: 'RUN_AGENT', agent: 'program_default' }]
-                })
-              }
+              onClick={() => setAutomationTemplatePickerOpen(true)}
               style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
             >
               + Nueva regla
             </button>
           </div>
 
+          {automationTemplatePickerOpen ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Plantillas</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Elige una plantilla para crear una Automation sin escribir JSON.
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => openAutomationTemplate('default_inbound_run_agent')}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 900 }}
+                >
+                  Default inbound → RUN_AGENT
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAutomationTemplate('ssclinical_stage_interesado_assign')}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 900 }}
+                >
+                  SSClinical: INTERESADO → asignar enfermera líder
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAutomationTemplate('blank')}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 900 }}
+                >
+                  Regla en blanco
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAutomationTemplatePickerOpen(false)}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 900 }}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           <div style={{ border: '1px solid #eee', borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#fafafa', textAlign: 'left' }}>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Enabled</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Name</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Activa</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Nombre</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Descripción</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Trigger</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Scope</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Priority</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Last run status</th>
-                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Last run at</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Prioridad</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Último run</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Último run at</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
                 </tr>
               </thead>
@@ -3447,6 +3575,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                       <input type="checkbox" checked={Boolean(r.enabled)} onChange={(e) => apiClient.patch(`/api/automations/${r.id}`, { enabled: e.target.checked }).then(loadAutomations)} />
                     </td>
                     <td style={{ padding: 10, fontSize: 13 }}>{r.name}</td>
+                    <td style={{ padding: 10, fontSize: 13, color: '#666' }}>{r.description || '—'}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>{r.trigger}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>
                       {(() => {
@@ -3483,12 +3612,17 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
           {automationEditor ? (
             <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12 }}>
-              <div style={{ fontWeight: 700, marginBottom: 8 }}>Rule editor</div>
+              <div style={{ fontWeight: 900, marginBottom: 8 }}>Editor de regla</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <input value={automationEditor.name || ''} onChange={(e) => setAutomationEditor({ ...automationEditor, name: e.target.value })} placeholder="name (required)" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
+                <input
+                  value={automationEditor.name || ''}
+                  onChange={(e) => setAutomationEditor({ ...automationEditor, name: e.target.value })}
+                  placeholder="Nombre (requerido)"
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                />
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={Boolean(automationEditor.enabled)} onChange={(e) => setAutomationEditor({ ...automationEditor, enabled: e.target.checked })} />
-                  Enabled
+                  Activa
                 </label>
                 <input value={automationEditor.priority ?? 100} onChange={(e) => setAutomationEditor({ ...automationEditor, priority: Number(e.target.value) })} type="number" style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }} />
                 <select value={automationEditor.trigger || 'INBOUND_MESSAGE'} onChange={(e) => setAutomationEditor({ ...automationEditor, trigger: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
@@ -3499,7 +3633,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   ))}
                 </select>
                 <select value={automationEditor.scopePhoneLineId || ''} onChange={(e) => setAutomationEditor({ ...automationEditor, scopePhoneLineId: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
-                  <option value="">Any (PhoneLine)</option>
+                  <option value="">Cualquier PhoneLine</option>
                   {phoneLines.map((l) => (
                     <option key={l.id} value={l.id}>
                       {l.alias}
@@ -3507,13 +3641,30 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   ))}
                 </select>
                 <select value={automationEditor.scopeProgramId || ''} onChange={(e) => setAutomationEditor({ ...automationEditor, scopeProgramId: e.target.value })} style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}>
-                  <option value="">Any (Program)</option>
+                  <option value="">Cualquier Program</option>
                   {programs.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <textarea
+                  value={automationEditor.description || ''}
+                  onChange={(e) => setAutomationEditor({ ...automationEditor, description: e.target.value })}
+                  placeholder="Descripción (qué hace esta regla y por qué existe)"
+                  rows={3}
+                  style={{ gridColumn: '1 / -1', width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }}
+                />
+                <textarea
+                  value={automationEditor.exampleUseCase || ''}
+                  onChange={(e) => setAutomationEditor({ ...automationEditor, exampleUseCase: e.target.value })}
+                  placeholder="Ejemplo de uso (opcional)"
+                  rows={2}
+                  style={{ gridColumn: '1 / -1', width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd', fontSize: 12 }}
+                />
               </div>
 
               <div style={{ marginTop: 12 }}>

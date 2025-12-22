@@ -33,6 +33,7 @@ import { createConversationAndMaybeSend } from "./conversationCreateService";
 import { archiveConversation } from "./conversationArchiveService";
 import { buildWaIdCandidates, normalizeWhatsAppId } from "../utils/whatsapp";
 import { logInboundRoutingError, resolveInboundPhoneLineRouting } from "./phoneLineRoutingService";
+import { coerceStageSlug, getWorkspaceDefaultStageSlug } from "./workspaceStageService";
 import {
   attemptScheduleInterview,
   confirmActiveReservation,
@@ -538,6 +539,9 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
   });
 
   if (!conversation) {
+    const defaultStageSlug = await getWorkspaceDefaultStageSlug(workspaceId).catch(
+      () => "NEW_INTAKE",
+    );
     conversation = await prisma.conversation.create({
       data: {
         workspaceId,
@@ -545,6 +549,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
         programId: defaultProgramId,
         contactId: contact.id,
         status: "NEW",
+        conversationStage: defaultStageSlug,
         channel: "whatsapp",
       },
     });
@@ -553,6 +558,21 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
       where: { id: conversation.id },
       data: { status: "OPEN" },
     });
+  }
+  // Ensure conversationStage is valid for this workspace; if not, coerce to workspace default.
+  try {
+    const coerced = await coerceStageSlug({
+      workspaceId,
+      stageSlug: conversation.conversationStage,
+    });
+    if (coerced && String(conversation.conversationStage || "") !== String(coerced)) {
+      conversation = await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { conversationStage: coerced, stageReason: "auto_default", updatedAt: new Date() },
+      });
+    }
+  } catch {
+    // ignore
   }
   if (!conversation.programId && defaultProgramId) {
     conversation = await prisma.conversation.update({

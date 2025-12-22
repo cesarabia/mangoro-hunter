@@ -25,6 +25,7 @@ import { registerReviewPackRoutes } from './routes/reviewPack';
 import { registerConnectorRoutes } from './routes/connectors';
 import { registerInviteRoutes } from './routes/invites';
 import { registerPlatformRoutes } from './routes/platform';
+import { registerNotificationRoutes } from './routes/notifications';
 import { isWorkspaceAdmin, isWorkspaceOwner, resolveWorkspaceAccess } from './services/workspaceAuthService';
 import { checkRateLimit } from './services/rateLimitService';
 import { runPhoneLinePhoneE164Hygiene } from './services/phoneLineHygieneService';
@@ -133,6 +134,7 @@ export async function buildServer() {
   app.register(registerAgendaRoutes, { prefix: '/api/agenda' });
   app.register(registerSimulationRoutes, { prefix: '/api/simulate' });
   app.register(registerMessageRoutes, { prefix: '/api/messages' });
+  app.register(registerNotificationRoutes, { prefix: '/api/notifications' });
   app.register(registerPlatformRoutes, { prefix: '/api/platform' });
   registerWhatsAppWebhookRoutes(app);
 

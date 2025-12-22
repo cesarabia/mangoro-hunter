@@ -53,7 +53,7 @@ export async function registerReviewPackRoutes(app: FastifyInstance) {
     });
 
     // Docs bundle (best effort).
-    const docs = ['PLATFORM_DESIGN.md', 'STATUS.md', 'DEPLOY.md', 'RUNBOOK.md', 'DEV_PACKET.md'];
+    const docs = ['PLATFORM_DESIGN.md', 'STATUS.md', 'DEPLOY.md', 'RUNBOOK.md', 'DEV_PACKET.md', 'WORKFLOW.md'];
     for (const doc of docs) {
       const fp = path.join(docsRoot, doc);
       const buf = safeReadFile(fp);

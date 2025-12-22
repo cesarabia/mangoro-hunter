@@ -45,6 +45,9 @@ const CopilotActionSchema = z.discriminatedUnion('type', [
 type CopilotAction = z.infer<typeof CopilotActionSchema>;
 type CopilotNavigateAction = Extract<CopilotAction, { type: 'NAVIGATE' }>;
 
+const nav = (view: z.infer<typeof ViewSchema>, configTab?: z.infer<typeof ConfigTabSchema>, label?: string) =>
+  ({ type: 'NAVIGATE', view, ...(configTab ? { configTab } : {}), ...(label ? { label } : {}) }) as CopilotNavigateAction;
+
 const CopilotCommandSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('CREATE_PROGRAM'),
@@ -147,6 +150,26 @@ function normalizeText(value: string): string {
     .trim();
 }
 
+function isAffirmative(text: string): boolean {
+  const t = normalizeText(text);
+  if (!t) return false;
+  if (t === 'si' || t === 'sí') return true;
+  if (t === 'ok' || t === 'okay' || t === 'okey') return true;
+  if (t === 'dale' || t === 'de acuerdo' || t === 'listo') return true;
+  if (t === 'por favor') return true;
+  if (t.startsWith('si ')) return true;
+  return /\b(confirmo|confirmar|hazlo|haganlo|enviar|envia)\b/.test(t);
+}
+
+function isNegative(text: string): boolean {
+  const t = normalizeText(text);
+  if (!t) return false;
+  if (t === 'no') return true;
+  if (t === 'cancelar' || t === 'cancela') return true;
+  if (t === 'no gracias' || t === 'gracias no') return true;
+  return /\b(no quiero|mejor no|olvida|cancel)\b/.test(t);
+}
+
 function slugify(value: string): string {
   return String(value || '')
     .normalize('NFD')
@@ -233,8 +256,6 @@ function inferGuide(text: string, ctx: { isAdmin: boolean; conversationId: strin
   const wantsGuide = /\b(mu[eé]stra|muestrame|donde|d[oó]nde|guia|gu[ií]a|guiame|resalta|highlight)\b/.test(t);
   if (!wantsGuide) return null;
 
-  const nav = (view: z.infer<typeof ViewSchema>, configTab?: z.infer<typeof ConfigTabSchema>, label?: string) =>
-    ({ type: 'NAVIGATE', view, ...(configTab ? { configTab } : {}), ...(label ? { label } : {}) }) as const;
   const guide = (title: string, steps: Array<z.infer<typeof GuideStepSchema>>) =>
     ({ type: 'GUIDE', title, label: 'Iniciar guía', steps } as const);
 
@@ -305,6 +326,82 @@ function explainBlockedReason(blockedReason: string): string {
   if (reason.includes('DEDUP')) return 'El sistema evitó un duplicado (dedupe/idempotencia).';
   if (reason.includes('ANTI_LOOP')) return 'Se bloqueó para evitar loops (mensaje repetido).';
   return `El envío quedó bloqueado: ${blockedReason}`;
+}
+
+async function buildAutomationsExactReply(workspaceId: string): Promise<{ replyText: string; actions: CopilotAction[] }> {
+  const rules = await prisma.automationRule.findMany({
+    where: { workspaceId, archivedAt: null },
+    orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      exampleUseCase: true,
+      enabled: true,
+      priority: true,
+      trigger: true,
+      scopePhoneLineId: true,
+      scopeProgramId: true,
+      conditionsJson: true,
+      actionsJson: true,
+    },
+  });
+
+  if (rules.length === 0) {
+    return {
+      replyText:
+        'No hay Automations activas en este workspace (lista vacía). Puedes crear una con “+ Nueva regla” en Configuración → Automations.',
+      actions: [nav('config', 'automations', 'Ir a Automations')],
+    };
+  }
+
+  const formatJsonInline = (value: string | null | undefined): string => {
+    const parsed = safeJsonParse(String(value || '')) ?? [];
+    return serializeJson(parsed);
+  };
+
+  const lines: string[] = [];
+  lines.push(`Automations en workspace "${workspaceId}" (${rules.length}):`);
+  for (const r of rules) {
+    const enabledLabel = r.enabled ? 'habilitada' : 'deshabilitada';
+    const desc = String((r as any).description || '').trim();
+    const example = String((r as any).exampleUseCase || '').trim();
+    lines.push(`\n- ${r.name} (${enabledLabel}, priority=${r.priority}, trigger=${r.trigger})`);
+    if (desc) lines.push(`  Descripción: ${desc}`);
+    if (example) lines.push(`  Ejemplo: ${example}`);
+    if (r.scopePhoneLineId) lines.push(`  Scope: phoneLineId=${r.scopePhoneLineId}`);
+    if (r.scopeProgramId) lines.push(`  Scope: programId=${r.scopeProgramId}`);
+    lines.push(`  Conditions: ${formatJsonInline(r.conditionsJson)}`);
+    lines.push(`  Actions: ${formatJsonInline(r.actionsJson)}`);
+  }
+
+  return {
+    replyText: lines.join('\n').trim(),
+    actions: [nav('config', 'automations', 'Abrir Automations')],
+  };
+}
+
+async function buildProgramsExactReply(workspaceId: string): Promise<{ replyText: string; actions: CopilotAction[] }> {
+  const programs = await prisma.program.findMany({
+    where: { workspaceId, archivedAt: null },
+    orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
+    select: { id: true, name: true, slug: true, isActive: true, updatedAt: true },
+  });
+  if (programs.length === 0) {
+    return {
+      replyText: 'No hay Programs en este workspace. Crea uno en Configuración → Programs.',
+      actions: [nav('config', 'programs', 'Ir a Programs')],
+    };
+  }
+  const lines: string[] = [];
+  lines.push(`Programs en workspace "${workspaceId}" (${programs.length}):`);
+  for (const p of programs) {
+    lines.push(`- ${p.name} (${p.isActive ? 'activo' : 'inactivo'}) · slug=${p.slug}`);
+  }
+  return {
+    replyText: lines.join('\n').trim(),
+    actions: [nav('config', 'programs', 'Abrir Programs')],
+  };
 }
 
 export async function registerCopilotRoutes(app: FastifyInstance) {
@@ -504,6 +601,58 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
         .catch(() => {});
     }
 
+    // Follow-up state (Copilot V2): if the previous response offered an explicit listing, honor "sí/ok" without repreguntar.
+    let threadState: any | null = null;
+    if (threadId && userId) {
+      const thread = await prisma.copilotThread
+        .findFirst({
+          where: { id: threadId, workspaceId: access.workspaceId, userId },
+          select: { id: true, stateJson: true as any },
+        })
+        .catch(() => null);
+      threadState = thread?.stateJson ? safeJsonParse(String(thread.stateJson)) : null;
+    }
+    const pendingKind = String(threadState?.pending?.kind || '').toUpperCase();
+    if (pendingKind === 'LIST_AUTOMATIONS' && isAffirmative(text)) {
+      const { replyText, actions } = await buildAutomationsExactReply(access.workspaceId);
+      if (threadId) {
+        await prisma.copilotThread.update({ where: { id: threadId }, data: { stateJson: null, updatedAt: new Date() } as any }).catch(() => {});
+      }
+      if (run?.id) {
+        await prisma.copilotRunLog.update({
+          where: { id: run.id },
+          data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+        });
+      }
+      return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
+    }
+    if (pendingKind === 'LIST_PROGRAMS' && isAffirmative(text)) {
+      const { replyText, actions } = await buildProgramsExactReply(access.workspaceId);
+      if (threadId) {
+        await prisma.copilotThread.update({ where: { id: threadId }, data: { stateJson: null, updatedAt: new Date() } as any }).catch(() => {});
+      }
+      if (run?.id) {
+        await prisma.copilotRunLog.update({
+          where: { id: run.id },
+          data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+        });
+      }
+      return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
+    }
+    if ((pendingKind === 'LIST_AUTOMATIONS' || pendingKind === 'LIST_PROGRAMS') && isNegative(text)) {
+      if (threadId) {
+        await prisma.copilotThread.update({ where: { id: threadId }, data: { stateJson: null, updatedAt: new Date() } as any }).catch(() => {});
+      }
+      const replyText = 'Perfecto. Si quieres, dime qué necesitas y te ayudo.';
+      if (run?.id) {
+        await prisma.copilotRunLog.update({
+          where: { id: run.id },
+          data: { status: 'SUCCESS', responseText: replyText },
+        });
+      }
+      return { reply: replyText, actions: [], threadId, runId: run?.id || null, autoNavigate: false };
+    }
+
     const guideHint = inferGuide(text, { isAdmin, conversationId });
     if (guideHint) {
       if (run?.id) {
@@ -582,6 +731,110 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
         });
       }
       return { reply: replyText, proposals: [proposal], threadId, runId: run?.id || null, autoNavigate: false };
+    }
+
+    // Deterministic: explain/list Automations for this workspace (exact, no hallucinations).
+    const wantsExplainAutomations =
+      /\b(explica|explicame|explicación|explicacion|listar|lista|mu[eé]strame|muestra|ver)\b/i.test(text) &&
+      /\b(automation|automations|automat|regla|reglas)\b/i.test(text);
+    if (wantsExplainAutomations) {
+      if (!isAdmin) {
+        const replyText =
+          'Para ver Automations necesitas permisos de ADMIN/OWNER en este workspace. Si no los tienes, pídele a un ADMIN que lo revise en Configuración → Automations.';
+        const actions = [nav('config', 'automations', 'Ir a Automations')];
+        if (run?.id) {
+          await prisma.copilotRunLog.update({
+            where: { id: run.id },
+            data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+          });
+        }
+        return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
+      }
+
+      // For long lists, ask for confirmation and keep a pending follow-up in the thread state.
+      const count = await prisma.automationRule.count({ where: { workspaceId: access.workspaceId, archivedAt: null } }).catch(() => 0);
+      if (count > 6) {
+        const replyText = `En este workspace hay ${count} Automations. ¿Quieres que te muestre la lista exacta (condiciones + acciones)? Responde “si” para listarlas.`;
+        const actions = [nav('config', 'automations', 'Ir a Automations')];
+        if (threadId) {
+          await prisma.copilotThread
+            .update({
+              where: { id: threadId },
+              data: { stateJson: serializeJson({ pending: { kind: 'LIST_AUTOMATIONS', createdAt: new Date().toISOString() } }) } as any,
+            })
+            .catch(() => {});
+        }
+        if (run?.id) {
+          await prisma.copilotRunLog.update({
+            where: { id: run.id },
+            data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+          });
+        }
+        return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
+      }
+
+      const { replyText, actions } = await buildAutomationsExactReply(access.workspaceId);
+      if (threadId) {
+        await prisma.copilotThread.update({ where: { id: threadId }, data: { stateJson: null, updatedAt: new Date() } as any }).catch(() => {});
+      }
+      if (run?.id) {
+        await prisma.copilotRunLog.update({
+          where: { id: run.id },
+          data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+        });
+      }
+      return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
+    }
+
+    const wantsExplainPrograms =
+      /\b(explica|explicame|listar|lista|mu[eé]strame|muestra|ver)\b/i.test(text) &&
+      /\b(program|programa|programs)\b/i.test(text);
+    if (wantsExplainPrograms) {
+      if (!isAdmin) {
+        const replyText =
+          'Para ver Programs necesitas permisos de ADMIN/OWNER en este workspace. Si no los tienes, pídele a un ADMIN que lo revise en Configuración → Programs.';
+        const actions = [nav('config', 'programs', 'Ir a Programs')];
+        if (run?.id) {
+          await prisma.copilotRunLog.update({
+            where: { id: run.id },
+            data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+          });
+        }
+        return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
+      }
+
+      const count = await prisma.program.count({ where: { workspaceId: access.workspaceId, archivedAt: null } }).catch(() => 0);
+      if (count > 10) {
+        const replyText = `En este workspace hay ${count} Programs. ¿Quieres que te los liste? Responde “si” para listarlos.`;
+        const actions = [nav('config', 'programs', 'Ir a Programs')];
+        if (threadId) {
+          await prisma.copilotThread
+            .update({
+              where: { id: threadId },
+              data: { stateJson: serializeJson({ pending: { kind: 'LIST_PROGRAMS', createdAt: new Date().toISOString() } }) } as any,
+            })
+            .catch(() => {});
+        }
+        if (run?.id) {
+          await prisma.copilotRunLog.update({
+            where: { id: run.id },
+            data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+          });
+        }
+        return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
+      }
+
+      const { replyText, actions } = await buildProgramsExactReply(access.workspaceId);
+      if (threadId) {
+        await prisma.copilotThread.update({ where: { id: threadId }, data: { stateJson: null, updatedAt: new Date() } as any }).catch(() => {});
+      }
+      if (run?.id) {
+        await prisma.copilotRunLog.update({
+          where: { id: run.id },
+          data: { status: 'SUCCESS', responseText: replyText, actionsJson: serializeJson(actions) },
+        });
+      }
+      return { reply: replyText, actions, threadId, runId: run?.id || null, autoNavigate: true };
     }
 
     const config = await getSystemConfig();
@@ -709,7 +962,11 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
     }
 
     const client = new OpenAI({ apiKey });
-    const model = normalizeModelId(config.aiModel || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+    // Copilot default model (V2): prefer gpt-5-mini (normalized to gpt-5-chat-latest) unless the workspace explicitly chose a different model.
+    const configuredModel = normalizeModelId(config.aiModel || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+    const model = config.aiModel && normalizeModelId(config.aiModel) !== normalizeModelId(DEFAULT_AI_MODEL)
+      ? (normalizeModelId(config.aiModel) || configuredModel)
+      : (normalizeModelId('gpt-5-mini') || configuredModel);
 
     const system = `
 Eres el Copilot interno de Hunter CRM (Agent OS).

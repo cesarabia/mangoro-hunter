@@ -444,10 +444,11 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
     const userId = request.user?.userId ? String(request.user.userId) : null;
 
-    const body = request.body as { slug?: string; labelEs?: string; order?: number };
+    const body = request.body as { slug?: string; labelEs?: string; order?: number; isDefault?: boolean };
     const slug = normalizeStageSlug(body?.slug);
     const labelEs = String(body?.labelEs || '').trim();
     const order = typeof body?.order === 'number' && Number.isFinite(body.order) ? Math.round(body.order) : null;
+    const isDefault = Object.prototype.hasOwnProperty.call(body || {}, 'isDefault') ? Boolean((body as any).isDefault) : null;
     if (!slug) return reply.code(400).send({ error: '"slug" es requerido.' });
     if (!/^[A-Z0-9][A-Z0-9_]*$/.test(slug)) {
       return reply.code(400).send({ error: '"slug" inválido. Usa A-Z, 0-9 y _ (ej: EN_PROCESO).' });
@@ -472,6 +473,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
           slug,
           labelEs,
           order: order ?? 0,
+          isDefault: Boolean(isDefault),
           isActive: true,
           isTerminal: false,
           archivedAt: null,
@@ -479,6 +481,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         update: {
           labelEs,
           ...(order === null ? {} : { order }),
+          ...(isDefault === null ? {} : { isDefault: Boolean(isDefault) }),
           archivedAt: null,
           isActive: true,
           updatedAt: new Date(),
@@ -488,6 +491,17 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         request.log.warn({ err, slug }, 'Failed to upsert workspace stage');
         throw err;
       });
+
+    // If the created stage is marked as default, clear other defaults (one default per workspace).
+    if (isDefault) {
+      await prisma.workspaceStage
+        .updateMany({
+          where: { workspaceId: access.workspaceId, id: { not: created.id }, archivedAt: null },
+          data: { isDefault: false } as any,
+        })
+        .catch(() => {});
+      await prisma.workspaceStage.update({ where: { id: created.id }, data: { isDefault: true } as any }).catch(() => {});
+    }
 
     await prisma.configChangeLog
       .create({
@@ -516,6 +530,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       order?: number;
       isActive?: boolean;
       isTerminal?: boolean;
+      isDefault?: boolean;
       archived?: boolean;
     };
 
@@ -544,6 +559,11 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       if (typeof body?.isTerminal !== 'boolean') return reply.code(400).send({ error: '"isTerminal" inválido.' });
       patch.isTerminal = body.isTerminal;
     }
+    const touchedIsDefault = Object.prototype.hasOwnProperty.call(body || {}, 'isDefault');
+    if (touchedIsDefault) {
+      if (typeof (body as any)?.isDefault !== 'boolean') return reply.code(400).send({ error: '"isDefault" inválido.' });
+      patch.isDefault = Boolean((body as any).isDefault);
+    }
     if (Object.prototype.hasOwnProperty.call(body || {}, 'archived')) {
       if (typeof body?.archived !== 'boolean') return reply.code(400).send({ error: '"archived" inválido.' });
       patch.archivedAt = body.archived ? new Date() : null;
@@ -553,10 +573,36 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     }
     patch.updatedAt = new Date();
 
-    const updated = await prisma.workspaceStage.update({
-      where: { id: existing.id },
-      data: patch,
+    // Default stage fix-up is workspace-wide: ensure only one default and never leave workspace without a default.
+    const updated = await prisma.$transaction(async (tx) => {
+      let next = await tx.workspaceStage.update({ where: { id: existing.id }, data: patch });
+      if (touchedIsDefault && patch.isDefault === true) {
+        await tx.workspaceStage
+          .updateMany({
+            where: { workspaceId: access.workspaceId, id: { not: existing.id }, archivedAt: null },
+            data: { isDefault: false },
+          })
+          .catch(() => {});
+        next = await tx.workspaceStage.update({ where: { id: existing.id }, data: { isDefault: true } }).catch(() => next);
+      }
+      return next;
     });
+
+    // If we archived/deactivated/un-defaulted the default stage, pick a new default (best effort).
+    try {
+      const active = await prisma.workspaceStage.findMany({
+        where: { workspaceId: access.workspaceId, archivedAt: null, isActive: true },
+        orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+        select: { id: true, isDefault: true },
+      });
+      const hasDefault = active.some((s) => Boolean(s.isDefault));
+      if (!hasDefault && active.length > 0) {
+        await prisma.workspaceStage.updateMany({ where: { workspaceId: access.workspaceId, archivedAt: null }, data: { isDefault: false } }).catch(() => {});
+        await prisma.workspaceStage.update({ where: { id: active[0].id }, data: { isDefault: true } }).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
 
     await prisma.configChangeLog
       .create({
@@ -564,8 +610,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
           workspaceId: access.workspaceId,
           userId,
           type: 'WORKSPACE_STAGE_UPDATED',
-          beforeJson: serializeJson({ id: existing.id, slug: existing.slug, labelEs: existing.labelEs, order: existing.order, isActive: existing.isActive, isTerminal: existing.isTerminal, archivedAt: existing.archivedAt ? true : false }),
-          afterJson: serializeJson({ id: updated.id, slug: updated.slug, labelEs: updated.labelEs, order: updated.order, isActive: updated.isActive, isTerminal: updated.isTerminal, archivedAt: updated.archivedAt ? true : false }),
+          beforeJson: serializeJson({ id: existing.id, slug: existing.slug, labelEs: existing.labelEs, order: existing.order, isDefault: (existing as any).isDefault || false, isActive: existing.isActive, isTerminal: existing.isTerminal, archivedAt: existing.archivedAt ? true : false }),
+          afterJson: serializeJson({ id: updated.id, slug: updated.slug, labelEs: updated.labelEs, order: updated.order, isDefault: (updated as any).isDefault || false, isActive: updated.isActive, isTerminal: updated.isTerminal, archivedAt: updated.archivedAt ? true : false }),
         },
       })
       .catch(() => {});

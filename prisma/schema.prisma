@@ -20,6 +20,7 @@ model User {
   invitesCreated WorkspaceInvite[] @relation("InviteCreatedBy")
   invitesAccepted WorkspaceInvite[] @relation("InviteAcceptedBy")
   conversations  Conversation[] @relation("UserConversations")
+  notifications  InAppNotification[]
   copilotRuns    CopilotRunLog[]
   copilotThreads CopilotThread[]
   scenarioRuns   ScenarioRunLog[]
@@ -36,6 +37,7 @@ model Workspace {
   ssclinicalNurseLeaderEmail String?
   archivedAt  DateTime?
   stages      WorkspaceStage[]
+  notifications InAppNotification[]
   memberships Membership[]
   invites     WorkspaceInvite[]
   phoneLines  PhoneLine[]
@@ -66,6 +68,7 @@ model WorkspaceStage {
   slug        String
   labelEs     String
   order       Int       @default(0)
+  isDefault   Boolean   @default(false)
   isActive    Boolean   @default(true)
   isTerminal  Boolean   @default(false)
   archivedAt  DateTime?
@@ -89,6 +92,31 @@ model ConfigChangeLog {
   createdAt   DateTime  @default(now())
 
   @@index([workspaceId])
+  @@index([createdAt])
+}
+
+model InAppNotification {
+  id            String       @id @default(cuid())
+  workspace     Workspace    @relation(fields: [workspaceId], references: [id])
+  workspaceId   String       @default("default")
+  user          User         @relation(fields: [userId], references: [id])
+  userId        String
+  conversation  Conversation? @relation(fields: [conversationId], references: [id])
+  conversationId String?
+  type          String
+  title         String
+  body          String?
+  dataJson      String?
+  dedupeKey     String
+  readAt        DateTime?
+  archivedAt    DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([workspaceId, userId, dedupeKey])
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([conversationId])
   @@index([createdAt])
 }
 
@@ -353,6 +381,7 @@ model Conversation {
   askedFields   ConversationAskedField[]
   agentRuns     AgentRunLog[]
   outboundLogs  OutboundMessageLog[]
+  notifications InAppNotification[]
   copilotRuns   CopilotRunLog[]
   aiUsageLogs   AiUsageLog[]
   scenarioRuns  ScenarioRunLog[]
@@ -466,6 +495,7 @@ model CopilotThread {
   user        User?      @relation(fields: [userId], references: [id])
   userId      String?
   title       String?
+  stateJson   String?
   archivedAt  DateTime?
   runs        CopilotRunLog[]
   createdAt   DateTime   @default(now())
@@ -556,6 +586,8 @@ model AutomationRule {
   workspace       Workspace @relation(fields: [workspaceId], references: [id])
   workspaceId     String     @default("default")
   name            String
+  description     String?
+  exampleUseCase  String?
   enabled         Boolean    @default(true)
   priority        Int        @default(100)
   trigger         String

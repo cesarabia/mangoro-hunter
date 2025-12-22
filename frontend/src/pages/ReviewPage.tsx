@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 
 type PageTab = 'help' | 'qa';
-type LogTab = 'agentRuns' | 'outbound' | 'automationRuns' | 'copilotRuns' | 'configChanges' | 'connectorCalls';
+type LogTab = 'agentRuns' | 'outbound' | 'automationRuns' | 'copilotRuns' | 'configChanges' | 'connectorCalls' | 'notifications';
 
 type DodStatus = 'PASS' | 'FAIL' | 'PENDING';
 
@@ -45,6 +45,10 @@ const DOD_ITEMS: DodItem[] = [
   { id: 'smokeScenarios', label: 'Simulator/Smoke Scenarios: PASS (admin/test/loop/safe_mode/program_switch/ssclinical)', kind: 'auto' },
   { id: 'reviewPack', label: 'Review Pack ZIP: descarga OK y contiene docs + logs + scenarios', kind: 'auto' },
   { id: 'programConsistency', label: 'Program consistency: Sugerir + RUN_AGENT + Automations usan Program correcto', kind: 'auto' },
+  { id: 'stagesConfigurable', label: 'Stages configurables: CRUD + default + set en conversación', kind: 'auto' },
+  { id: 'inAppNotifications', label: 'Notificaciones in-app: INTERESADO -> asigna + notifica (SSClinical)', kind: 'auto' },
+  { id: 'programMenu', label: 'Program Menu: por PhoneLine + comando “menu”', kind: 'auto' },
+  { id: 'copilotFollowup', label: 'Copilot: follow-up (“sí”) ejecuta lo prometido sin repreguntar', kind: 'auto' },
   { id: 'inboxUx', label: 'Inbox UX: chat-first + responsive sin perder estado', kind: 'manual' },
   { id: 'copilotLv2', label: 'Copilot Nivel 2: propuestas Confirmar/Cancelar sin estados inconsistentes', kind: 'manual' },
   { id: 'programsPro', label: 'Programs PRO: Knowledge Pack + Prompt Builder + auditoría + Tools por Program', kind: 'manual' }
@@ -112,6 +116,7 @@ export const ReviewPage: React.FC<{
   const [copilotRuns, setCopilotRuns] = useState<any[]>([]);
   const [configChanges, setConfigChanges] = useState<any[]>([]);
   const [connectorCalls, setConnectorCalls] = useState<any[]>([]);
+  const [notificationEvents, setNotificationEvents] = useState<any[]>([]);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
 
@@ -171,6 +176,52 @@ export const ReviewPage: React.FC<{
             { label: 'Abrir Programs', onClick: () => openConfigTab('programs') },
             { label: 'Abrir Logs', onClick: () => setLogTab('agentRuns') }
           ]
+        };
+      case 'stagesConfigurable':
+        return {
+          steps: [
+            'Ir a Configuración → Workspace.',
+            'En “Estados (Stages)”: crear un stage, marcarlo como Default y reordenar.',
+            'Abrir una conversación → Detalles → cambiar Stage y verificar que se guarda.'
+          ],
+          actions: [
+            { label: 'Abrir Workspace', onClick: () => openConfigTab('workspace') },
+            { label: 'Abrir Inbox', onClick: onGoInbox }
+          ]
+        };
+      case 'inAppNotifications':
+        return {
+          steps: [
+            'En SSClinical: abrir una conversación.',
+            'Cambiar Stage a INTERESADO.',
+            'Ver que se auto-asigna a enfermera líder y aparece una notificación (campana).',
+            'Ver en Logs → Notificaciones el evento NOTIFICATION_CREATED.'
+          ],
+          actions: [
+            { label: 'Abrir Inbox', onClick: onGoInbox },
+            { label: 'Abrir Logs', onClick: () => setLogTab('notifications') }
+          ]
+        };
+      case 'programMenu':
+        return {
+          steps: [
+            'Ir a Configuración → Números WhatsApp.',
+            'Editar una PhoneLine: activar “Menú de Programs” y seleccionar 2+ Programs permitidos.',
+            'En WhatsApp: enviar “menu” para ver opciones y elegir 1/2/3; debe cambiar el Program de la conversación.'
+          ],
+          actions: [
+            { label: 'Abrir Números WhatsApp', onClick: () => openConfigTab('phoneLines') },
+            { label: 'Abrir Inbox', onClick: onGoInbox }
+          ]
+        };
+      case 'copilotFollowup':
+        return {
+          steps: [
+            'Abrir Copilot.',
+            'Pedir “explica estos automations” o “lista automations”.',
+            'Cuando Copilot pregunte “¿Quieres que los liste?”, responder “sí”. Debe listar sin repreguntar.'
+          ],
+          actions: [{ label: 'Abrir Copilot Runs', onClick: () => setLogTab('copilotRuns') }]
         };
       case 'inboxUx':
         return {
@@ -288,18 +339,20 @@ export const ReviewPage: React.FC<{
       const outboundPath = conversationFilter
         ? `/api/logs/outbound-messages?limit=20&conversationId=${encodeURIComponent(conversationFilter)}`
         : '/api/logs/outbound-messages?limit=20';
-      const [ar, or, au, cc, kc] = await Promise.all([
+      const [ar, or, au, cc, kc, ne] = await Promise.all([
         apiClient.get('/api/logs/agent-runs?limit=20'),
         apiClient.get(outboundPath),
         apiClient.get('/api/logs/automation-runs?limit=20'),
         apiClient.get('/api/logs/config-changes?limit=20'),
         apiClient.get('/api/logs/connector-calls?limit=20'),
+        apiClient.get('/api/logs/notifications?limit=20'),
       ]);
       setAgentRuns(Array.isArray(ar) ? ar : []);
       setOutboundLogs(Array.isArray(or) ? or : []);
       setAutomationRuns(Array.isArray(au) ? au : []);
       setConfigChanges(Array.isArray(cc) ? cc : []);
       setConnectorCalls(Array.isArray(kc) ? kc : []);
+      setNotificationEvents(Array.isArray(ne) ? ne : []);
       apiClient
         .get('/api/logs/copilot-runs?limit=20')
         .then((cr) => setCopilotRuns(Array.isArray(cr) ? cr : []))
@@ -312,6 +365,7 @@ export const ReviewPage: React.FC<{
       setCopilotRuns([]);
       setConfigChanges([]);
       setConnectorCalls([]);
+      setNotificationEvents([]);
     } finally {
       setLogsLoading(false);
     }
@@ -360,7 +414,7 @@ export const ReviewPage: React.FC<{
         setActiveTab(storedTab);
       }
       const storedLogTab = localStorage.getItem('reviewLogTab');
-      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns' || storedLogTab === 'copilotRuns' || storedLogTab === 'configChanges' || storedLogTab === 'connectorCalls') {
+      if (storedLogTab === 'agentRuns' || storedLogTab === 'outbound' || storedLogTab === 'automationRuns' || storedLogTab === 'copilotRuns' || storedLogTab === 'configChanges' || storedLogTab === 'connectorCalls' || storedLogTab === 'notifications') {
         setLogTab(storedLogTab);
         setActiveTab('qa');
       }
@@ -697,6 +751,35 @@ export const ReviewPage: React.FC<{
                 <td style={{ ...tdStyle, color: c.ok ? '#1a7f37' : '#b93800', fontWeight: 800 }}>{c.ok ? 'PASS' : 'FAIL'}</td>
                 <td style={tdStyle}>{typeof c.statusCode === 'number' ? c.statusCode : '—'}</td>
                 <td style={{ ...tdStyle, color: c.error ? '#b93800' : '#666' }}>{c.error || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+
+    if (logTab === 'notifications') {
+      return (
+        <table style={tableStyle}>
+          <thead>
+            <tr>
+              <th style={thStyle}>createdAt</th>
+              <th style={thStyle}>user</th>
+              <th style={thStyle}>conversation</th>
+              <th style={thStyle}>title</th>
+              <th style={thStyle}>readAt</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(notificationEvents || []).slice(0, 20).map((n: any) => (
+              <tr key={n.id}>
+                <td style={tdStyle}>{n.createdAt}</td>
+                <td style={tdStyle}>{n.user?.email || n.user?.id || '—'}</td>
+                <td style={tdStyle} title={n.conversationId || ''}>
+                  {n.conversationLabel || n.conversationId || '—'}
+                </td>
+                <td style={tdStyle}>{n.title || '—'}</td>
+                <td style={tdStyle}>{n.readAt || '—'}</td>
               </tr>
             ))}
           </tbody>
@@ -1463,6 +1546,9 @@ export const ReviewPage: React.FC<{
               </button>
               <button onClick={() => setLogTab('connectorCalls')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'connectorCalls' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'connectorCalls' ? '#111' : '#fff', color: logTab === 'connectorCalls' ? '#fff' : '#333', fontSize: 12 }}>
                 Connector Calls
+              </button>
+              <button onClick={() => setLogTab('notifications')} style={{ padding: '4px 10px', borderRadius: 999, border: logTab === 'notifications' ? '1px solid #111' : '1px solid #ccc', background: logTab === 'notifications' ? '#111' : '#fff', color: logTab === 'notifications' ? '#fff' : '#333', fontSize: 12 }}>
+                Notificaciones
               </button>
               <button onClick={() => openConfigTab('logs')} style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
                 Ver en Config → Logs

@@ -4,8 +4,61 @@ import { serializeJson } from '../utils/json';
 import { executeAgentResponse, ExecutorTransportMode } from './agent/commandExecutorService';
 import { runAgent } from './agent/agentRuntimeService';
 import { resolveLocation, stableHash, stripAccents, validateRut } from './agent/tools';
+import { createInAppNotification } from './notificationService';
+import { getContactDisplayName } from '../utils/contactDisplay';
 
 type ProgramSummary = { id: string; name: string; slug: string };
+
+const PROGRAM_MENU_PENDING_TAG = 'program_menu_pending';
+
+function parseStageTagsValue(raw: unknown): string[] {
+  if (!raw) return [];
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((v) => normalizeLoose(String(v))).filter(Boolean);
+      }
+    } catch {
+      // ignore
+    }
+    return trimmed
+      .split(/[,\n]/g)
+      .map((v) => normalizeLoose(v))
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function serializeStageTags(tags: string[]): string | null {
+  const unique: string[] = [];
+  for (const tag of tags) {
+    const t = normalizeLoose(tag);
+    if (!t) continue;
+    if (!unique.includes(t)) unique.push(t);
+  }
+  return unique.length > 0 ? JSON.stringify(unique) : null;
+}
+
+function buildConversationSummaryForAssignment(params: { conversation: any; programName?: string | null }): string {
+  const contact = params.conversation?.contact;
+  const display = contact ? getContactDisplayName(contact) : 'Contacto';
+  const comuna = String(contact?.comuna || '').trim();
+  const ciudad = String(contact?.ciudad || '').trim();
+  const region = String(contact?.region || '').trim();
+  const location = [comuna, ciudad, region].filter(Boolean).join(' · ');
+  const availability = String((contact as any)?.availabilityText || '').trim();
+  const programName = String(params.programName || '').trim();
+
+  const lines: string[] = [];
+  lines.push(`👤 ${display}`);
+  if (programName) lines.push(`🧭 Servicio: ${programName}`);
+  if (location) lines.push(`📍 Ubicación: ${location}`);
+  if (availability) lines.push(`⏱️ Preferencia horaria: ${availability}`);
+  return lines.join('\n');
+}
 
 async function listActivePrograms(workspaceId: string): Promise<ProgramSummary[]> {
   return prisma.program.findMany({
@@ -38,6 +91,18 @@ function resolveProgramChoice(inboundText: string, programs: ProgramSummary[]): 
   return null;
 }
 
+function isMenuCommand(inboundText: string | null | undefined): boolean {
+  const normalized = normalizeLoose(String(inboundText || ''));
+  if (!normalized) return false;
+  if (normalized === 'menu') return true;
+  if (normalized === 'programas') return true;
+  if (normalized.includes('cambiar programa')) return true;
+  if (normalized.includes('cambiar de programa')) return true;
+  if (normalized.includes('menu de programas')) return true;
+  if (normalized.includes('cambiar modo')) return true;
+  return false;
+}
+
 function normalizeInboundMode(value: unknown): 'DEFAULT' | 'MENU' {
   const upper = String(value || '').trim().toUpperCase();
   return upper === 'MENU' ? 'MENU' : 'DEFAULT';
@@ -60,25 +125,13 @@ function parseProgramMenuIdsJson(raw: unknown): string[] {
   }
 }
 
-async function maybeHandleProgramSelection(params: {
-  app: FastifyInstance;
-  workspaceId: string;
-  conversation: any;
-  inboundText: string | null;
-  inboundMessageId?: string | null;
-  windowStatus: string;
-  transportMode: ExecutorTransportMode;
-}): Promise<{ handled: boolean; selectedProgramId?: string | null }> {
-  if (!params.conversation) return { handled: false };
-  if (params.conversation.programId) return { handled: false };
-
+async function listSelectablePrograms(params: { workspaceId: string; conversation: any }): Promise<ProgramSummary[]> {
   const programsAll = await listActivePrograms(params.workspaceId);
   let programs = params.conversation.isAdmin
     ? programsAll
     : programsAll.filter((p) => normalizeLoose(p.slug) !== 'admin');
-  if (programs.length === 0) return { handled: false };
+  if (programs.length === 0) return [];
 
-  // PhoneLine can scope which Programs are selectable (inbound menu).
   if (!params.conversation.isAdmin && params.conversation.phoneLineId) {
     const line = await prisma.phoneLine
       .findFirst({
@@ -95,6 +148,224 @@ async function maybeHandleProgramSelection(params: {
       }
     }
   }
+
+  return programs;
+}
+
+async function showProgramMenu(params: {
+  app: FastifyInstance;
+  workspaceId: string;
+  conversation: any;
+  inboundText: string | null;
+  inboundMessageId?: string | null;
+  windowStatus: string;
+  transportMode: ExecutorTransportMode;
+  reason: 'programId_missing' | 'menu_command' | 'awaiting_choice';
+}): Promise<void> {
+  const programs = await listSelectablePrograms({ workspaceId: params.workspaceId, conversation: params.conversation });
+  if (programs.length === 0) return;
+
+  const menuLines = programs.map((p, idx) => `${idx + 1}) ${p.name}`).join('\n');
+  const menuText = `¿Sobre qué programa necesitas ayuda?\nResponde con el número:\n${menuLines}`.trim();
+
+  const tags = parseStageTagsValue(params.conversation.stageTags);
+  if (!tags.includes(PROGRAM_MENU_PENDING_TAG)) {
+    tags.push(PROGRAM_MENU_PENDING_TAG);
+    await prisma.conversation
+      .update({
+        where: { id: params.conversation.id },
+        data: { stageTags: serializeStageTags(tags), updatedAt: new Date() },
+      })
+      .catch(() => {});
+    params.conversation.stageTags = serializeStageTags(tags);
+  }
+
+  const agentRun = await prisma.agentRunLog.create({
+    data: {
+      workspaceId: params.workspaceId,
+      conversationId: params.conversation.id,
+      programId: params.conversation.programId || null,
+      phoneLineId: params.conversation.phoneLineId || null,
+      eventType: 'PROGRAM_SELECTION',
+      status: 'RUNNING',
+      inputContextJson: serializeJson({
+        reason: params.reason,
+        inboundMessageId: params.inboundMessageId || null,
+        inboundText: String(params.inboundText || '').trim() || null,
+        programs: programs.map((p) => ({ id: p.id, name: p.name, slug: p.slug })),
+      }),
+      commandsJson: serializeJson({
+        agent: 'system_program_selector',
+        version: 1,
+        commands: [
+          {
+            command: 'SEND_MESSAGE',
+            conversationId: params.conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_TEXT',
+            text: menuText,
+            dedupeKey: `program_menu:${stableHash(`${params.conversation.id}:${menuText}`).slice(0, 12)}`,
+          },
+        ],
+      }),
+    },
+  });
+
+  await executeAgentResponse({
+    app: params.app,
+    workspaceId: params.workspaceId,
+    agentRunId: agentRun.id,
+    response: {
+      agent: 'system_program_selector',
+      version: 1,
+      commands: [
+        {
+          command: 'SEND_MESSAGE',
+          conversationId: params.conversation.id,
+          channel: 'WHATSAPP',
+          type: 'SESSION_TEXT',
+          text: menuText,
+          dedupeKey: `program_menu:${stableHash(`${params.conversation.id}:${menuText}`).slice(0, 12)}`,
+        } as any,
+      ],
+    } as any,
+    transportMode: params.transportMode,
+  });
+}
+
+async function maybeHandleProgramMenuCommandOrPendingChoice(params: {
+  app: FastifyInstance;
+  workspaceId: string;
+  conversation: any;
+  inboundText: string | null;
+  inboundMessageId?: string | null;
+  windowStatus: string;
+  transportMode: ExecutorTransportMode;
+}): Promise<{ handled: boolean }> {
+  if (!params.conversation) return { handled: false };
+  if (params.conversation.isAdmin) return { handled: false };
+
+  const inbound = String(params.inboundText || '').trim();
+  const tags = parseStageTagsValue(params.conversation.stageTags);
+  const awaiting = tags.includes(PROGRAM_MENU_PENDING_TAG);
+
+  if (isMenuCommand(inbound)) {
+    await showProgramMenu({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      conversation: params.conversation,
+      inboundText: inbound,
+      inboundMessageId: params.inboundMessageId || null,
+      windowStatus: params.windowStatus,
+      transportMode: params.transportMode,
+      reason: 'menu_command',
+    });
+    return { handled: true };
+  }
+
+  if (!awaiting) return { handled: false };
+  const programs = await listSelectablePrograms({ workspaceId: params.workspaceId, conversation: params.conversation });
+  if (programs.length === 0) return { handled: false };
+
+  const choice = inbound ? resolveProgramChoice(inbound, programs) : null;
+  if (!choice) {
+    await showProgramMenu({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      conversation: params.conversation,
+      inboundText: inbound,
+      inboundMessageId: params.inboundMessageId || null,
+      windowStatus: params.windowStatus,
+      transportMode: params.transportMode,
+      reason: 'awaiting_choice',
+    });
+    return { handled: true };
+  }
+
+  const nextTags = tags.filter((t) => t !== PROGRAM_MENU_PENDING_TAG);
+  await prisma.conversation
+    .update({
+      where: { id: params.conversation.id },
+      data: { programId: choice.id, stageTags: serializeStageTags(nextTags), updatedAt: new Date() },
+    })
+    .catch(() => {});
+  params.conversation.programId = choice.id;
+  params.conversation.stageTags = serializeStageTags(nextTags);
+
+  const confirmText = `Listo. Te atenderé con el programa: ${choice.name}.\n¿En qué te puedo ayudar?`;
+  const agentRun = await prisma.agentRunLog.create({
+    data: {
+      workspaceId: params.workspaceId,
+      conversationId: params.conversation.id,
+      programId: choice.id,
+      phoneLineId: params.conversation.phoneLineId || null,
+      eventType: 'PROGRAM_SELECTION',
+      status: 'RUNNING',
+      inputContextJson: serializeJson({
+        reason: 'program_selected',
+        inboundMessageId: params.inboundMessageId || null,
+        inboundText: inbound || null,
+        selected: { id: choice.id, name: choice.name, slug: choice.slug },
+      }),
+      commandsJson: serializeJson({
+        agent: 'system_program_selector',
+        version: 1,
+        commands: [
+          { command: 'SET_CONVERSATION_PROGRAM', conversationId: params.conversation.id, programId: choice.id, reason: 'user_selected' },
+          { command: 'ADD_CONVERSATION_NOTE', conversationId: params.conversation.id, visibility: 'SYSTEM', note: `🔀 Programa cambiado a: ${choice.name}` },
+          {
+            command: 'SEND_MESSAGE',
+            conversationId: params.conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_TEXT',
+            text: confirmText,
+            dedupeKey: `program_selected:${stableHash(`${params.conversation.id}:${choice.id}`).slice(0, 12)}`,
+          },
+        ],
+      }),
+    },
+  });
+
+  await executeAgentResponse({
+    app: params.app,
+    workspaceId: params.workspaceId,
+    agentRunId: agentRun.id,
+    response: {
+      agent: 'system_program_selector',
+      version: 1,
+      commands: [
+        { command: 'SET_CONVERSATION_PROGRAM', conversationId: params.conversation.id, programId: choice.id, reason: 'user_selected' } as any,
+        { command: 'ADD_CONVERSATION_NOTE', conversationId: params.conversation.id, visibility: 'SYSTEM', note: `🔀 Programa cambiado a: ${choice.name}` } as any,
+        {
+          command: 'SEND_MESSAGE',
+          conversationId: params.conversation.id,
+          channel: 'WHATSAPP',
+          type: 'SESSION_TEXT',
+          text: confirmText,
+          dedupeKey: `program_selected:${stableHash(`${params.conversation.id}:${choice.id}`).slice(0, 12)}`,
+        } as any,
+      ],
+    } as any,
+    transportMode: params.transportMode,
+  });
+
+  return { handled: true };
+}
+
+async function maybeHandleProgramSelection(params: {
+  app: FastifyInstance;
+  workspaceId: string;
+  conversation: any;
+  inboundText: string | null;
+  inboundMessageId?: string | null;
+  windowStatus: string;
+  transportMode: ExecutorTransportMode;
+}): Promise<{ handled: boolean; selectedProgramId?: string | null }> {
+  if (!params.conversation) return { handled: false };
+  if (params.conversation.programId) return { handled: false };
+
+  let programs = await listSelectablePrograms({ workspaceId: params.workspaceId, conversation: params.conversation });
+  if (programs.length === 0) return { handled: false };
 
   // Admin conversations should never show a program menu; default to the "admin" program when present.
   if (params.conversation.isAdmin) {
@@ -127,78 +398,38 @@ async function maybeHandleProgramSelection(params: {
       data: { programId: choice.id, updatedAt: new Date() },
     });
     params.conversation.programId = choice.id;
+    await prisma.agentRunLog
+      .create({
+        data: {
+          workspaceId: params.workspaceId,
+          conversationId: params.conversation.id,
+          programId: choice.id,
+          phoneLineId: params.conversation.phoneLineId || null,
+          eventType: 'PROGRAM_SELECTION',
+          status: 'SUCCESS',
+          inputContextJson: serializeJson({
+            reason: 'program_selected_inline',
+            inboundMessageId: params.inboundMessageId || null,
+            inboundText: inbound || null,
+          }),
+          resultsJson: serializeJson({ selected: { id: choice.id, name: choice.name, slug: choice.slug } }),
+        },
+      })
+      .catch(() => {});
     return { handled: false, selectedProgramId: choice.id };
   }
 
   // If we can't resolve, ask a short menu and stop here.
-  const menuLines = programs.map((p, idx) => `${idx + 1}) ${p.name}`).join('\n');
-  const menuText =
-    `¿Sobre qué programa necesitas ayuda?\nResponde con el número:\n${menuLines}`.trim();
-
-  const agentRun = await prisma.agentRunLog.create({
-    data: {
-      workspaceId: params.workspaceId,
-      conversationId: params.conversation.id,
-      programId: null,
-      phoneLineId: params.conversation.phoneLineId || null,
-      eventType: 'PROGRAM_SELECTION',
-      status: 'RUNNING',
-      inputContextJson: serializeJson({
-        reason: 'programId_missing',
-        inboundMessageId: params.inboundMessageId || null,
-        inboundText: inbound || null,
-        programs: programs.map((p) => ({ id: p.id, name: p.name, slug: p.slug })),
-      }),
-      commandsJson: serializeJson({
-        agent: 'system_program_selector',
-        version: 1,
-        commands: [
-          {
-            command: 'SET_CONVERSATION_STAGE',
-            conversationId: params.conversation.id,
-            stage: 'PROGRAM_SELECTION',
-            reason: 'awaiting_program_choice',
-          },
-          {
-            command: 'SEND_MESSAGE',
-            conversationId: params.conversation.id,
-            channel: 'WHATSAPP',
-            type: 'SESSION_TEXT',
-            text: menuText,
-            dedupeKey: `program_menu:${stableHash(`${params.conversation.id}:${menuText}`).slice(0, 12)}`,
-          },
-        ],
-      }),
-    },
-  });
-
-  await executeAgentResponse({
+  await showProgramMenu({
     app: params.app,
     workspaceId: params.workspaceId,
-    agentRunId: agentRun.id,
-    response: {
-      agent: 'system_program_selector',
-      version: 1,
-      commands: [
-        {
-          command: 'SET_CONVERSATION_STAGE',
-          conversationId: params.conversation.id,
-          stage: 'PROGRAM_SELECTION',
-          reason: 'awaiting_program_choice',
-        } as any,
-        {
-          command: 'SEND_MESSAGE',
-          conversationId: params.conversation.id,
-          channel: 'WHATSAPP',
-          type: 'SESSION_TEXT',
-          text: menuText,
-          dedupeKey: `program_menu:${stableHash(`${params.conversation.id}:${menuText}`).slice(0, 12)}`,
-        } as any,
-      ],
-    } as any,
+    conversation: params.conversation,
+    inboundText: inbound || null,
+    inboundMessageId: params.inboundMessageId || null,
+    windowStatus: params.windowStatus,
     transportMode: params.transportMode,
+    reason: 'programId_missing',
   });
-
   return { handled: true };
 }
 
@@ -382,7 +613,7 @@ export async function runAutomations(params: {
 }): Promise<void> {
   const conversation = await prisma.conversation.findUnique({
     where: { id: params.conversationId },
-    include: { contact: true },
+    include: { contact: true, program: { select: { id: true, name: true, slug: true } } },
   });
   if (!conversation) return;
   if (conversation.workspaceId !== params.workspaceId) return;
@@ -428,6 +659,17 @@ export async function runAutomations(params: {
   })();
 
   if (params.eventType === 'INBOUND_MESSAGE') {
+    const forcedMenu = await maybeHandleProgramMenuCommandOrPendingChoice({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      conversation,
+      inboundText: params.inboundText || null,
+      inboundMessageId: params.inboundMessageId || null,
+      windowStatus,
+      transportMode: params.transportMode,
+    });
+    if (forcedMenu.handled) return;
+
     const selection = await maybeHandleProgramSelection({
       app: params.app,
       workspaceId: params.workspaceId,
@@ -565,9 +807,13 @@ export async function runAutomations(params: {
 
           const label = leaderUser.name || leaderUser.email || leaderEmailRaw;
           const noteText = String((action as any).note || '').trim();
+          const summary = buildConversationSummaryForAssignment({
+            conversation,
+            programName: conversation.program?.name || null,
+          });
           const systemText = noteText
-            ? `👩‍⚕️ Asignación automática: ${label}\n${noteText}`
-            : `👩‍⚕️ Asignación automática: ${label}`;
+            ? `👩‍⚕️ Asignación automática: ${label}\n${noteText}\n\n${summary}`
+            : `👩‍⚕️ Asignación automática: ${label}\n\n${summary}`;
           await prisma.message
             .create({
               data: {
@@ -581,6 +827,18 @@ export async function runAutomations(params: {
             })
             .catch(() => {});
           await prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } }).catch(() => {});
+
+          // In-app notification (idempotent).
+          await createInAppNotification({
+            workspaceId: params.workspaceId,
+            userId: leaderUser.id,
+            conversationId: conversation.id,
+            type: 'CONVERSATION_ASSIGNED',
+            title: `Nuevo caso asignado (${conversation.conversationStage || 'STAGE'})`,
+            body: summary,
+            data: { conversationId: conversation.id, stage: conversation.conversationStage, assignedToUserId: leaderUser.id },
+            dedupeKey: `assign:auto:${conversation.id}:${leaderUser.id}:${String(conversation.conversationStage || '')}`,
+          }).catch(() => {});
 
           outputs.push({
             action: 'ASSIGN_TO_NURSE_LEADER',

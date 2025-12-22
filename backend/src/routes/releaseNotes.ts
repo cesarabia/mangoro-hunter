@@ -173,6 +173,11 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'location_loop_rm',
       'safe_mode_block',
       'program_switch_suggest_and_inbound',
+      // V2: stages / notificaciones / menú / copilot follow-up
+      'stage_definitions_crud_basic',
+      'ssclinical_handoff_interesado_notification',
+      'program_menu_command_menu',
+      'copilot_context_followup',
       'ssclinical_onboarding',
       'platform_superadmin_gate',
       'ssclinical_stage_assign',
@@ -214,6 +219,32 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       return r.ok ? 'PASS' : 'FAIL';
     })();
 
+    const stagesConfigurableStatus: DodStatus = (() => {
+      const a = latestByScenario.get('stage_definitions_crud_basic');
+      const b = latestByScenario.get('stage_admin_configurable');
+      if (!a || !b) return 'PENDING';
+      return a.ok && b.ok ? 'PASS' : 'FAIL';
+    })();
+
+    const inAppNotificationsStatus: DodStatus = (() => {
+      const r = latestByScenario.get('ssclinical_handoff_interesado_notification');
+      if (!r) return 'PENDING';
+      return r.ok ? 'PASS' : 'FAIL';
+    })();
+
+    const programMenuStatus: DodStatus = (() => {
+      const a = latestByScenario.get('inbound_program_menu');
+      const b = latestByScenario.get('program_menu_command_menu');
+      if (!a || !b) return 'PENDING';
+      return a.ok && b.ok ? 'PASS' : 'FAIL';
+    })();
+
+    const copilotFollowupStatus: DodStatus = (() => {
+      const r = latestByScenario.get('copilot_context_followup');
+      if (!r) return 'PENDING';
+      return r.ok ? 'PASS' : 'FAIL';
+    })();
+
     // Review Pack: check via internal request (best-effort).
     let reviewPackStatus: DodStatus = 'PENDING';
     try {
@@ -238,6 +269,10 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
         smokeScenarios: smokeScenariosStatus,
         reviewPack: reviewPackStatus,
         programConsistency: programConsistencyStatus,
+        stagesConfigurable: stagesConfigurableStatus,
+        inAppNotifications: inAppNotificationsStatus,
+        programMenu: programMenuStatus,
+        copilotFollowup: copilotFollowupStatus,
       },
       dodEvaluatedAt: new Date().toISOString(),
     };

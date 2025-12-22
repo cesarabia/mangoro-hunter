@@ -124,13 +124,16 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
   - `inboundMode=DEFAULT`: si la conversación no tiene Program, aplica `defaultProgramId`.  
   - `inboundMode=MENU`: si la conversación no tiene Program, el sistema muestra un **menú corto (1/2/3)** para que el usuario elija (y luego fija `conversation.programId`).  
   - `programMenuIds` (opcional): limita qué Programs aparecen en ese menú (si está vacío, muestra todos los activos).  
+  - Comando **“menu”** (WhatsApp): muestra el menú **aunque ya exista Program** (para cambiar de flujo) y registra `PROGRAM_SELECTION`.  
 - **Contact**: contactDisplayName (WhatsApp) + candidateName (extraído) + candidateNameManual (override humano)  
 - **WorkspaceStage** (catálogo por workspace, configurable desde UI):  
-  - `slug` (ID estable), `labelEs` (texto humano), `order`, `isActive`, `isTerminal`, `archivedAt`.  
+  - `slug` (ID estable), `labelEs` (texto humano), `order`, `isDefault`, `isActive`, `isTerminal`, `archivedAt`.  
+  - Regla: **exactamente 1 stage default activo** por workspace (si se desactiva/archiva, se elige otro automáticamente).  
   - Seed idempotente: set genérico + set SSClinical (incluye `INTERESADO`).  
 - **Conversation**: status (NEW/OPEN/CLOSED) + `conversationStage` (slug) + programId + phoneLineId + flags y metadata  
   - `assignedToId`: asignación (para `MEMBER assignedOnly`).  
 - **Message**: inbound/outbound + waMessageId idempotente + media/transcriptText + timestamp  
+- **InAppNotification** (archive-only): notificaciones visibles en UI (campana) para asignaciones/handoffs (ej: Stage=INTERESADO).  
 
 ### 5.3 Agent OS runtime & auditoría
 - **AgentRunLog**: inputContextJson + outputCommandsJson + executionResultsJson + error  
@@ -144,6 +147,7 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
 
 ### 5.5 Copilot
 - **CopilotThread**: hilo por workspace+user (persistente)  
+- `stateJson`: estado liviano para follow-ups (ej: Copilot ofrece “listar automations” y, si el usuario responde “sí”, ejecuta sin repreguntar).  
 - **CopilotRunLog**: auditoría por corrida (diagnóstico/navegación) y fuente del historial (inputText/responseText)  
   - Estados: `RUNNING` → `SUCCESS` / `PENDING_CONFIRMATION` → (`EXECUTING` → `EXECUTED`) / `CANCELLED` / `ERROR`  
   - Confirmar/Cancelar es **idempotente** (doble click no duplica ejecución; devuelve “ya ejecutado”).  

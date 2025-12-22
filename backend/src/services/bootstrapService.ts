@@ -174,7 +174,7 @@ async function ensureDefaultAutomationRule(params: { workspaceId: string; enable
     return prisma.automationRule.update({ where: { id: existing.id }, data });
   }
   return prisma.automationRule.create({
-    data: { workspaceId: params.workspaceId, name: 'Default inbound -> RUN_AGENT', ...data }
+    data: { workspaceId: params.workspaceId, name: 'Default inbound -> RUN_AGENT', description: 'Regla base: ante inbound, corre RUN_AGENT.', ...data } as any
   });
 }
 
@@ -357,11 +357,101 @@ Objetivo: apoyar a vendedores con pitch, objeciones y registro de visitas/ventas
       // Seed SSClinical Programs (no-op if already exist).
       await ensureProgram({
         workspaceId: 'ssclinical',
-        name: 'Coordinadora Salud — Suero Hidratante y Sueroterapia',
+        name: 'Asistente Virtual SSClinical — Domicilio (Suero Hidratante y Terapia)',
         slug: 'coordinadora-ssclinical-suero-hidratante-y-terapia',
         agentSystemPrompt:
-          'Eres Coordinadora de SSClinical (salud). Objetivo: informar y coordinar, pedir solo datos necesarios y guiar al siguiente paso. Responde breve y en español.',
+          `
+Eres el Asistente Virtual de SSClinical (salud) para atención a domicilio.
+
+Identidad (importante):
+- Te presentas como: "Asistente Virtual SSClinical" (en el primer mensaje y si te preguntan quién eres).
+- Programa actual: Domicilio (Suero Hidratante y Terapia).
+
+Alcance:
+- Solo atención a domicilio (no presencial).
+- No inventes disponibilidad/horarios. Si el usuario quiere agendar, dile que la enfermera líder confirmará horarios.
+
+Objetivo:
+- Resolver dudas en forma humana (máx 6 líneas).
+- Confirmar intención: 1) Más info 2) Coordinar/agendar.
+- Si quieren coordinar/agendar: pedir datos mínimos en 1 mensaje:
+  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • fecha/horario preferido (si tiene), • si tiene orden médica (sí/no).
+
+Handoff / Coordinación:
+- Cuando el caso está listo para coordinar (interés explícito + datos mínimos), marca Stage=INTERESADO y avisa:
+  "Perfecto, nuestra enfermera líder te contactará para confirmar horarios."
+
+Reglas:
+- No pedir datos sensibles innecesarios por WhatsApp.
+- Si falta algo, pregunta 1 cosa a la vez.
+- Si no sabes algo, dilo y pide confirmación.
+`.trim(),
       }).catch(() => {});
+
+      // Best-effort upgrade for existing SSClinical default program (do not overwrite if customized).
+      try {
+        const program = await prisma.program.findFirst({
+          where: { workspaceId: 'ssclinical', slug: 'coordinadora-ssclinical-suero-hidratante-y-terapia', archivedAt: null },
+          select: { id: true, name: true, agentSystemPrompt: true, updatedAt: true },
+        });
+        if (program?.id) {
+          const oldNames = new Set([
+            'Coordinadora Salud — Suero Hidratante y Sueroterapia',
+            'Coordinadora Salud — Suero Hidratante y Terapia',
+          ]);
+          const oldPrompts = [
+            'Eres Coordinadora de SSClinical (salud). Objetivo: informar y coordinar, pedir solo datos necesarios y guiar al siguiente paso. Responde breve y en español.',
+            `
+Programa: Coordinadora Salud (SSClinical).
+Objetivo: informar sobre suero hidratante / suero terapia, resolver dudas, coordinar agenda y derivar cuando corresponda.
+Reglas:
+- Responde corto y humano (máx 6 líneas).
+- Si falta información, pregunta 1 cosa a la vez.
+- No inventes precios/políticas; si no existe en knowledge, dilo y pide confirmación.
+`.trim(),
+          ];
+
+          const shouldUpdateName = oldNames.has(String(program.name || '').trim());
+          const shouldUpdatePrompt = oldPrompts.includes(String(program.agentSystemPrompt || '').trim());
+
+          if (shouldUpdateName || shouldUpdatePrompt) {
+            await prisma.program.update({
+              where: { id: program.id },
+              data: {
+                ...(shouldUpdateName ? { name: 'Asistente Virtual SSClinical — Domicilio (Suero Hidratante y Terapia)' } : {}),
+                ...(shouldUpdatePrompt ? { agentSystemPrompt: `
+Eres el Asistente Virtual de SSClinical (salud) para atención a domicilio.
+
+Identidad (importante):
+- Te presentas como: "Asistente Virtual SSClinical" (en el primer mensaje y si te preguntan quién eres).
+- Programa actual: Domicilio (Suero Hidratante y Terapia).
+
+Alcance:
+- Solo atención a domicilio (no presencial).
+- No inventes disponibilidad/horarios. Si el usuario quiere agendar, dile que la enfermera líder confirmará horarios.
+
+Objetivo:
+- Resolver dudas en forma humana (máx 6 líneas).
+- Confirmar intención: 1) Más info 2) Coordinar/agendar.
+- Si quieren coordinar/agendar: pedir datos mínimos en 1 mensaje:
+  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • fecha/horario preferido (si tiene), • si tiene orden médica (sí/no).
+
+Handoff / Coordinación:
+- Cuando el caso está listo para coordinar (interés explícito + datos mínimos), marca Stage=INTERESADO y avisa:
+  "Perfecto, nuestra enfermera líder te contactará para confirmar horarios."
+
+Reglas:
+- No pedir datos sensibles innecesarios por WhatsApp.
+- Si falta algo, pregunta 1 cosa a la vez.
+- Si no sabes algo, dilo y pide confirmación.
+`.trim() } : {}),
+              },
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
       await ensureProgram({
         workspaceId: 'ssclinical',
         name: 'Enfermera Líder',
