@@ -58,6 +58,18 @@ export type ScenarioStep = {
     ssclinicalStaffWhatsAppNotification?: {
       workspaceId?: string;
     };
+    staffInboxListCases?: {
+      workspaceId?: string;
+    };
+    staffReplyToNotificationUpdatesCase?: {
+      workspaceId?: string;
+    };
+    staffNotificationTemplateVariables?: {
+      workspaceId?: string;
+    };
+    ssclinicalNotificationRequiresAvailability?: {
+      workspaceId?: string;
+    };
     stageAdminConfigurable?: {
       workspaceId?: string;
       slug?: string;
@@ -431,6 +443,58 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check stage configurable',
         expect: { stageAdminConfigurable: { workspaceId: 'scenario-stage-config', slug: 'PREPARANDO_ENVIO' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_inbox_list_cases',
+    name: 'Staff Mode: LIST_CASES',
+    description:
+      'Valida que una conversación STAFF pueda listar casos asignados usando RUN_TOOL LIST_CASES (sin LLM).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff list cases',
+        expect: { staffInboxListCases: { workspaceId: 'scenario-staff-tools' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_notification_template_variables',
+    name: 'Staff Mode: template variables en NOTIFY_STAFF_WHATSAPP',
+    description:
+      'Valida que NOTIFY_STAFF_WHATSAPP renderice variables determinísticamente y no deje {{placeholders}} sin reemplazar.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff template vars',
+        expect: { staffNotificationTemplateVariables: { workspaceId: 'scenario-staff-template-vars' } },
+      },
+    ],
+  },
+  {
+    id: 'ssclinical_notification_requires_availability',
+    name: 'SSClinical: NOTIFY_STAFF_WHATSAPP requireAvailability',
+    description:
+      'Valida que requireAvailability=true salte la notificación si falta preferencia horaria (sin generar outbound).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check ssclinical require availability',
+        expect: { ssclinicalNotificationRequiresAvailability: { workspaceId: 'scenario-require-availability' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_reply_to_notification_updates_case',
+    name: 'Staff Mode: reply-to notificación -> actualiza caso',
+    description:
+      'Simula reply (context.id) a una notificación WhatsApp, resuelve relatedConversationId y aplica SET_STAGE vía RUN_TOOL (sin copiar IDs).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff reply-to updates case',
+        expect: { staffReplyToNotificationUpdatesCase: { workspaceId: 'scenario-staff-replyto' } },
       },
     ],
   },

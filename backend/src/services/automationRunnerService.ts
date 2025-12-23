@@ -7,6 +7,7 @@ import { resolveLocation, stableHash, stripAccents, validateRut } from './agent/
 import { createInAppNotification } from './notificationService';
 import { getContactDisplayName } from '../utils/contactDisplay';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
+import { ensureStaffConversation } from './staffConversationService';
 
 type ProgramSummary = { id: string; name: string; slug: string };
 
@@ -440,7 +441,19 @@ type ActionRow =
   | { type: 'SET_STATUS'; status: 'NEW' | 'OPEN' | 'CLOSED' }
   | { type: 'ADD_NOTE'; note: string }
   | { type: 'ASSIGN_TO_NURSE_LEADER'; note?: string }
-  | { type: 'NOTIFY_STAFF_WHATSAPP'; targetUserId?: string; targetEmail?: string; messageTemplate?: string; dedupeKey?: string };
+  | {
+      type: 'NOTIFY_STAFF_WHATSAPP';
+      // Backwards compatible:
+      targetUserId?: string;
+      targetEmail?: string;
+      messageTemplate?: string;
+      // v2.2:
+      templateText?: string;
+      recipients?: any;
+      requireAvailability?: boolean;
+      dedupePolicy?: string;
+      dedupeKey?: string;
+    };
 
 function renderSimpleTemplate(template: string, vars: Record<string, string>): string {
   return (template || '').replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, key: string) => vars[key] ?? '');
@@ -456,67 +469,6 @@ async function computeWhatsAppWindowStatusStrict(conversationId: string): Promis
   if (!lastInbound?.timestamp) return 'OUTSIDE_24H';
   const delta = Date.now() - new Date(lastInbound.timestamp).getTime();
   return delta <= WINDOW_MS ? 'IN_24H' : 'OUTSIDE_24H';
-}
-
-async function ensureStaffConversation(params: {
-  workspaceId: string;
-  phoneLineId: string;
-  staffWaId: string;
-  staffLabel: string;
-}): Promise<{ contact: any; conversation: any }> {
-  const waId = normalizeWhatsAppId(params.staffWaId);
-  if (!waId) throw new Error('staff_wa_invalid');
-
-  let contact = await prisma.contact.findFirst({
-    where: {
-      workspaceId: params.workspaceId,
-      OR: [{ waId }, { phone: waId }, { phone: `+${waId}` }],
-    },
-  });
-  if (!contact) {
-    contact = await prisma.contact.create({
-      data: {
-        workspaceId: params.workspaceId,
-        waId,
-        phone: `+${waId}`,
-        displayName: params.staffLabel,
-        name: params.staffLabel,
-      } as any,
-    });
-  } else {
-    const patch: any = {};
-    if (!contact.waId) patch.waId = waId;
-    if (!contact.phone) patch.phone = `+${waId}`;
-    if (!contact.displayName) patch.displayName = params.staffLabel;
-    if (!contact.name) patch.name = params.staffLabel;
-    if (Object.keys(patch).length > 0) {
-      contact = await prisma.contact.update({ where: { id: contact.id }, data: patch });
-    }
-  }
-
-  let conversation = await prisma.conversation.findFirst({
-    where: { workspaceId: params.workspaceId, phoneLineId: params.phoneLineId, contactId: contact.id, isAdmin: true },
-    orderBy: { updatedAt: 'desc' },
-  });
-  if (!conversation) {
-    const adminProgram = await prisma.program
-      .findFirst({ where: { workspaceId: params.workspaceId, slug: 'admin', archivedAt: null }, select: { id: true } })
-      .catch(() => null);
-    conversation = await prisma.conversation.create({
-      data: {
-        workspaceId: params.workspaceId,
-        phoneLineId: params.phoneLineId,
-        programId: adminProgram?.id || null,
-        contactId: contact.id,
-        status: 'OPEN',
-        channel: 'staff',
-        isAdmin: true,
-        aiMode: 'OFF',
-      } as any,
-    });
-  }
-
-  return { contact, conversation };
 }
 
 function safeJsonParse(value: string | null | undefined): any {
@@ -935,92 +887,7 @@ export async function runAutomations(params: {
             continue;
           }
 
-          const targetUserIdRaw = String((action as any).targetUserId || '').trim();
-          const targetEmailRaw = String((action as any).targetEmail || '').trim().toLowerCase();
-          const targetUserId =
-            targetUserIdRaw ||
-            String(conversation.assignedToId || '').trim() ||
-            '';
-
-          const targetUser = await (async () => {
-            if (targetUserId) {
-              return prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true, email: true, name: true } }).catch(() => null);
-            }
-            if (targetEmailRaw) {
-              return prisma.user.findUnique({ where: { email: targetEmailRaw }, select: { id: true, email: true, name: true } }).catch(() => null);
-            }
-            return null;
-          })();
-          if (!targetUser?.id) {
-            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: false, error: 'target_user_not_found' });
-            continue;
-          }
-
-          const membership = await prisma.membership
-            .findFirst({
-              where: { workspaceId: params.workspaceId, userId: targetUser.id, archivedAt: null },
-              select: { id: true, staffWhatsAppE164: true as any },
-            })
-            .catch(() => null);
-          if (!membership?.id) {
-            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: false, error: 'membership_not_found' });
-            continue;
-          }
-
-          const staffE164 = String((membership as any).staffWhatsAppE164 || '').trim();
-          if (!staffE164) {
-            await createInAppNotification({
-              workspaceId: params.workspaceId,
-              userId: targetUser.id,
-              conversationId: conversation.id,
-              type: 'STAFF_WHATSAPP_MISSING',
-              title: 'WhatsApp de notificaciones no configurado',
-              body: 'Configura tu número WhatsApp en Config → Usuarios (formato +569...).',
-              data: { conversationId: conversation.id, membershipId: membership.id },
-              dedupeKey: `staff_wa_missing:${conversation.id}:${targetUser.id}`,
-            }).catch(() => {});
-            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: false, error: 'missing_staff_whatsapp_e164' });
-            continue;
-          }
-
-          const staffWaId = normalizeWhatsAppId(staffE164);
-          if (!staffWaId) {
-            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: false, error: 'invalid_staff_whatsapp' });
-            continue;
-          }
-
-          const staffLabel = String(targetUser.name || targetUser.email || 'Staff');
-          const staffThread = await ensureStaffConversation({
-            workspaceId: params.workspaceId,
-            phoneLineId: conversation.phoneLineId,
-            staffWaId,
-            staffLabel,
-          }).catch((err) => {
-            params.app.log.warn({ err }, 'ensureStaffConversation failed');
-            return null;
-          });
-          if (!staffThread?.conversation?.id) {
-            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: false, error: 'staff_conversation_failed' });
-            continue;
-          }
-
           const stage = String(conversation.conversationStage || '').trim() || 'STAGE';
-          const today = new Date().toISOString().slice(0, 10);
-          const dedupeKey =
-            String((action as any).dedupeKey || '').trim() ||
-            `staff_whatsapp:${conversation.id}:${stage}:${today}`;
-
-          const existingOutbound = await prisma.outboundMessageLog
-            .findFirst({
-              where: { conversationId: staffThread.conversation.id, dedupeKey },
-              select: { id: true, blockedReason: true, createdAt: true },
-            })
-            .catch(() => null);
-          if (existingOutbound?.id) {
-            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: true, deduped: true });
-            continue;
-          }
-
           const clientName = getContactDisplayName(conversation.contact);
           const programName = String(conversation.program?.name || '').trim();
           const comuna = String(conversation.contact?.comuna || '').trim();
@@ -1028,6 +895,11 @@ export async function runAutomations(params: {
           const region = String(conversation.contact?.region || '').trim();
           const location = [comuna, ciudad, region].filter(Boolean).join(' · ');
           const availability = String((conversation.contact as any)?.availabilityText || '').trim();
+          const requireAvailability = Boolean((action as any).requireAvailability);
+          if (requireAvailability && !availability) {
+            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: true, skipped: true, reason: 'require_availability' });
+            continue;
+          }
 
           const vars: Record<string, string> = {
             clientName,
@@ -1039,9 +911,9 @@ export async function runAutomations(params: {
             conversationIdShort: String(conversation.id || '').slice(0, 10),
           };
 
-          const templateRaw = String((action as any).messageTemplate || '').trim();
+          const templateRaw = String((action as any).templateText || (action as any).messageTemplate || '').trim();
           const defaultText = [
-            `🔔 Nuevo caso INTERESADO`,
+            `🔔 Caso actualizado: ${vars.stage}`,
             `👤 ${vars.clientName}`,
             vars.service ? `🧭 Servicio: ${vars.service}` : null,
             vars.location ? `📍 Ubicación: ${vars.location}` : null,
@@ -1054,56 +926,235 @@ export async function runAutomations(params: {
             .join('\n');
           const text = renderSimpleTemplate(templateRaw || defaultText, vars).trim();
 
-          const strictWindow = await computeWhatsAppWindowStatusStrict(staffThread.conversation.id).catch(() => 'OUTSIDE_24H' as const);
-          if (strictWindow === 'OUTSIDE_24H') {
-            const textHash = stableHash(`WINDOW:SESSION_TEXT:${text}`);
-            await prisma.outboundMessageLog
-              .create({
-                data: {
-                  workspaceId: params.workspaceId,
-                  conversationId: staffThread.conversation.id,
-                  agentRunId: null,
-                  channel: 'WHATSAPP',
-                  type: 'SESSION_TEXT',
-                  templateName: null,
-                  dedupeKey,
-                  textHash,
-                  blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
-                  waMessageId: null,
-                },
-              })
-              .catch(() => {});
-            await createInAppNotification({
-              workspaceId: params.workspaceId,
-              userId: targetUser.id,
-              conversationId: conversation.id,
-              type: 'STAFF_WHATSAPP_BLOCKED',
-              title: 'No se pudo enviar WhatsApp (fuera de ventana 24h)',
-              body: 'Para habilitar mensajes libres, pídele al staff que envíe “activar” al número de WhatsApp de SSClinical (abre ventana 24h).',
-              data: { blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE', to: staffE164, dedupeKey },
-              dedupeKey: `staff_wa_block:${conversation.id}:${stage}:${today}:${targetUser.id}`,
-            }).catch(() => {});
-            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+          const dedupePolicy = String((action as any).dedupePolicy || 'DAILY').trim().toUpperCase();
+          const today = new Date().toISOString().slice(0, 10);
+          const stageChangedAtRaw = (conversation as any).stageChangedAt ? new Date((conversation as any).stageChangedAt) : null;
+          const stageStamp = stageChangedAtRaw && Number.isFinite(stageChangedAtRaw.getTime()) ? stageChangedAtRaw.toISOString() : null;
+          const defaultDedupeKey =
+            dedupePolicy === 'PER_STAGE_CHANGE' && stageStamp
+              ? `staff_whatsapp:${conversation.id}:${stage}:${stageStamp}`
+              : `staff_whatsapp:${conversation.id}:${stage}:${today}`;
+          const dedupeKey = String((action as any).dedupeKey || '').trim() || defaultDedupeKey;
+
+          const resolveRecipientUserIds = async (): Promise<string[]> => {
+            const legacyTargetUserIdRaw = String((action as any).targetUserId || '').trim();
+            const legacyTargetEmailRaw = String((action as any).targetEmail || '').trim().toLowerCase();
+            if (legacyTargetUserIdRaw) return [legacyTargetUserIdRaw];
+            if (legacyTargetEmailRaw) {
+              const u = await prisma.user.findUnique({ where: { email: legacyTargetEmailRaw }, select: { id: true } }).catch(() => null);
+              return u?.id ? [u.id] : [];
+            }
+
+            const spec = (action as any).recipients;
+            const specType = typeof spec === 'string' ? spec.trim().toUpperCase() : '';
+            const objType =
+              spec && typeof spec === 'object' && !Array.isArray(spec) ? String((spec as any).type || (spec as any).kind || '').trim().toUpperCase() : '';
+
+            const pickAssigned = () => {
+              const id = String(conversation.assignedToId || '').trim();
+              return id ? [id] : [];
+            };
+
+            if (specType === 'ASSIGNED_TO' || specType === 'ASSIGNEDTO' || specType === 'ASSIGNED' || specType === 'ASSIGNED_TO_ME') {
+              return pickAssigned();
+            }
+            if (specType === 'ALL_STAFF' || specType === 'ALLSTAFF') {
+              const rows = await prisma.membership.findMany({
+                where: { workspaceId: params.workspaceId, archivedAt: null, staffWhatsAppE164: { not: null } },
+                select: { userId: true },
+              });
+              return rows.map((r) => r.userId);
+            }
+            if (specType.startsWith('ROLE:')) {
+              const role = specType.split(':')[1] || '';
+              const rows = await prisma.membership.findMany({
+                where: { workspaceId: params.workspaceId, archivedAt: null, role: role.toUpperCase() },
+                select: { userId: true },
+              });
+              return rows.map((r) => r.userId);
+            }
+
+            if (objType === 'USER_IDS' || objType === 'USERIDS') {
+              const ids = Array.isArray((spec as any).userIds) ? (spec as any).userIds : [];
+              return ids.map((v: any) => String(v).trim()).filter(Boolean);
+            }
+            if (objType === 'ROLE') {
+              const role = String((spec as any).role || '').trim().toUpperCase();
+              if (!role) return [];
+              const rows = await prisma.membership.findMany({
+                where: { workspaceId: params.workspaceId, archivedAt: null, role },
+                select: { userId: true },
+              });
+              return rows.map((r) => r.userId);
+            }
+            if (objType === 'ALL_STAFF') {
+              const rows = await prisma.membership.findMany({
+                where: { workspaceId: params.workspaceId, archivedAt: null, staffWhatsAppE164: { not: null } },
+                select: { userId: true },
+              });
+              return rows.map((r) => r.userId);
+            }
+            if (objType === 'ASSIGNED_TO') {
+              return pickAssigned();
+            }
+
+            // Default: assignedTo (if any).
+            return pickAssigned();
+          };
+
+          const recipientUserIds = Array.from(new Set((await resolveRecipientUserIds()).filter(Boolean)));
+          if (recipientUserIds.length === 0) {
+            outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: false, error: 'no_recipients' });
             continue;
           }
 
-          const staffRun = await prisma.agentRunLog.create({
-            data: {
+          const staffDefaultProgramId = await prisma.workspace
+            .findUnique({ where: { id: params.workspaceId }, select: { staffDefaultProgramId: true as any } } as any)
+            .then((w) => String((w as any)?.staffDefaultProgramId || '').trim() || null)
+            .catch(() => null);
+
+          const perRecipient: any[] = [];
+          for (const userId of recipientUserIds) {
+            const targetUser = await prisma.user
+              .findUnique({ where: { id: userId }, select: { id: true, email: true, name: true } })
+              .catch(() => null);
+            if (!targetUser?.id) {
+              perRecipient.push({ userId, ok: false, error: 'target_user_not_found' });
+              continue;
+            }
+
+            const membership = await prisma.membership
+              .findFirst({
+                where: { workspaceId: params.workspaceId, userId: targetUser.id, archivedAt: null },
+                select: { id: true, staffWhatsAppE164: true as any },
+              })
+              .catch(() => null);
+            if (!membership?.id) {
+              perRecipient.push({ userId: targetUser.id, ok: false, error: 'membership_not_found' });
+              continue;
+            }
+
+            const staffE164 = String((membership as any).staffWhatsAppE164 || '').trim();
+            if (!staffE164) {
+              await createInAppNotification({
+                workspaceId: params.workspaceId,
+                userId: targetUser.id,
+                conversationId: conversation.id,
+                type: 'STAFF_WHATSAPP_MISSING',
+                title: 'WhatsApp de notificaciones no configurado',
+                body: 'Configura tu número WhatsApp en Config → Usuarios (formato +569...).',
+                data: { conversationId: conversation.id, membershipId: membership.id },
+                dedupeKey: `staff_wa_missing:${conversation.id}:${targetUser.id}`,
+              }).catch(() => {});
+              perRecipient.push({ userId: targetUser.id, ok: false, error: 'missing_staff_whatsapp_e164' });
+              continue;
+            }
+
+            const staffWaId = normalizeWhatsAppId(staffE164);
+            if (!staffWaId) {
+              perRecipient.push({ userId: targetUser.id, ok: false, error: 'invalid_staff_whatsapp' });
+              continue;
+            }
+
+            const staffLabel = String(targetUser.name || targetUser.email || 'Staff');
+            const staffThread = await ensureStaffConversation({
               workspaceId: params.workspaceId,
-              conversationId: staffThread.conversation.id,
-              programId: staffThread.conversation.programId || null,
-              phoneLineId: staffThread.conversation.phoneLineId || null,
-              eventType: 'STAFF_WHATSAPP_NOTIFICATION',
-              status: 'RUNNING',
-              inputContextJson: serializeJson({
-                sourceConversationId: conversation.id,
-                automationRuleId: rule.id,
-                targetUserId: targetUser.id,
-                targetEmail: targetUser.email,
-                stage,
-                dedupeKey,
-              }),
-              commandsJson: serializeJson({
+              phoneLineId: conversation.phoneLineId,
+              staffWaId,
+              staffLabel,
+              staffProgramId: staffDefaultProgramId,
+            }).catch((err) => {
+              params.app.log.warn({ err }, 'ensureStaffConversation failed');
+              return null;
+            });
+            if (!staffThread?.conversation?.id) {
+              perRecipient.push({ userId: targetUser.id, ok: false, error: 'staff_conversation_failed' });
+              continue;
+            }
+
+            const existingOutbound = await prisma.outboundMessageLog
+              .findFirst({
+                where: { conversationId: staffThread.conversation.id, dedupeKey },
+                select: { id: true },
+              })
+              .catch(() => null);
+            if (existingOutbound?.id) {
+              perRecipient.push({ userId: targetUser.id, ok: true, deduped: true });
+              continue;
+            }
+
+            const strictWindow = await computeWhatsAppWindowStatusStrict(staffThread.conversation.id).catch(() => 'OUTSIDE_24H' as const);
+            if (strictWindow === 'OUTSIDE_24H') {
+              const textHash = stableHash(`WINDOW:SESSION_TEXT:${text}`);
+              await prisma.outboundMessageLog
+                .create({
+                  data: {
+                    workspaceId: params.workspaceId,
+                    conversationId: staffThread.conversation.id,
+                    relatedConversationId: conversation.id,
+                    agentRunId: null,
+                    channel: 'WHATSAPP',
+                    type: 'SESSION_TEXT',
+                    templateName: null,
+                    dedupeKey,
+                    textHash,
+                    blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+                    waMessageId: null,
+                  } as any,
+                })
+                .catch(() => {});
+              await createInAppNotification({
+                workspaceId: params.workspaceId,
+                userId: targetUser.id,
+                conversationId: conversation.id,
+                type: 'STAFF_WHATSAPP_BLOCKED',
+                title: 'No se pudo enviar WhatsApp (fuera de ventana 24h)',
+                body: 'Para habilitar mensajes libres, pídele al staff que envíe “activar” al número de WhatsApp de SSClinical (abre ventana 24h).',
+                data: { blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE', to: staffE164, dedupeKey },
+                dedupeKey: `staff_wa_block:${conversation.id}:${stage}:${today}:${targetUser.id}`,
+              }).catch(() => {});
+              perRecipient.push({ userId: targetUser.id, ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+              continue;
+            }
+
+            const staffRun = await prisma.agentRunLog.create({
+              data: {
+                workspaceId: params.workspaceId,
+                conversationId: staffThread.conversation.id,
+                programId: staffThread.conversation.programId || null,
+                phoneLineId: staffThread.conversation.phoneLineId || null,
+                eventType: 'STAFF_WHATSAPP_NOTIFICATION',
+                status: 'RUNNING',
+                inputContextJson: serializeJson({
+                  sourceConversationId: conversation.id,
+                  automationRuleId: rule.id,
+                  targetUserId: targetUser.id,
+                  targetEmail: targetUser.email,
+                  stage,
+                  dedupeKey,
+                }),
+                commandsJson: serializeJson({
+                  agent: 'system_staff_notifier',
+                  version: 1,
+                  commands: [
+                    {
+                      command: 'SEND_MESSAGE',
+                      conversationId: staffThread.conversation.id,
+                      channel: 'WHATSAPP',
+                      type: 'SESSION_TEXT',
+                      text,
+                      dedupeKey,
+                    },
+                  ],
+                }),
+              },
+            });
+
+            const exec = await executeAgentResponse({
+              app: params.app,
+              workspaceId: params.workspaceId,
+              agentRunId: staffRun.id,
+              response: {
                 agent: 'system_staff_notifier',
                 version: 1,
                 commands: [
@@ -1114,62 +1165,39 @@ export async function runAutomations(params: {
                     type: 'SESSION_TEXT',
                     text,
                     dedupeKey,
-                  },
+                  } as any,
                 ],
-              }),
-            },
-          });
+              } as any,
+              transportMode: params.transportMode,
+            });
 
-          const exec = await executeAgentResponse({
-            app: params.app,
-            workspaceId: params.workspaceId,
-            agentRunId: staffRun.id,
-            response: {
-              agent: 'system_staff_notifier',
-              version: 1,
-              commands: [
-                {
-                  command: 'SEND_MESSAGE',
-                  conversationId: staffThread.conversation.id,
-                  channel: 'WHATSAPP',
-                  type: 'SESSION_TEXT',
-                  text,
-                  dedupeKey,
-                } as any,
-              ],
-            } as any,
-            transportMode: params.transportMode,
-          });
+            const sendResult = exec.results?.[0] || null;
+            const blockedReason = (sendResult as any)?.blockedReason || null;
+            const blocked = Boolean((sendResult as any)?.blocked);
+            const providerResult = (sendResult as any)?.details?.sendResult || null;
+            const providerFailed = providerResult && providerResult.success === false;
 
-          const sendResult = exec.results?.[0] || null;
-          const blockedReason = (sendResult as any)?.blockedReason || null;
-          const blocked = Boolean((sendResult as any)?.blocked);
-          const providerResult = (sendResult as any)?.details?.sendResult || null;
-          const providerFailed = providerResult && providerResult.success === false;
+            if (blocked || providerFailed) {
+              await createInAppNotification({
+                workspaceId: params.workspaceId,
+                userId: targetUser.id,
+                conversationId: conversation.id,
+                type: blocked ? 'STAFF_WHATSAPP_BLOCKED' : 'STAFF_WHATSAPP_FAILED',
+                title: blocked ? 'No se pudo enviar WhatsApp al staff' : 'Falló el envío WhatsApp al staff',
+                body: blocked
+                  ? blockedReason
+                    ? `Motivo: ${blockedReason}`
+                    : 'Motivo: bloqueo'
+                  : String(providerResult?.error || 'Error desconocido'),
+                data: { blockedReason: blockedReason || null, to: staffE164, dedupeKey, sendError: providerResult?.error || null },
+                dedupeKey: `staff_wa_block:${conversation.id}:${stage}:${today}:${targetUser.id}`,
+              }).catch(() => {});
+            }
 
-          if (blocked || providerFailed) {
-            await createInAppNotification({
-              workspaceId: params.workspaceId,
-              userId: targetUser.id,
-              conversationId: conversation.id,
-              type: blocked ? 'STAFF_WHATSAPP_BLOCKED' : 'STAFF_WHATSAPP_FAILED',
-              title: blocked ? 'No se pudo enviar WhatsApp al staff' : 'Falló el envío WhatsApp al staff',
-              body: blocked
-                ? blockedReason
-                  ? `Motivo: ${blockedReason}`
-                  : 'Motivo: bloqueo'
-                : String(providerResult?.error || 'Error desconocido'),
-              data: { blockedReason: blockedReason || null, to: staffE164, dedupeKey, sendError: providerResult?.error || null },
-              dedupeKey: `staff_wa_block:${conversation.id}:${stage}:${today}:${targetUser.id}`,
-            }).catch(() => {});
+            perRecipient.push({ userId: targetUser.id, ok: true, blocked, blockedReason });
           }
 
-          outputs.push({
-            action: 'NOTIFY_STAFF_WHATSAPP',
-            ok: true,
-            blocked,
-            blockedReason,
-          });
+          outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: true, dedupeKey, recipients: perRecipient });
           continue;
         }
         if (action.type === 'RUN_AGENT') {

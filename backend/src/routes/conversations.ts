@@ -412,6 +412,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       data: {
         conversationStage: stageSlug,
         stageReason: reason || 'manual',
+        stageChangedAt: new Date(),
         updatedAt: new Date(),
       },
     });

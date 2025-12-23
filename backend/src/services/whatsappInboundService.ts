@@ -52,6 +52,7 @@ import {
   isWeeklySummaryRequest,
 } from "./sellerService";
 import { runAutomations } from "./automationRunnerService";
+import { ensureStaffConversation } from "./staffConversationService";
 
 interface InboundMedia {
   type: string;
@@ -530,55 +531,109 @@ export async function handleInboundWhatsAppMessage(
   return { conversationId: adminThread.conversation.id };
 }
 
-const contact = (await mergeOrCreateContact({ workspaceId, waId }))!;
-await maybeUpdateContactName(contact, params.profileName, params.text, config);
+  const staffMemberships =
+    !isAdminSender && normalizedSender
+      ? await prisma.membership
+          .findMany({
+            where: {
+              workspaceId,
+              archivedAt: null,
+              staffWhatsAppE164: { not: null },
+            },
+            include: { user: { select: { id: true, email: true, name: true } } },
+          })
+          .catch(() => [])
+      : [];
+  const staffMatch =
+    normalizedSender && staffMemberships.length > 0
+      ? staffMemberships.find((m) => normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || "")) === normalizedSender)
+      : null;
 
-  let conversation = await prisma.conversation.findFirst({
-    where: { contactId: contact.id, isAdmin: false, workspaceId, phoneLineId },
-    orderBy: { updatedAt: "desc" },
-  });
+  let contact: any = null;
+  let conversation: any = null;
+  const isStaffConversation = Boolean(staffMatch?.id);
 
-  if (!conversation) {
-    const defaultStageSlug = await getWorkspaceDefaultStageSlug(workspaceId).catch(
-      () => "NEW_INTAKE",
-    );
-    conversation = await prisma.conversation.create({
-      data: {
-        workspaceId,
-        phoneLineId,
-        programId: defaultProgramId,
-        contactId: contact.id,
-        status: "NEW",
-        conversationStage: defaultStageSlug,
-        channel: "whatsapp",
-      },
-    });
-  } else if (conversation.status === "CLOSED") {
-    conversation = await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { status: "OPEN" },
-    });
-  }
-  // Ensure conversationStage is valid for this workspace; if not, coerce to workspace default.
-  try {
-    const coerced = await coerceStageSlug({
+  if (isStaffConversation && normalizedSender) {
+    const workspace = await prisma.workspace
+      .findUnique({
+        where: { id: workspaceId },
+        select: { staffDefaultProgramId: true as any },
+      } as any)
+      .catch(() => null);
+    const staffLabel = String(staffMatch?.user?.name || staffMatch?.user?.email || "Staff");
+    const staffThread = await ensureStaffConversation({
       workspaceId,
-      stageSlug: conversation.conversationStage,
+      phoneLineId,
+      staffWaId: normalizedSender,
+      staffLabel,
+      staffProgramId: (workspace as any)?.staffDefaultProgramId || null,
+    }).catch((err) => {
+      app.log.warn({ err, workspaceId, phoneLineId }, "ensureStaffConversation failed");
+      return null;
     });
-    if (coerced && String(conversation.conversationStage || "") !== String(coerced)) {
+    if (!staffThread?.conversation?.id) {
+      return { conversationId: "" };
+    }
+    contact = staffThread.contact;
+    conversation = staffThread.conversation;
+  } else {
+    contact = (await mergeOrCreateContact({ workspaceId, waId }))!;
+    await maybeUpdateContactName(contact, params.profileName, params.text, config);
+
+    conversation = await prisma.conversation.findFirst({
+      where: { contactId: contact.id, isAdmin: false, workspaceId, phoneLineId },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    if (!conversation) {
+      const defaultStageSlug = await getWorkspaceDefaultStageSlug(workspaceId).catch(
+        () => "NEW_INTAKE",
+      );
+      conversation = await prisma.conversation.create({
+        data: {
+          workspaceId,
+          phoneLineId,
+          programId: defaultProgramId,
+          contactId: contact.id,
+          status: "NEW",
+          conversationStage: defaultStageSlug,
+          stageChangedAt: new Date(),
+          channel: "whatsapp",
+          conversationKind: "CLIENT",
+        } as any,
+      });
+    } else if (conversation.status === "CLOSED") {
       conversation = await prisma.conversation.update({
         where: { id: conversation.id },
-        data: { conversationStage: coerced, stageReason: "auto_default", updatedAt: new Date() },
+        data: { status: "OPEN" },
       });
     }
-  } catch {
-    // ignore
-  }
-  if (!conversation.programId && defaultProgramId) {
-    conversation = await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { programId: defaultProgramId },
-    });
+    // Ensure conversationStage is valid for this workspace; if not, coerce to workspace default.
+    try {
+      const coerced = await coerceStageSlug({
+        workspaceId,
+        stageSlug: conversation.conversationStage,
+      });
+      if (coerced && String(conversation.conversationStage || "") !== String(coerced)) {
+        conversation = await prisma.conversation.update({
+          where: { id: conversation.id },
+          data: {
+            conversationStage: coerced,
+            stageReason: "auto_default",
+            stageChangedAt: new Date(),
+            updatedAt: new Date(),
+          } as any,
+        });
+      }
+    } catch {
+      // ignore
+    }
+    if (!conversation.programId && defaultProgramId) {
+      conversation = await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { programId: defaultProgramId },
+      });
+    }
   }
 
   const messageText = buildInboundText(params.text, params.media);
@@ -652,7 +707,7 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
   const mediaType = params.media?.type || null;
   const isAttachment = mediaType === "image" || mediaType === "document";
   const extractedText = (latestMessage?.transcriptText || "").trim();
-  if (isAttachment && !extractedText) {
+  if (isAttachment && !extractedText && !isStaffConversation) {
     const lastOutbound = await prisma.message.findFirst({
       where: { conversationId: conversation.id, direction: "OUTBOUND" },
       orderBy: { timestamp: "desc" },
@@ -721,6 +776,11 @@ await maybeUpdateContactName(contact, params.profileName, params.text, config);
       inboundText: effectiveText,
       transportMode: "REAL",
     });
+    return { conversationId: conversation.id };
+  }
+
+  if (isStaffConversation) {
+    // Staff conversations should not fall back to legacy candidate pipelines.
     return { conversationId: conversation.id };
   }
 

@@ -133,13 +133,26 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
   - Seed idempotente: set genérico + set SSClinical (incluye `INTERESADO`).  
 - **Conversation**: status (NEW/OPEN/CLOSED) + `conversationStage` (slug) + programId + phoneLineId + flags y metadata  
   - `assignedToId`: asignación (para `MEMBER assignedOnly`).  
+  - `conversationKind`: `CLIENT` | `STAFF`  
+    - `CLIENT`: conversación “caso/cliente” (paciente/candidato/venta/etc.).  
+    - `STAFF`: conversación por WhatsApp con un miembro del equipo (nurse leader, coordinadora, etc.).  
 - **Message**: inbound/outbound + waMessageId idempotente + media/transcriptText + timestamp  
 - **InAppNotification** (archive-only): notificaciones visibles en UI (campana) para asignaciones/handoffs (ej: Stage=INTERESADO).  
+
+#### 5.2.1 Staff Mode (WhatsApp, multi‑rubro)
+Objetivo: permitir que el staff coordine casos por WhatsApp sin “hablar en código” ni copiar IDs.
+- **Detección inbound**: si `fromE164` coincide con `Membership.staffWhatsAppE164` del workspace → se enruta a una conversación `conversationKind=STAFF`.  
+- **Program de staff**: `Workspace.staffDefaultProgramId` (configurable en UI).  
+- **Reply‑to mapping**:
+  - Al enviar notificaciones WhatsApp al staff, `OutboundMessageLog.relatedConversationId` apunta al caso.
+  - Si el staff responde como reply (`context.id`), el runtime resuelve `relatedConversationId` y entrega contexto del caso al agente.
+- **Herramientas deterministas (RUN_TOOL)**: el agente usa tools para operar casos sin alucinaciones:
+  - `LIST_CASES`, `GET_CASE_SUMMARY`, `ADD_NOTE`, `SET_STAGE`, `SEND_CUSTOMER_MESSAGE` (respeta SAFE MODE + 24h + NO_CONTACTAR).
 
 ### 5.3 Agent OS runtime & auditoría
 - **AgentRunLog**: inputContextJson + outputCommandsJson + executionResultsJson + error  
 - **ToolCallLog**: toolName + argsJson + resultJson/error  
-- **OutboundMessageLog**: dedupeKey + textHash + blockedReason + waMessageId  
+- **OutboundMessageLog**: dedupeKey + textHash + blockedReason + waMessageId + `relatedConversationId` (para reply‑to staff)  
 - **ConversationAskedField**: contador por campo para loop-breaker  
 
 ### 5.4 Automations

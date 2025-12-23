@@ -194,6 +194,7 @@ export async function isKnownActiveStage(workspaceId: string, slug: string): Pro
   const wsId = String(workspaceId || '').trim();
   const s = normalizeStageSlug(slug);
   if (!wsId || !s) return false;
+  await ensureWorkspaceStages(wsId).catch(() => {});
   const row = await prisma.workspaceStage
     .findFirst({
       where: { workspaceId: wsId, slug: s, archivedAt: null, isActive: true },

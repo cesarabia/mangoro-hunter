@@ -35,6 +35,8 @@ model Workspace {
   name        String
   isSandbox   Boolean       @default(false)
   ssclinicalNurseLeaderEmail String?
+  staffDefaultProgram Program? @relation("WorkspaceStaffDefaultProgram", fields: [staffDefaultProgramId], references: [id])
+  staffDefaultProgramId String?
   archivedAt  DateTime?
   stages      WorkspaceStage[]
   notifications InAppNotification[]
@@ -204,6 +206,7 @@ model Program {
   archivedAt      DateTime?
   conversations   Conversation[]
   defaultInLines  PhoneLine[] @relation("PhoneLineDefaultProgram")
+  staffDefaultInWorkspaces Workspace[] @relation("WorkspaceStaffDefaultProgram")
   automations     AutomationRule[]
   agentRuns       AgentRunLog[]
   aiUsageLogs     AiUsageLog[]
@@ -358,7 +361,9 @@ model Conversation {
   contact       Contact            @relation(fields: [contactId], references: [id])
   contactId     String
   status        String             @default("NEW")
+  conversationKind String          @default("CLIENT")
   conversationStage String         @default("NEW_INTAKE")
+  stageChangedAt DateTime?
   stageReason   String?
   stageTags     String?
   archivedAt    DateTime?
@@ -472,6 +477,7 @@ model OutboundMessageLog {
   workspaceId   String       @default("default")
   conversation  Conversation @relation(fields: [conversationId], references: [id])
   conversationId String
+  relatedConversationId String?
   agentRun      AgentRunLog? @relation(fields: [agentRunId], references: [id])
   agentRunId    String?
   channel       String
@@ -484,9 +490,11 @@ model OutboundMessageLog {
   createdAt     DateTime     @default(now())
 
   @@index([conversationId])
+  @@index([relatedConversationId])
   @@index([workspaceId])
   @@index([createdAt])
   @@index([dedupeKey])
+  @@index([waMessageId])
 }
 
 model CopilotThread {

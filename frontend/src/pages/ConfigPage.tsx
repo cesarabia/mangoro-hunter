@@ -126,6 +126,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [ssclinicalNurseLeaderSaving, setSsclinicalNurseLeaderSaving] = useState(false);
   const [ssclinicalNurseLeaderStatus, setSsclinicalNurseLeaderStatus] = useState<string | null>(null);
   const [ssclinicalNurseLeaderError, setSsclinicalNurseLeaderError] = useState<string | null>(null);
+  const [staffDefaultProgramIdDraft, setStaffDefaultProgramIdDraft] = useState<string>('');
+  const [staffDefaultProgramSaving, setStaffDefaultProgramSaving] = useState(false);
+  const [staffDefaultProgramStatus, setStaffDefaultProgramStatus] = useState<string | null>(null);
+  const [staffDefaultProgramError, setStaffDefaultProgramError] = useState<string | null>(null);
 
   const [workspaceStages, setWorkspaceStages] = useState<any[]>([]);
   const [workspaceStagesLoading, setWorkspaceStagesLoading] = useState(false);
@@ -302,6 +306,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setWorkspaceDetails(data || null);
       const email = typeof data?.ssclinicalNurseLeaderEmail === 'string' ? data.ssclinicalNurseLeaderEmail : '';
       setSsclinicalNurseLeaderEmailDraft(email || '');
+      const staffProgramId = typeof data?.staffDefaultProgramId === 'string' ? data.staffDefaultProgramId : '';
+      setStaffDefaultProgramIdDraft(staffProgramId || '');
     } catch (err: any) {
       setWorkspaceDetails(null);
       setWorkspaceDetailsError(err.message || 'No se pudo cargar configuración del workspace');
@@ -342,6 +348,27 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setSsclinicalNurseLeaderError(err.message || 'No se pudo guardar');
     } finally {
       setSsclinicalNurseLeaderSaving(false);
+    }
+  };
+
+  const saveStaffDefaultProgram = async () => {
+    if (staffDefaultProgramSaving) return;
+    setStaffDefaultProgramSaving(true);
+    setStaffDefaultProgramStatus(null);
+    setStaffDefaultProgramError(null);
+    try {
+      const nextId = staffDefaultProgramIdDraft.trim();
+      const res: any = await apiClient.patch('/api/workspaces/current', {
+        staffDefaultProgramId: nextId.length > 0 ? nextId : null,
+      });
+      const stored = typeof res?.staffDefaultProgramId === 'string' ? res.staffDefaultProgramId : '';
+      setStaffDefaultProgramIdDraft(stored || '');
+      setStaffDefaultProgramStatus('Guardado.');
+      await loadWorkspaceDetails();
+    } catch (err: any) {
+      setStaffDefaultProgramError(err.message || 'No se pudo guardar');
+    } finally {
+      setStaffDefaultProgramSaving(false);
     }
   };
 
@@ -1759,6 +1786,58 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               {ssclinicalNurseLeaderError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{ssclinicalNurseLeaderError}</div> : null}
             </div>
 	          ) : null}
+
+          {isWorkspaceAdmin ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Staff Mode (WhatsApp)</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Si un mensaje inbound viene desde un número configurado como <b>WhatsApp notificaciones</b> en{' '}
+                <b>Config → Usuarios</b>, se enruta a una conversación <b>STAFF</b> y se ejecuta este Program por defecto.
+              </div>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                Program por defecto para Staff (opcional)
+                <select
+                  value={staffDefaultProgramIdDraft}
+                  onChange={(e) => setStaffDefaultProgramIdDraft(e.target.value)}
+                  style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                >
+                  <option value="">— Sin Program (usa fallback de la línea) —</option>
+                  {(programs || [])
+                    .filter((p: any) => !p?.archivedAt && p?.isActive !== false)
+                    .map((p: any) => (
+                      <option key={String(p.id)} value={String(p.id)}>
+                        {String(p.name || p.slug || p.id)}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => saveStaffDefaultProgram().catch(() => {})}
+                  disabled={staffDefaultProgramSaving}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 900, fontSize: 12 }}
+                >
+                  {staffDefaultProgramSaving ? 'Guardando…' : 'Guardar'}
+                </button>
+                {workspaceDetails?.staffDefaultProgramId ? (
+                  <div style={{ fontSize: 12, color: '#666' }}>
+                    Actual:{' '}
+                    <b>
+                      {String(
+                        (programs || []).find((p: any) => String(p.id) === String(workspaceDetails.staffDefaultProgramId))?.name ||
+                          workspaceDetails.staffDefaultProgramId
+                      )}
+                    </b>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#666' }}>Actual: —</div>
+                )}
+              </div>
+              {staffDefaultProgramStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{staffDefaultProgramStatus}</div> : null}
+              {staffDefaultProgramError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{staffDefaultProgramError}</div> : null}
+            </div>
+          ) : null}
 
 	          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
 	            <div style={{ fontWeight: 900, marginBottom: 6 }}>Estados (Stages)</div>

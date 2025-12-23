@@ -7,7 +7,8 @@ import { runAutomations } from '../services/automationRunnerService';
 import { piiSanitizeText } from '../services/agent/tools';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { SCENARIOS, getScenario, ScenarioDefinition, ScenarioStep } from '../services/simulate/scenarios';
-import { runAgent } from '../services/agent/agentRuntimeService';
+import { resolveReplyContextForInboundMessage, runAgent } from '../services/agent/agentRuntimeService';
+import { executeAgentResponse } from '../services/agent/commandExecutorService';
 import { resolveInboundPhoneLineRouting } from '../services/phoneLineRoutingService';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
@@ -1783,7 +1784,14 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             let staffConv = staffContact?.id
               ? await prisma.conversation
                   .findFirst({
-                    where: { workspaceId: wsId, phoneLineId: phoneLine.id, contactId: staffContact.id, isAdmin: true, archivedAt: null },
+                    where: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      contactId: staffContact.id,
+                      conversationKind: 'STAFF',
+                      isAdmin: false,
+                      archivedAt: null,
+                    } as any,
                     orderBy: { updatedAt: 'desc' },
                   })
                   .catch(() => null)
@@ -1799,9 +1807,12 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
                     programId: null,
                     contactId: staffContact.id,
                     status: 'OPEN',
-                    channel: 'staff',
-                    isAdmin: true,
+                    channel: 'whatsapp',
+                    isAdmin: false,
                     aiMode: 'OFF',
+                    conversationKind: 'STAFF',
+                    conversationStage: 'NUEVO',
+                    stageChangedAt: now,
                     archivedAt: null,
                   } as any,
                 })
@@ -1919,6 +1930,689 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
               await prisma.phoneLine.updateMany({ where: { id: tempPhoneLineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
             }
           }
+        }
+      }
+
+      const staffInboxListCases = (step.expect as any)?.staffInboxListCases;
+      if (staffInboxListCases && typeof staffInboxListCases === 'object') {
+        const wsId = String((staffInboxListCases as any)?.workspaceId || 'scenario-staff-tools').trim() || 'scenario-staff-tools';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'staffInboxListCases: userId missing' });
+        } else {
+          const lineId = `scenario-staff-tools-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          const staffE164 = '+56982345846';
+          const staffWaId = '56982345846';
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Staff Tools', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Staff Tools', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+              update: { role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Staff Tools (temp)',
+                phoneE164: null,
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          if (!phoneLine?.id) {
+            assertions.push({ ok: false, message: 'staffInboxListCases: no se pudo crear phoneLine' });
+          } else {
+            const staffContact = await prisma.contact
+              .create({
+                data: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            const staffConv = staffContact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      programId: null,
+                      contactId: staffContact.id,
+                      status: 'OPEN',
+                      channel: 'whatsapp',
+                      isAdmin: false,
+                      aiMode: 'OFF',
+                      conversationKind: 'STAFF',
+                      conversationStage: 'NUEVO',
+                      stageChangedAt: now,
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+            const caseAContact = await prisma.contact
+              .create({
+                data: { workspaceId: wsId, displayName: 'Caso A', comuna: 'Providencia', archivedAt: null } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            const caseA = caseAContact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      programId: null,
+                      contactId: caseAContact.id,
+                      status: 'OPEN',
+                      conversationStage: 'INTERESADO',
+                      stageChangedAt: now,
+                      assignedToId: userId,
+                      channel: 'system',
+                      isAdmin: false,
+                      conversationKind: 'CLIENT',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+            const caseBContact = await prisma.contact
+              .create({
+                data: { workspaceId: wsId, displayName: 'Caso B', comuna: 'Ñuñoa', archivedAt: null } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            const caseB = caseBContact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      programId: null,
+                      contactId: caseBContact.id,
+                      status: 'OPEN',
+                      conversationStage: 'NUEVO',
+                      stageChangedAt: now,
+                      assignedToId: userId,
+                      channel: 'system',
+                      isAdmin: false,
+                      conversationKind: 'CLIENT',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+            if (!staffConv?.id || !caseA?.id || !caseB?.id) {
+              assertions.push({ ok: false, message: 'staffInboxListCases: no se pudo crear staff/cases' });
+            } else {
+              const run = await prisma.agentRunLog.create({
+                data: {
+                  workspaceId: wsId,
+                  conversationId: staffConv.id,
+                  programId: null,
+                  phoneLineId: phoneLine.id,
+                  eventType: 'STAFF_TOOL_TEST',
+                  status: 'RUNNING',
+                  inputContextJson: JSON.stringify({ event: { type: 'STAFF_TOOL_TEST' } }),
+                },
+                select: { id: true },
+              });
+
+              const exec = await executeAgentResponse({
+                app,
+                workspaceId: wsId,
+                agentRunId: run.id,
+                response: {
+                  agent: 'scenario',
+                  version: 1,
+                  commands: [
+                    { command: 'RUN_TOOL', toolName: 'LIST_CASES', args: { stageSlug: 'INTERESADO', assignedToMe: true, limit: 10 } } as any,
+                  ],
+                } as any,
+                transportMode: 'NULL',
+              });
+
+              const toolResult: any = exec.results?.find((r: any) => r?.details?.toolName === 'LIST_CASES')?.details?.result;
+              const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
+              const ok = cases.some((c: any) => String(c.id) === String(caseA.id)) && !cases.some((c: any) => String(c.id) === String(caseB.id));
+              assertions.push({
+                ok,
+                message: ok ? 'staffInboxListCases: LIST_CASES filtra por stage y assignedToMe OK' : `staffInboxListCases: resultado inesperado (${cases.length} cases)`,
+              });
+            }
+
+            // Cleanup: archive-only.
+            await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          }
+        }
+      }
+
+      const staffTemplateVars = (step.expect as any)?.staffNotificationTemplateVariables;
+      if (staffTemplateVars && typeof staffTemplateVars === 'object') {
+        const wsId = String((staffTemplateVars as any)?.workspaceId || 'scenario-staff-template-vars').trim() || 'scenario-staff-template-vars';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'staffTemplateVars: userId missing' });
+        } else {
+          const staffE164 = '+56982345846';
+          const staffWaId = '56982345846';
+          const lineId = `scenario-staff-template-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Staff Template Vars', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Staff Template Vars', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+              update: { role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Staff Template Vars (temp)',
+                phoneE164: null,
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const staffContact = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const staffConv = staffContact?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: phoneLine?.id,
+                    programId: null,
+                    contactId: staffContact.id,
+                    status: 'OPEN',
+                    channel: 'whatsapp',
+                    isAdmin: false,
+                    aiMode: 'OFF',
+                    conversationKind: 'STAFF',
+                    conversationStage: 'NUEVO',
+                    stageChangedAt: now,
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+          if (staffConv?.id) {
+            await prisma.message
+              .create({
+                data: { conversationId: staffConv.id, direction: 'INBOUND', text: 'activar', timestamp: now, read: true } as any,
+              })
+              .catch(() => {});
+          }
+
+          const client = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, displayName: 'María López', comuna: 'Providencia', availabilityText: 'martes 10:00-12:00', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const conv = client?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: phoneLine?.id,
+                    programId: null,
+                    contactId: client.id,
+                    status: 'NEW',
+                    conversationStage: 'INTERESADO',
+                    stageChangedAt: now,
+                    assignedToId: userId,
+                    channel: 'system',
+                    isAdmin: false,
+                    conversationKind: 'CLIENT',
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+          const rule = await prisma.automationRule
+            .create({
+              data: {
+                workspaceId: wsId,
+                name: 'Scenario staff template vars',
+                enabled: true,
+                priority: 50,
+                trigger: 'STAGE_CHANGED',
+                conditionsJson: JSON.stringify([]),
+                actionsJson: JSON.stringify([
+                  {
+                    type: 'NOTIFY_STAFF_WHATSAPP',
+                    recipients: 'ASSIGNED_TO',
+                    templateText:
+                      'Caso {{stage}}: {{clientName}} | {{service}} | {{location}} | {{availability}} | ID={{conversationIdShort}}',
+                    dedupePolicy: 'PER_STAGE_CHANGE',
+                  },
+                ]),
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          if (!phoneLine?.id || !staffConv?.id || !conv?.id || !rule?.id) {
+            assertions.push({ ok: false, message: 'staffTemplateVars: setup incompleto (phoneLine/staffConv/conv/rule)' });
+          } else {
+            await runAutomations({
+              app,
+              workspaceId: wsId,
+              eventType: 'STAGE_CHANGED',
+              conversationId: conv.id,
+              transportMode: 'NULL',
+            });
+
+            const last = await prisma.message
+              .findFirst({
+                where: { conversationId: staffConv.id, direction: 'OUTBOUND' },
+                orderBy: { timestamp: 'desc' },
+                select: { text: true },
+              })
+              .catch(() => null);
+            const text = String(last?.text || '');
+            const ok = text.includes('María') && text.includes('INTERESADO') && !text.includes('{{');
+            assertions.push({
+              ok,
+              message: ok ? 'staffTemplateVars: template variables renderizadas OK' : `staffTemplateVars: texto inesperado: ${text || '—'}`,
+            });
+          }
+
+          // Cleanup: archive-only.
+          await prisma.automationRule.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+        }
+      }
+
+      const requireAvailability = (step.expect as any)?.ssclinicalNotificationRequiresAvailability;
+      if (requireAvailability && typeof requireAvailability === 'object') {
+        const wsId = String((requireAvailability as any)?.workspaceId || 'scenario-require-availability').trim() || 'scenario-require-availability';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'requireAvailability: userId missing' });
+        } else {
+          const staffE164 = '+56982345846';
+          const lineId = `scenario-require-availability-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario require availability', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario require availability', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+              update: { role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario require availability (temp)',
+                phoneE164: null,
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const client = await prisma.contact
+            .create({ data: { workspaceId: wsId, displayName: 'Cliente sin disponibilidad', archivedAt: null } as any, select: { id: true } })
+            .catch(() => null);
+          const conv = client?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: phoneLine?.id,
+                    programId: null,
+                    contactId: client.id,
+                    status: 'NEW',
+                    conversationStage: 'INTERESADO',
+                    stageChangedAt: now,
+                    assignedToId: userId,
+                    channel: 'system',
+                    isAdmin: false,
+                    conversationKind: 'CLIENT',
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+          const rule = await prisma.automationRule
+            .create({
+              data: {
+                workspaceId: wsId,
+                name: 'Scenario requireAvailability=true',
+                enabled: true,
+                priority: 10,
+                trigger: 'STAGE_CHANGED',
+                conditionsJson: JSON.stringify([]),
+                actionsJson: JSON.stringify([
+                  { type: 'NOTIFY_STAFF_WHATSAPP', recipients: 'ASSIGNED_TO', requireAvailability: true, templateText: 'Ping {{clientName}}' },
+                ]),
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          if (!phoneLine?.id || !conv?.id || !rule?.id) {
+            assertions.push({ ok: false, message: 'requireAvailability: setup incompleto' });
+          } else {
+            await runAutomations({
+              app,
+              workspaceId: wsId,
+              eventType: 'STAGE_CHANGED',
+              conversationId: conv.id,
+              transportMode: 'NULL',
+            });
+
+            const run = await prisma.automationRunLog
+              .findFirst({
+                where: { workspaceId: wsId, ruleId: rule.id, conversationId: conv.id },
+                orderBy: { createdAt: 'desc' },
+                select: { status: true, outputJson: true },
+              })
+              .catch(() => null);
+            const output = run?.outputJson ? JSON.parse(String(run.outputJson)) : null;
+            const outputs = Array.isArray(output?.outputs) ? output.outputs : [];
+            const skipped = outputs.some((o: any) => o?.action === 'NOTIFY_STAFF_WHATSAPP' && o?.skipped === true && o?.reason === 'require_availability');
+            assertions.push({
+              ok: Boolean(run?.status === 'SUCCESS' && skipped),
+              message: skipped ? 'requireAvailability: skipped OK' : 'requireAvailability: expected skipped reason=require_availability',
+            });
+
+            const outboundCount = await prisma.outboundMessageLog
+              .count({ where: { workspaceId: wsId, relatedConversationId: conv.id } })
+              .catch(() => 0);
+            assertions.push({
+              ok: outboundCount === 0,
+              message: outboundCount === 0 ? 'requireAvailability: sin outbound OK' : `requireAvailability: esperaba 0 outbound, got ${outboundCount}`,
+            });
+          }
+
+          // Cleanup: archive-only.
+          await prisma.automationRule.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+        }
+      }
+
+      const staffReplyTo = (step.expect as any)?.staffReplyToNotificationUpdatesCase;
+      if (staffReplyTo && typeof staffReplyTo === 'object') {
+        const wsId = String((staffReplyTo as any)?.workspaceId || 'scenario-staff-replyto').trim() || 'scenario-staff-replyto';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'staffReplyTo: userId missing' });
+        } else {
+          const staffE164 = '+56982345846';
+          const staffWaId = '56982345846';
+          const lineId = `scenario-staff-replyto-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Staff ReplyTo', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Staff ReplyTo', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+              update: { role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Staff ReplyTo (temp)',
+                phoneE164: null,
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const staffContact = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const staffConv = staffContact?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: phoneLine?.id,
+                    programId: null,
+                    contactId: staffContact.id,
+                    status: 'OPEN',
+                    channel: 'whatsapp',
+                    isAdmin: false,
+                    aiMode: 'OFF',
+                    conversationKind: 'STAFF',
+                    conversationStage: 'NUEVO',
+                    stageChangedAt: now,
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+          if (staffConv?.id) {
+            await prisma.message
+              .create({ data: { conversationId: staffConv.id, direction: 'INBOUND', text: 'activar', timestamp: now, read: true } as any })
+              .catch(() => {});
+          }
+
+          const client = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, displayName: 'Caso ReplyTo', comuna: 'Providencia', availabilityText: 'martes 10:00-12:00', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const conv = client?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: phoneLine?.id,
+                    programId: null,
+                    contactId: client.id,
+                    status: 'NEW',
+                    conversationStage: 'NUEVO',
+                    stageChangedAt: now,
+                    assignedToId: userId,
+                    channel: 'system',
+                    isAdmin: false,
+                    conversationKind: 'CLIENT',
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+          const rule = await prisma.automationRule
+            .create({
+              data: {
+                workspaceId: wsId,
+                name: 'Scenario ReplyTo notify staff',
+                enabled: true,
+                priority: 10,
+                trigger: 'STAGE_CHANGED',
+                conditionsJson: JSON.stringify([]),
+                actionsJson: JSON.stringify([
+                  { type: 'NOTIFY_STAFF_WHATSAPP', recipients: 'ASSIGNED_TO', templateText: '🔔 Caso {{stage}}: {{clientName}}', dedupePolicy: 'PER_STAGE_CHANGE' },
+                ]),
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          if (!phoneLine?.id || !staffConv?.id || !conv?.id || !rule?.id) {
+            assertions.push({ ok: false, message: 'staffReplyTo: setup incompleto (line/staff/conv/rule)' });
+          } else {
+            await prisma.conversation.update({ where: { id: conv.id }, data: { conversationStage: 'INTERESADO', stageChangedAt: now } as any }).catch(() => {});
+            await runAutomations({
+              app,
+              workspaceId: wsId,
+              eventType: 'STAGE_CHANGED',
+              conversationId: conv.id,
+              transportMode: 'NULL',
+            });
+
+            const outbound = await prisma.outboundMessageLog
+              .findFirst({
+                where: { workspaceId: wsId, conversationId: staffConv.id, relatedConversationId: conv.id },
+                orderBy: { createdAt: 'desc' },
+                select: { waMessageId: true },
+              })
+              .catch(() => null);
+            const waMessageId = String(outbound?.waMessageId || '').trim();
+            const outboundOk = Boolean(waMessageId);
+            assertions.push({ ok: outboundOk, message: outboundOk ? 'staffReplyTo: outbound notification OK' : 'staffReplyTo: missing outbound waMessageId' });
+
+            const inboundReply = await prisma.message
+              .create({
+                data: {
+                  conversationId: staffConv.id,
+                  direction: 'INBOUND',
+                  text: 'Ok, pasarlo a EN_COORDINACION',
+                  rawPayload: JSON.stringify({ simulated: true, context: { id: waMessageId } }),
+                  timestamp: new Date(now.getTime() + 1000),
+                  read: true,
+                } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+
+            const replyCtx = inboundReply?.id
+              ? await resolveReplyContextForInboundMessage({ workspaceId: wsId, inboundMessageId: inboundReply.id }).catch(() => null)
+              : null;
+            const ctxOk = Boolean(replyCtx?.relatedConversationId) && String(replyCtx?.relatedConversationId) === String(conv.id);
+            assertions.push({
+              ok: ctxOk,
+              message: ctxOk ? 'staffReplyTo: resolveReplyContext OK' : `staffReplyTo: expected relatedConversationId=${conv.id}, got ${String(replyCtx?.relatedConversationId || '—')}`,
+            });
+
+            const staffRun = await prisma.agentRunLog.create({
+              data: {
+                workspaceId: wsId,
+                conversationId: staffConv.id,
+                programId: null,
+                phoneLineId: phoneLine.id,
+                eventType: 'STAFF_REPLY_TOOL',
+                status: 'RUNNING',
+                inputContextJson: JSON.stringify({ event: { relatedConversationId: conv.id } }),
+              },
+              select: { id: true },
+            });
+
+            await executeAgentResponse({
+              app,
+              workspaceId: wsId,
+              agentRunId: staffRun.id,
+              response: { agent: 'scenario', version: 1, commands: [{ command: 'RUN_TOOL', toolName: 'SET_STAGE', args: { stageSlug: 'EN_COORDINACION' } } as any] } as any,
+              transportMode: 'NULL',
+            }).catch((err: any) => {
+              assertions.push({ ok: false, message: `staffReplyTo: executeAgentResponse error: ${err?.message || err}` });
+            });
+
+            const updated = await prisma.conversation.findUnique({ where: { id: conv.id }, select: { conversationStage: true } }).catch(() => null);
+            const stageOk = String((updated as any)?.conversationStage || '') === 'EN_COORDINACION';
+            assertions.push({
+              ok: stageOk,
+              message: stageOk ? 'staffReplyTo: SET_STAGE (default relatedConversationId) OK' : `staffReplyTo: stage esperado EN_COORDINACION, got ${String((updated as any)?.conversationStage || '—')}`,
+            });
+          }
+
+          // Cleanup: archive-only.
+          await prisma.automationRule.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
         }
       }
 

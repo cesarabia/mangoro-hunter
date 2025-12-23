@@ -102,6 +102,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const unreadCount = c.unreadCount || 0;
           const hasUnread = unreadCount > 0;
           const isAdmin = Boolean(c.isAdmin);
+          const isStaff = String(c.conversationKind || 'CLIENT').toUpperCase() === 'STAFF';
           const rawCandidate = c.contact?.candidateName || null;
           const validCandidate = !isAdmin && rawCandidate && !isSuspiciousCandidateName(rawCandidate);
           const waId = c.contact?.waId || c.contact?.phone || '';
@@ -160,6 +161,23 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               </div>
               {showStatus && (
                 <div style={{ marginTop: 6 }}>
+                  {isStaff && (
+                    <span
+                      title="Conversación del staff (WhatsApp)"
+                      style={{
+                        background: '#f6ffed',
+                        border: '1px solid #b7eb8f',
+                        color: '#237804',
+                        borderRadius: 999,
+                        fontSize: 11,
+                        padding: '2px 8px',
+                        marginRight: 6,
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      STAFF
+                    </span>
+                  )}
                   {noContact && (
                     <span style={{ background: '#fff1f0', border: '1px solid #ff7875', color: '#a8071a', borderRadius: 999, fontSize: 11, padding: '2px 8px', marginRight: 6 }}>
                       NO CONTACTAR

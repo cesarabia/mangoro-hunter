@@ -10,7 +10,7 @@ import { getEffectiveOutboundAllowlist, getOutboundPolicy, getSystemConfig } fro
 import { sendAdminNotification } from '../adminNotificationService';
 import { getContactDisplayName } from '../../utils/contactDisplay';
 import { normalizeWhatsAppId } from '../../utils/whatsapp';
-import { coerceStageSlug } from '../workspaceStageService';
+import { coerceStageSlug, isKnownActiveStage, normalizeStageSlug } from '../workspaceStageService';
 import { runAutomations } from '../automationRunnerService';
 
 export type ExecutorTransportMode = 'REAL' | 'NULL';
@@ -23,6 +23,32 @@ export type ExecuteResult = {
 };
 
 type WhatsAppWindowStatus = 'IN_24H' | 'OUTSIDE_24H';
+
+function safeJsonParse(value: string | null | undefined): any {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+type StaffActor = {
+  membershipId: string;
+  userId: string;
+  email: string;
+  role: string;
+  staffWhatsAppE164: string | null;
+};
+
+function roleRank(roleRaw: string): number {
+  const role = String(roleRaw || '').toUpperCase().trim();
+  if (role === 'OWNER') return 4;
+  if (role === 'ADMIN') return 3;
+  if (role === 'MEMBER') return 2;
+  if (role === 'VIEWER') return 1;
+  return 0;
+}
 
 function normalizeForNameChecks(value: string): string {
   return stripAccents(String(value || '')).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -92,6 +118,48 @@ async function computeWhatsAppWindowStatus(conversationId: string): Promise<What
   if (!lastInbound?.timestamp) return 'IN_24H';
   const delta = Date.now() - new Date(lastInbound.timestamp).getTime();
   return delta <= WINDOW_MS ? 'IN_24H' : 'OUTSIDE_24H';
+}
+
+async function computeWhatsAppWindowStatusStrict(conversationId: string): Promise<WhatsAppWindowStatus> {
+  const WINDOW_MS = 24 * 60 * 60 * 1000;
+  const lastInbound = await prisma.message.findFirst({
+    where: { conversationId, direction: 'INBOUND' },
+    orderBy: { timestamp: 'desc' },
+    select: { timestamp: true },
+  });
+  if (!lastInbound?.timestamp) return 'OUTSIDE_24H';
+  const delta = Date.now() - new Date(lastInbound.timestamp).getTime();
+  return delta <= WINDOW_MS ? 'IN_24H' : 'OUTSIDE_24H';
+}
+
+async function resolveStaffActorForConversation(params: {
+  workspaceId: string;
+  staffConversation: any;
+}): Promise<StaffActor | null> {
+  const convo = params.staffConversation;
+  const contact = convo?.contact;
+  const waIdRaw = String(contact?.waId || contact?.phone || '').trim();
+  const waId = normalizeWhatsAppId(waIdRaw) || null;
+  if (!waId) return null;
+
+  const memberships = await prisma.membership
+    .findMany({
+      where: { workspaceId: params.workspaceId, archivedAt: null, staffWhatsAppE164: { not: null } },
+      include: { user: { select: { id: true, email: true, name: true } } },
+      take: 50,
+    })
+    .catch(() => []);
+  const match = memberships.find(
+    (m) => normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || '')) === waId,
+  );
+  if (!match?.id || !match.user?.id) return null;
+  return {
+    membershipId: match.id,
+    userId: match.user.id,
+    email: match.user.email,
+    role: String((match as any).role || ''),
+    staffWhatsAppE164: String((match as any).staffWhatsAppE164 || '').trim() || null,
+  };
 }
 
 function detectAskedFields(text: string): string[] {
@@ -197,11 +265,13 @@ async function logOutbound(params: {
   textHash: string;
   blockedReason?: string | null;
   waMessageId?: string | null;
+  relatedConversationId?: string | null;
 }) {
   await prisma.outboundMessageLog.create({
     data: {
       workspaceId: params.workspaceId,
       conversationId: params.conversationId,
+      relatedConversationId: params.relatedConversationId || null,
       agentRunId: params.agentRunId || null,
       channel: 'WHATSAPP',
       type: params.type,
@@ -242,6 +312,31 @@ export async function executeAgentResponse(params: {
   const config = await getSystemConfig();
   const results: ExecuteResult[] = [];
 
+  const agentRun = await prisma.agentRunLog
+    .findUnique({
+      where: { id: params.agentRunId },
+      select: { conversationId: true, inputContextJson: true, eventType: true },
+    })
+    .catch(() => null);
+  const agentRunContext = safeJsonParse(agentRun?.inputContextJson || null);
+  const relatedConversationIdFromRun = (() => {
+    if (!agentRunContext || typeof agentRunContext !== 'object') return null;
+    if (typeof (agentRunContext as any).sourceConversationId === 'string') {
+      const value = String((agentRunContext as any).sourceConversationId || '').trim();
+      return value || null;
+    }
+    if (typeof (agentRunContext as any).relatedConversationId === 'string') {
+      const value = String((agentRunContext as any).relatedConversationId || '').trim();
+      return value || null;
+    }
+    const ev = (agentRunContext as any).event;
+    if (ev && typeof ev === 'object' && typeof (ev as any).relatedConversationId === 'string') {
+      const value = String((ev as any).relatedConversationId || '').trim();
+      return value || null;
+    }
+    return null;
+  })();
+
   const conversationIds = new Set(
     params.response.commands
       .filter((cmd) => (cmd as any).conversationId)
@@ -256,7 +351,11 @@ export async function executeAgentResponse(params: {
   }
 
   const conversationId =
-    conversationIds.size === 1 ? Array.from(conversationIds)[0] : (null as any);
+    conversationIds.size === 1
+      ? Array.from(conversationIds)[0]
+      : agentRun?.conversationId
+        ? String(agentRun.conversationId)
+        : (null as any);
 
   const baseConversation = conversationId
     ? await prisma.conversation.findUnique({
@@ -322,12 +421,14 @@ export async function executeAgentResponse(params: {
         stageSlug: cmd.stage,
       }).catch(() => String(cmd.stage));
       const stageChanged = String(nextStage || '') !== String(currentStage || '');
+      const now = new Date();
       await prisma.conversation.update({
         where: { id: cmd.conversationId },
         data: {
           conversationStage: nextStage,
           stageReason: cmd.reason || null,
-          updatedAt: new Date(),
+          stageChangedAt: stageChanged ? now : undefined,
+          updatedAt: now,
         },
       });
       currentStage = String(nextStage || '');
@@ -433,6 +534,7 @@ export async function executeAgentResponse(params: {
           dedupeKey: cmd.dedupeKey,
           textHash,
           blockedReason: 'NO_CONTACTAR',
+          relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
         });
         results.push({ ok: true, blocked: true, blockedReason: 'NO_CONTACTAR' });
         continue;
@@ -449,6 +551,7 @@ export async function executeAgentResponse(params: {
           dedupeKey: cmd.dedupeKey,
           textHash,
           blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+          relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
         });
         results.push({ ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
         continue;
@@ -486,6 +589,7 @@ export async function executeAgentResponse(params: {
           dedupeKey: cmd.dedupeKey,
           textHash: payloadHash,
           blockedReason: blockReason,
+          relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
         });
         results.push({ ok: true, blocked: true, blockedReason: blockReason });
         continue;
@@ -509,6 +613,7 @@ export async function executeAgentResponse(params: {
           dedupeKey: cmd.dedupeKey,
           textHash: payloadHash,
           blockedReason: safetyBlock,
+          relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
         });
         results.push({ ok: true, blocked: true, blockedReason: safetyBlock });
         continue;
@@ -564,6 +669,7 @@ export async function executeAgentResponse(params: {
         textHash: payloadHash,
         blockedReason: sendResult.success ? null : `SEND_FAILED:${sendResult.error || 'unknown'}`,
         waMessageId: sendResult.messageId || null,
+        relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
       });
 
       if (params.transportMode === 'REAL' && baseConversation.phoneLineId) {
@@ -608,7 +714,410 @@ export async function executeAgentResponse(params: {
     }
 
     if (cmd.command === 'RUN_TOOL') {
-      results.push({ ok: true, details: { ignored: true } });
+      const toolName = String((cmd as any).toolName || '').trim().toUpperCase();
+      const args = (cmd as any).args || {};
+
+      if (!baseConversation) {
+        results.push({ ok: false, details: { error: 'missing_conversation_context', toolName } });
+        continue;
+      }
+
+      const kind = String((baseConversation as any).conversationKind || 'CLIENT').toUpperCase();
+      if (kind !== 'STAFF') {
+        results.push({ ok: false, details: { error: 'tool_not_allowed:conversation_not_staff', toolName } });
+        continue;
+      }
+
+      const staffActor = await resolveStaffActorForConversation({
+        workspaceId: baseConversation.workspaceId,
+        staffConversation: baseConversation,
+      }).catch(() => null);
+
+      if (!staffActor || roleRank(staffActor.role) < roleRank('MEMBER')) {
+        results.push({ ok: false, details: { error: 'tool_not_allowed:staff_actor_missing_or_forbidden', toolName } });
+        continue;
+      }
+
+      if (toolName === 'LIST_CASES') {
+        const stageSlugRaw = typeof (args as any).stageSlug === 'string' ? (args as any).stageSlug : '';
+        const stageSlug = stageSlugRaw ? normalizeStageSlug(stageSlugRaw) : '';
+        const assignedToMe = Boolean((args as any).assignedToMe);
+        const statusRaw = typeof (args as any).status === 'string' ? String((args as any).status).toUpperCase() : '';
+        const status = statusRaw && ['NEW', 'OPEN', 'CLOSED'].includes(statusRaw) ? statusRaw : null;
+        const limitRaw = Number((args as any).limit || 10);
+        const limit = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, Math.floor(limitRaw))) : 10;
+
+        const cases = await prisma.conversation.findMany({
+          where: {
+            workspaceId: baseConversation.workspaceId,
+            archivedAt: null,
+            isAdmin: false,
+            conversationKind: 'CLIENT',
+            ...(status ? { status } : {}),
+            ...(stageSlug ? { conversationStage: stageSlug } : {}),
+            ...(assignedToMe ? { assignedToId: staffActor.userId } : {}),
+          } as any,
+          include: {
+            contact: true,
+            program: { select: { id: true, slug: true, name: true } },
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: limit,
+        });
+
+        results.push({
+          ok: true,
+          details: {
+            toolName,
+            result: {
+              cases: cases.map((c: any) => ({
+                id: c.id,
+                stage: c.conversationStage,
+                status: c.status,
+                assignedToId: c.assignedToId || null,
+                program: c.program ? { id: c.program.id, slug: c.program.slug, name: c.program.name } : null,
+                contactDisplay: getContactDisplayName(c.contact),
+                updatedAt: c.updatedAt ? new Date(c.updatedAt).toISOString() : null,
+              })),
+            },
+          },
+        });
+        continue;
+      }
+
+      if (toolName === 'GET_CASE_SUMMARY') {
+        const conversationIdArgRaw =
+          typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
+        const conversationIdArg = conversationIdArgRaw || relatedConversationIdFromRun || '';
+        if (!conversationIdArg) {
+          results.push({
+            ok: false,
+            details: { error: 'conversationId requerido (o responde a una notificación del caso)', toolName },
+          });
+          continue;
+        }
+
+        const convo = await prisma.conversation.findFirst({
+          where: { id: conversationIdArg, workspaceId: baseConversation.workspaceId, archivedAt: null, isAdmin: false } as any,
+          include: {
+            contact: true,
+            program: { select: { id: true, slug: true, name: true } },
+            messages: {
+              orderBy: { timestamp: 'desc' },
+              take: 10,
+              select: { id: true, direction: true, text: true, transcriptText: true, mediaType: true, timestamp: true },
+            },
+          },
+        });
+        if (!convo?.id) {
+          results.push({ ok: false, details: { error: 'case_not_found', conversationId: conversationIdArg, toolName } });
+          continue;
+        }
+
+        const contact = convo.contact;
+        const summary = {
+          id: convo.id,
+          stage: convo.conversationStage,
+          status: convo.status,
+          assignedToId: convo.assignedToId || null,
+          program: convo.program ? { id: convo.program.id, slug: convo.program.slug, name: convo.program.name } : null,
+          contact: {
+            id: contact.id,
+            displayName: getContactDisplayName(contact),
+            waId: contact.waId || null,
+            phone: contact.phone || null,
+            comuna: (contact as any).comuna || null,
+            ciudad: (contact as any).ciudad || null,
+            region: (contact as any).region || null,
+            availabilityText: (contact as any).availabilityText || null,
+            noContact: Boolean((contact as any).noContact),
+          },
+          lastMessages: (convo.messages || [])
+            .slice()
+            .reverse()
+            .map((m: any) => ({
+              id: m.id,
+              direction: m.direction,
+              text: m.transcriptText || m.text,
+              mediaType: m.mediaType || null,
+              timestamp: m.timestamp.toISOString(),
+            })),
+        };
+
+        results.push({ ok: true, details: { toolName, result: { case: summary } } });
+        continue;
+      }
+
+      if (toolName === 'ADD_NOTE') {
+        const conversationIdArgRaw =
+          typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
+        const conversationIdArg = conversationIdArgRaw || relatedConversationIdFromRun || '';
+        const textArg = typeof (args as any).text === 'string' ? (args as any).text.trim() : '';
+        if (!conversationIdArg || !textArg) {
+          results.push({ ok: false, details: { error: 'conversationId y text requeridos', toolName } });
+          continue;
+        }
+        const convo = await prisma.conversation.findFirst({
+          where: { id: conversationIdArg, workspaceId: baseConversation.workspaceId, archivedAt: null, isAdmin: false } as any,
+          select: { id: true },
+        });
+        if (!convo?.id) {
+          results.push({ ok: false, details: { error: 'case_not_found', conversationId: conversationIdArg, toolName } });
+          continue;
+        }
+        await prisma.message.create({
+          data: {
+            conversationId: conversationIdArg,
+            direction: 'OUTBOUND',
+            text: textArg,
+            rawPayload: serializeJson({
+              system: true,
+              toolName,
+              staffActor: { userId: staffActor.userId, email: staffActor.email, role: staffActor.role },
+              agentRunId: params.agentRunId,
+            }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+        await prisma.conversation.update({ where: { id: conversationIdArg }, data: { updatedAt: new Date() } }).catch(() => {});
+        results.push({ ok: true, details: { toolName, result: { ok: true } } });
+        continue;
+      }
+
+      if (toolName === 'SET_STAGE') {
+        const conversationIdArgRaw =
+          typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
+        const conversationIdArg = conversationIdArgRaw || relatedConversationIdFromRun || '';
+        const stageArg = typeof (args as any).stageSlug === 'string' ? (args as any).stageSlug.trim() : '';
+        const reasonArg = typeof (args as any).reason === 'string' ? (args as any).reason.trim() : '';
+        if (!conversationIdArg || !stageArg) {
+          results.push({
+            ok: false,
+            details: { error: 'conversationId y stageSlug requeridos (o responde a una notificación del caso)', toolName },
+          });
+          continue;
+        }
+        const stageSlug = normalizeStageSlug(stageArg);
+        if (!stageSlug) {
+          results.push({ ok: false, details: { error: 'stageSlug inválido', toolName } });
+          continue;
+        }
+        const stageOk = await isKnownActiveStage(baseConversation.workspaceId, stageSlug).catch(() => false);
+        if (!stageOk) {
+          results.push({ ok: false, details: { error: `stageSlug desconocido/inactivo: ${stageSlug}`, toolName } });
+          continue;
+        }
+        const convo = await prisma.conversation.findFirst({
+          where: { id: conversationIdArg, workspaceId: baseConversation.workspaceId, archivedAt: null, isAdmin: false } as any,
+          select: { id: true, conversationStage: true },
+        });
+        if (!convo?.id) {
+          results.push({ ok: false, details: { error: 'case_not_found', conversationId: conversationIdArg, toolName } });
+          continue;
+        }
+        const previousStage = String((convo as any).conversationStage || '');
+        const now = new Date();
+        await prisma.conversation.update({
+          where: { id: conversationIdArg },
+          data: {
+            conversationStage: stageSlug,
+            stageReason: reasonArg ? reasonArg.slice(0, 140) : `staff:${staffActor.email}`,
+            stageChangedAt: now,
+            updatedAt: now,
+          } as any,
+        });
+        await prisma.message
+          .create({
+            data: {
+              conversationId: conversationIdArg,
+              direction: 'OUTBOUND',
+              text: `🏷️ Stage actualizado por staff: ${previousStage} → ${stageSlug}`,
+              rawPayload: serializeJson({
+                system: true,
+                toolName,
+                staffActor: { userId: staffActor.userId, email: staffActor.email, role: staffActor.role },
+                agentRunId: params.agentRunId,
+                previousStage,
+                nextStage: stageSlug,
+              }),
+              timestamp: now,
+              read: true,
+            },
+          } as any)
+          .catch(() => {});
+
+        await runAutomations({
+          app: params.app,
+          workspaceId: baseConversation.workspaceId,
+          eventType: 'STAGE_CHANGED',
+          conversationId: conversationIdArg,
+          transportMode: params.transportMode,
+        }).catch((err) => {
+          params.app.log.warn({ err, conversationId: conversationIdArg }, 'STAGE_CHANGED automations failed (staff tool)');
+        });
+
+        results.push({ ok: true, details: { toolName, result: { ok: true, stage: stageSlug } } });
+        continue;
+      }
+
+      if (toolName === 'SEND_CUSTOMER_MESSAGE') {
+        const conversationIdArgRaw =
+          typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
+        const conversationIdArg = conversationIdArgRaw || relatedConversationIdFromRun || '';
+        const textArg = typeof (args as any).text === 'string' ? (args as any).text.trim() : '';
+        if (!conversationIdArg || !textArg) {
+          results.push({
+            ok: false,
+            details: { error: 'conversationId y text requeridos (o responde a una notificación del caso)', toolName },
+          });
+          continue;
+        }
+        if (textArg.length > 2000) {
+          results.push({ ok: false, details: { error: 'text demasiado largo (max 2000)', toolName } });
+          continue;
+        }
+
+        const customerConversation = await prisma.conversation.findFirst({
+          where: { id: conversationIdArg, workspaceId: baseConversation.workspaceId, archivedAt: null, isAdmin: false } as any,
+          include: { contact: true, phoneLine: true },
+        });
+        if (!customerConversation?.id) {
+          results.push({ ok: false, details: { error: 'case_not_found', conversationId: conversationIdArg, toolName } });
+          continue;
+        }
+        const customerContact = customerConversation.contact;
+
+        const dedupeKey =
+          typeof (args as any).dedupeKey === 'string' && String((args as any).dedupeKey).trim()
+            ? String((args as any).dedupeKey).trim()
+            : `staff_send_customer:${params.agentRunId}:${stableHash(textArg).slice(0, 10)}`;
+        const payloadHash = stableHash(`TEXT:${textArg}`);
+
+        const window = await computeWhatsAppWindowStatusStrict(customerConversation.id).catch(() => 'OUTSIDE_24H' as WhatsAppWindowStatus);
+        if (window === 'OUTSIDE_24H') {
+          await logOutbound({
+            workspaceId: baseConversation.workspaceId,
+            conversationId: customerConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'SESSION_TEXT',
+            templateName: null,
+            dedupeKey,
+            textHash: payloadHash,
+            blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+          });
+          results.push({ ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+          continue;
+        }
+
+        if ((customerContact as any).noContact) {
+          await logOutbound({
+            workspaceId: baseConversation.workspaceId,
+            conversationId: customerConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'SESSION_TEXT',
+            templateName: null,
+            dedupeKey,
+            textHash: payloadHash,
+            blockedReason: 'NO_CONTACTAR',
+          });
+          results.push({ ok: true, blocked: true, blockedReason: 'NO_CONTACTAR' });
+          continue;
+        }
+
+        const blockReason = await shouldBlockOutbound({
+          conversationId: customerConversation.id,
+          dedupeKey,
+          textHash: payloadHash,
+        });
+        if (blockReason) {
+          await logOutbound({
+            workspaceId: baseConversation.workspaceId,
+            conversationId: customerConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'SESSION_TEXT',
+            templateName: null,
+            dedupeKey,
+            textHash: payloadHash,
+            blockedReason: blockReason,
+          });
+          results.push({ ok: true, blocked: true, blockedReason: blockReason });
+          continue;
+        }
+
+        const toWaId =
+          customerContact.waId || customerContact.phone || (params.transportMode === 'NULL' ? 'sandbox' : null);
+        if (!toWaId) {
+          results.push({ ok: false, details: { error: 'missing_contact_waid', toolName } });
+          continue;
+        }
+
+        const safetyBlock = safeOutboundBlockedReason({ toWaId, config });
+        if (safetyBlock) {
+          await logOutbound({
+            workspaceId: baseConversation.workspaceId,
+            conversationId: customerConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'SESSION_TEXT',
+            templateName: null,
+            dedupeKey,
+            textHash: payloadHash,
+            blockedReason: safetyBlock,
+          });
+          results.push({ ok: true, blocked: true, blockedReason: safetyBlock });
+          continue;
+        }
+
+        let sendResult: SendResult = { success: true, messageId: `null-${Date.now()}` };
+        if (params.transportMode === 'REAL') {
+          const phoneNumberId = customerConversation.phoneLine?.waPhoneNumberId || null;
+          sendResult = await sendWhatsAppText(toWaId, textArg, { phoneNumberId });
+        }
+
+        await prisma.message.create({
+          data: {
+            conversationId: customerConversation.id,
+            direction: 'OUTBOUND',
+            text: textArg,
+            rawPayload: serializeJson({
+              system: true,
+              toolName,
+              staffActor: { userId: staffActor.userId, email: staffActor.email, role: staffActor.role },
+              agentRunId: params.agentRunId,
+              sendResult,
+            }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+        await prisma.conversation.update({ where: { id: customerConversation.id }, data: { updatedAt: new Date() } }).catch(() => {});
+
+        await logOutbound({
+          workspaceId: baseConversation.workspaceId,
+          conversationId: customerConversation.id,
+          agentRunId: params.agentRunId,
+          type: 'SESSION_TEXT',
+          templateName: null,
+          dedupeKey,
+          textHash: payloadHash,
+          blockedReason: sendResult.success ? null : `SEND_FAILED:${sendResult.error || 'unknown'}`,
+          waMessageId: sendResult.messageId || null,
+        });
+
+        if (params.transportMode === 'REAL' && customerConversation.phoneLineId) {
+          await prisma.phoneLine
+            .update({
+              where: { id: customerConversation.phoneLineId },
+              data: { lastOutboundAt: new Date() },
+            })
+            .catch(() => {});
+        }
+
+        results.push({ ok: true, details: { toolName, result: { sendResult } } });
+        continue;
+      }
+
+      results.push({ ok: false, details: { error: `toolName desconocido: ${toolName}`, toolName } });
       continue;
     }
 

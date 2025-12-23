@@ -16,6 +16,10 @@ Iterar rápido **sin romper DEV/PROD/pilotos**, con evidencia reproducible (**lo
 5) WhatsApp:
    - Respetar ventana 24h (fuera → template; dentro → texto permitido).
    - Idempotencia inbound (por `Message.waMessageId`) y outbound (dedupeKey + anti‑loop).
+   - **Staff Mode (WhatsApp, multi‑rubro)**:
+     - Un mensaje inbound se considera **STAFF** si `fromE164` coincide con `Membership.staffWhatsAppE164` del workspace.
+     - Se crea/usa una conversación `conversationKind=STAFF` (no es “admin chat”), con Program definido por `Workspace.staffDefaultProgramId`.
+     - El staff opera casos usando **RUN_TOOL** (determinista) y, si responde a una notificación, no necesita copiar IDs (reply‑to mapping).
    - **Notificaciones a staff (SSClinical)**:
      - Se configuran por usuario (workspace) en `Usuarios → WhatsApp de notificaciones` (E.164).
      - Se disparan por automation (ej: `STAGE_CHANGED` a `INTERESADO`) y respetan SAFE MODE + 24h.
@@ -62,3 +66,8 @@ Si un caso pasa a `INTERESADO` y **no llega WhatsApp al staff**:
    - `NO_CONTACTAR`: el contacto está marcado como NO_CONTACTAR (solo opt‑out).
    - `DEDUPED_*`: ya se envió (dedupe por caso+stage+día).
 3) Ayuda/QA → Notificaciones: debe existir una notificación in‑app de fallback si el WhatsApp no se pudo enviar.
+
+Si el staff responde “OK” pero **no se aplica al caso correcto**:
+1) Confirmar que el staff respondió como **reply** (WhatsApp muestra “respondiendo a…”).
+2) Ayuda/QA → Logs → **Outbound**: buscar el outbound de la notificación y verificar `relatedConversationId` (reply‑to mapping).
+3) Si el mensaje no trae `context.id` (no es reply), el staff debe indicar el caso o pedir “listar casos” para seleccionar.

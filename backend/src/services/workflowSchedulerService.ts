@@ -128,6 +128,7 @@ export async function runInactivityWorkflow(app: FastifyInstance): Promise<{ eva
         data: {
           conversationStage: nextStage,
           stageReason: `RULE:${rule.id}`,
+          stageChangedAt: new Date(),
           updatedAt: new Date()
         }
       });

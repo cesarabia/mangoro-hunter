@@ -7,6 +7,7 @@ import { AgentResponse, AgentResponseSchema } from './commandSchema';
 import { normalizeText, piiSanitizeText, resolveLocation, stableHash, validateRut } from './tools';
 import { validateAgentResponseSemantics } from './semanticValidation';
 import { repairAgentResponseBeforeValidation } from './agentResponseRepair';
+import { normalizeWhatsAppId } from '../../utils/whatsapp';
 
 type WhatsAppWindowStatus = 'IN_24H' | 'OUTSIDE_24H';
 
@@ -219,6 +220,45 @@ function canonicalizeEnum(value: any): any {
   return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
 }
 
+export async function resolveReplyContextForInboundMessage(params: {
+  workspaceId: string;
+  inboundMessageId: string;
+}): Promise<{
+  replyToWaMessageId: string | null;
+  relatedConversationId: string | null;
+  outboundLogId: string | null;
+}> {
+  const inboundMessageId = String(params.inboundMessageId || '').trim();
+  if (!inboundMessageId) return { replyToWaMessageId: null, relatedConversationId: null, outboundLogId: null };
+
+  const msg = await prisma.message
+    .findUnique({
+      where: { id: inboundMessageId },
+      select: { rawPayload: true },
+    })
+    .catch(() => null);
+  const payload = parseJsonLoose(msg?.rawPayload || null);
+  const replyToWaMessageId =
+    payload && typeof payload === 'object' && payload.context && typeof payload.context === 'object'
+      ? String((payload.context as any).id || '').trim() || null
+      : null;
+  if (!replyToWaMessageId) return { replyToWaMessageId: null, relatedConversationId: null, outboundLogId: null };
+
+  const outbound = await prisma.outboundMessageLog
+    .findFirst({
+      where: { workspaceId: params.workspaceId, waMessageId: replyToWaMessageId },
+      select: { id: true, relatedConversationId: true },
+      orderBy: { createdAt: 'desc' },
+    })
+    .catch(() => null);
+
+  return {
+    replyToWaMessageId,
+    relatedConversationId: outbound?.relatedConversationId ? String(outbound.relatedConversationId) : null,
+    outboundLogId: outbound?.id ? String(outbound.id) : null,
+  };
+}
+
 function normalizeAgentResponseShape(value: any): any {
   if (!value || typeof value !== 'object') return value;
   const out: any = Array.isArray(value) ? [...value] : { ...value };
@@ -341,6 +381,52 @@ export async function runAgent(event: AgentEvent): Promise<{
     throw new Error('Conversation no encontrada');
   }
 
+  const replyCtx = event.inboundMessageId
+    ? await resolveReplyContextForInboundMessage({
+        workspaceId: event.workspaceId,
+        inboundMessageId: String(event.inboundMessageId),
+      }).catch(() => ({ replyToWaMessageId: null, relatedConversationId: null, outboundLogId: null }))
+    : { replyToWaMessageId: null, relatedConversationId: null, outboundLogId: null };
+  const replyToWaMessageId = replyCtx.replyToWaMessageId;
+  const relatedConversationId = replyCtx.relatedConversationId;
+  const relatedConversation = relatedConversationId
+    ? await prisma.conversation
+        .findFirst({
+          where: { id: relatedConversationId, workspaceId: event.workspaceId, archivedAt: null, isAdmin: false },
+          include: {
+            contact: true,
+            messages: {
+              orderBy: { timestamp: 'desc' },
+              take: 6,
+              select: { id: true, direction: true, text: true, transcriptText: true, mediaType: true, timestamp: true },
+            },
+          },
+        })
+        .catch(() => null)
+    : null;
+
+  const staffContext = await (async () => {
+    if (String((conversation as any).conversationKind || '').toUpperCase() !== 'STAFF') return null;
+    const waId = normalizeWhatsAppId(conversation.contact.waId || conversation.contact.phone || '') || null;
+    if (!waId) return null;
+    const memberships = await prisma.membership
+      .findMany({
+        where: { workspaceId: event.workspaceId, archivedAt: null, staffWhatsAppE164: { not: null } },
+        include: { user: { select: { id: true, email: true, name: true } } },
+      })
+      .catch(() => []);
+    const match = memberships.find((m) => normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || '')) === waId);
+    if (!match?.user?.id) return null;
+    return {
+      userId: match.user.id,
+      email: match.user.email,
+      name: match.user.name,
+      role: String((match as any).role || ''),
+      membershipId: match.id,
+      staffWhatsAppE164: String((match as any).staffWhatsAppE164 || '').trim() || null,
+    };
+  })();
+
   const windowStatus = await computeWhatsAppWindowStatus(event.conversationId);
   const asked = await prisma.conversationAskedField.findMany({
     where: { conversationId: event.conversationId },
@@ -381,15 +467,55 @@ export async function runAgent(event: AgentEvent): Promise<{
 
   const contextJson = {
     workspaceId: event.workspaceId,
-    event: { type: event.eventType, inboundMessageId: event.inboundMessageId || null, draftText: event.draftText || null },
+    event: {
+      type: event.eventType,
+      inboundMessageId: event.inboundMessageId || null,
+      draftText: event.draftText || null,
+      replyToWaMessageId,
+      relatedConversationId,
+    },
     conversation: {
       id: conversation.id,
       status: conversation.status,
       stage: conversation.conversationStage,
+      kind: (conversation as any).conversationKind || 'CLIENT',
+      stageChangedAt: (conversation as any).stageChangedAt ? new Date((conversation as any).stageChangedAt).toISOString() : null,
       programId: conversation.programId,
       phoneLineId: conversation.phoneLineId,
       isAdmin: conversation.isAdmin,
     },
+    staff: staffContext,
+    relatedConversation: relatedConversation
+      ? {
+          id: relatedConversation.id,
+          status: relatedConversation.status,
+          stage: relatedConversation.conversationStage,
+          assignedToId: relatedConversation.assignedToId,
+          contact: {
+            id: relatedConversation.contactId,
+            displayName: relatedConversation.contact.displayName || relatedConversation.contact.name,
+            candidateName: (relatedConversation.contact as any).candidateName,
+            candidateNameManual: (relatedConversation.contact as any).candidateNameManual,
+            phone: relatedConversation.contact.phone,
+            waId: relatedConversation.contact.waId,
+            comuna: (relatedConversation.contact as any).comuna,
+            ciudad: (relatedConversation.contact as any).ciudad,
+            region: (relatedConversation.contact as any).region,
+            availabilityText: (relatedConversation.contact as any).availabilityText,
+            flags: { NO_CONTACTAR: Boolean((relatedConversation.contact as any).noContact) },
+          },
+          lastMessages: (relatedConversation.messages || [])
+            .slice()
+            .reverse()
+            .map((m: any) => ({
+              id: m.id,
+              direction: m.direction,
+              text: m.transcriptText || m.text,
+              mediaType: m.mediaType || null,
+              timestamp: m.timestamp.toISOString(),
+            })),
+        }
+      : null,
     contact: {
       id: conversation.contactId,
       waId: conversation.contact.waId,
@@ -432,7 +558,7 @@ export async function runAgent(event: AgentEvent): Promise<{
     },
   };
 
-  const programPrompt = await (async () => {
+  const programPromptBase = await (async () => {
     const truncate = (text: string, maxChars: number) => {
       const value = String(text || '').trim();
       if (!value) return '';
@@ -457,6 +583,18 @@ export async function runAgent(event: AgentEvent): Promise<{
       });
 
     let program = conversation.programId ? await loadProgram(conversation.programId) : null;
+    if (!program && String((conversation as any).conversationKind || '').toUpperCase() === 'STAFF') {
+      const ws = await prisma.workspace
+        .findUnique({
+          where: { id: event.workspaceId },
+          select: { staffDefaultProgramId: true as any },
+        } as any)
+        .catch(() => null);
+      const staffProgramId = String((ws as any)?.staffDefaultProgramId || '').trim();
+      if (staffProgramId) {
+        program = await loadProgram(staffProgramId).catch(() => null);
+      }
+    }
     if (!program && conversation.phoneLineId) {
       const line = await prisma.phoneLine
         .findFirst({
@@ -548,6 +686,27 @@ export async function runAgent(event: AgentEvent): Promise<{
       'Programa default: coordina reclutamiento/entrevista/ventas según contexto. Responde corto y humano.'
     );
   })();
+
+  const isStaffConversation = String((conversation as any).conversationKind || '').toUpperCase() === 'STAFF';
+  const programPrompt = isStaffConversation
+    ? [
+        `STAFF MODE (WhatsApp)`,
+        `- Estás conversando con un miembro del staff por WhatsApp.`,
+        `- Si event.relatedConversationId existe, este mensaje es respuesta a una notificación sobre ese caso (no requiere que el staff copie IDs).`,
+        `- Puedes operar casos usando RUN_TOOL (determinista):`,
+        `  - LIST_CASES (filtros: stageSlug, assignedToMe, status, limit)`,
+        `  - GET_CASE_SUMMARY (conversationId)`,
+        `  - ADD_NOTE (conversationId, text)`,
+        `  - SET_STAGE (conversationId, stageSlug, reason?)`,
+        `  - SEND_CUSTOMER_MESSAGE (conversationId, text) [respeta SAFE MODE + 24h + NO_CONTACTAR]`,
+        `- Regla: no alucines. Si falta información del caso, usa GET_CASE_SUMMARY o pide una aclaración breve.`,
+        '',
+        programPromptBase,
+      ]
+        .filter(Boolean)
+        .join('\n')
+        .trim()
+    : programPromptBase;
 
   const runLog = await prisma.agentRunLog.create({
     data: {

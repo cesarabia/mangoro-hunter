@@ -30,6 +30,7 @@ export async function archiveConversation(params: {
       conversationStage: 'ARCHIVED',
       stageReason: params.reason,
       stageTags,
+      stageChangedAt: now,
       archivedAt: now,
       archivedSummary: summary,
       updatedAt: now
@@ -74,4 +75,3 @@ export async function archiveConversations(params: {
   }
   return { archived: ids.length };
 }
-

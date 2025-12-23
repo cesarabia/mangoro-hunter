@@ -40,6 +40,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         name: true,
         isSandbox: true,
         ssclinicalNurseLeaderEmail: true as any,
+        staffDefaultProgramId: true as any,
         createdAt: true,
         updatedAt: true,
         archivedAt: true,
@@ -51,6 +52,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       name: workspace.name,
       isSandbox: Boolean(workspace.isSandbox),
       ssclinicalNurseLeaderEmail: (workspace as any).ssclinicalNurseLeaderEmail || null,
+      staffDefaultProgramId: (workspace as any).staffDefaultProgramId || null,
       createdAt: new Date(workspace.createdAt).toISOString(),
       updatedAt: new Date(workspace.updatedAt).toISOString(),
     };
@@ -61,51 +63,86 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
     const userId = request.user?.userId ? String(request.user.userId) : null;
 
-    const body = request.body as { ssclinicalNurseLeaderEmail?: string | null };
+    const body = request.body as { ssclinicalNurseLeaderEmail?: string | null; staffDefaultProgramId?: string | null };
     const hasEmail = Object.prototype.hasOwnProperty.call(body || {}, 'ssclinicalNurseLeaderEmail');
-    if (!hasEmail) return reply.code(400).send({ error: '"ssclinicalNurseLeaderEmail" es requerido (string|null).' });
+    const hasStaffProgram = Object.prototype.hasOwnProperty.call(body || {}, 'staffDefaultProgramId');
+    if (!hasEmail && !hasStaffProgram) {
+      return reply
+        .code(400)
+        .send({ error: '"ssclinicalNurseLeaderEmail" o "staffDefaultProgramId" es requerido (string|null).' });
+    }
 
-    const raw = body?.ssclinicalNurseLeaderEmail;
-    const next =
-      raw === null
-        ? null
-        : typeof raw === 'string'
-          ? raw.trim().toLowerCase()
-          : null;
-    if (typeof raw === 'string' && next && (!next.includes('@') || next.length > 254)) {
+    const emailRaw = body?.ssclinicalNurseLeaderEmail;
+    const nextEmail =
+      emailRaw === null ? null : typeof emailRaw === 'string' ? emailRaw.trim().toLowerCase() : null;
+    if (typeof emailRaw === 'string' && nextEmail && (!nextEmail.includes('@') || nextEmail.length > 254)) {
       return reply.code(400).send({ error: 'Email inválido.' });
+    }
+
+    const staffProgramRaw = body?.staffDefaultProgramId;
+    const nextStaffProgramId =
+      staffProgramRaw === null ? null : typeof staffProgramRaw === 'string' ? staffProgramRaw.trim() : null;
+    if (typeof staffProgramRaw === 'string' && nextStaffProgramId && nextStaffProgramId.length > 64) {
+      return reply.code(400).send({ error: '"staffDefaultProgramId" es demasiado largo (max 64).' });
     }
 
     const existing = await prisma.workspace.findUnique({
       where: { id: access.workspaceId },
-      select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any },
+      select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any, staffDefaultProgramId: true as any },
     });
     if (!existing || existing.archivedAt) return reply.code(404).send({ error: 'Workspace no encontrado.' });
+
+    if (typeof staffProgramRaw === 'string' && nextStaffProgramId) {
+      const exists = await prisma.program.findFirst({
+        where: { id: nextStaffProgramId, workspaceId: access.workspaceId, archivedAt: null, isActive: true },
+        select: { id: true },
+      });
+      if (!exists?.id) {
+        return reply.code(400).send({ error: 'Program no existe o está inactivo para este workspace.' });
+      }
+    }
 
     const updated = await prisma.workspace.update({
       where: { id: access.workspaceId },
       data: {
-        ssclinicalNurseLeaderEmail: typeof raw === 'string' ? (next || null) : null,
+        ...(hasEmail ? { ssclinicalNurseLeaderEmail: typeof emailRaw === 'string' ? nextEmail || null : null } : {}),
+        ...(hasStaffProgram ? { staffDefaultProgramId: typeof staffProgramRaw === 'string' ? nextStaffProgramId || null : null } : {}),
         updatedAt: new Date(),
       } as any,
-      select: { id: true, ssclinicalNurseLeaderEmail: true as any, updatedAt: true },
+      select: { id: true, ssclinicalNurseLeaderEmail: true as any, staffDefaultProgramId: true as any, updatedAt: true },
     });
 
-    await prisma.configChangeLog
-      .create({
-        data: {
-          workspaceId: access.workspaceId,
-          userId,
-          type: 'WORKSPACE_SSCLINICAL_NURSE_LEADER',
-          beforeJson: serializeJson({ ssclinicalNurseLeaderEmail: (existing as any).ssclinicalNurseLeaderEmail || null }),
-          afterJson: serializeJson({ ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null }),
-        },
-      })
-      .catch(() => {});
+    if (hasEmail) {
+      await prisma.configChangeLog
+        .create({
+          data: {
+            workspaceId: access.workspaceId,
+            userId,
+            type: 'WORKSPACE_SSCLINICAL_NURSE_LEADER',
+            beforeJson: serializeJson({ ssclinicalNurseLeaderEmail: (existing as any).ssclinicalNurseLeaderEmail || null }),
+            afterJson: serializeJson({ ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null }),
+          },
+        })
+        .catch(() => {});
+    }
+    if (hasStaffProgram) {
+      await prisma.configChangeLog
+        .create({
+          data: {
+            workspaceId: access.workspaceId,
+            userId,
+            type: 'WORKSPACE_STAFF_DEFAULT_PROGRAM',
+            beforeJson: serializeJson({ staffDefaultProgramId: (existing as any).staffDefaultProgramId || null }),
+            afterJson: serializeJson({ staffDefaultProgramId: (updated as any).staffDefaultProgramId || null }),
+          },
+        })
+        .catch(() => {});
+    }
 
     return {
       ok: true,
       ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null,
+      staffDefaultProgramId: (updated as any).staffDefaultProgramId || null,
       updatedAt: updated.updatedAt.toISOString(),
     };
   });
