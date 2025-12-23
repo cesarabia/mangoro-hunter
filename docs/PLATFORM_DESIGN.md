@@ -113,6 +113,7 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
   - Settings por workspace (ej: `ssclinicalNurseLeaderEmail` para asignación automática en SSClinical).  
 - **Membership**: rol por workspace (OWNER|ADMIN|MEMBER|VIEWER), soft-archive (no delete)  
   - `assignedOnly`: si `true` y rol=MEMBER, el usuario solo ve/gestiona conversaciones asignadas (`Conversation.assignedToId`).  
+  - `staffWhatsAppE164` (opcional): WhatsApp del usuario para **notificaciones staff** (ej: SSClinical Stage=INTERESADO).  
 - **WorkspaceInvite** (archive-only): invitación expirable por email+rol para entrar a un workspace.  
   - Token **no** se loguea; solo se expone al OWNER vía “Copiar link”.  
   - Aceptación (sin fricción y sin reset de password):
@@ -231,6 +232,8 @@ Desacoplar “cuándo correr qué” del agente:
 - RUN_AGENT (principal)
 - SET_STATUS (opcional)
 - ADD_NOTE (opcional)
+- ASSIGN_TO_NURSE_LEADER (SSClinical)
+- NOTIFY_STAFF_WHATSAPP (SSClinical; respeta SAFE MODE + 24h y deja fallback in-app)
 
 ### 7.4 UI Builder (v1)
 Builder simple:

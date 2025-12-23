@@ -176,6 +176,7 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       // V2: stages / notificaciones / menú / copilot follow-up
       'stage_definitions_crud_basic',
       'ssclinical_handoff_interesado_notification',
+      'ssclinical_staff_whatsapp_notification',
       'program_menu_command_menu',
       'copilot_context_followup',
       'ssclinical_onboarding',
@@ -232,6 +233,12 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       return r.ok ? 'PASS' : 'FAIL';
     })();
 
+    const staffWhatsAppNotificationsStatus: DodStatus = (() => {
+      const r = latestByScenario.get('ssclinical_staff_whatsapp_notification');
+      if (!r) return 'PENDING';
+      return r.ok ? 'PASS' : 'FAIL';
+    })();
+
     const programMenuStatus: DodStatus = (() => {
       const a = latestByScenario.get('inbound_program_menu');
       const b = latestByScenario.get('program_menu_command_menu');
@@ -271,6 +278,7 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
         programConsistency: programConsistencyStatus,
         stagesConfigurable: stagesConfigurableStatus,
         inAppNotifications: inAppNotificationsStatus,
+        staffWhatsAppNotifications: staffWhatsAppNotificationsStatus,
         programMenu: programMenuStatus,
         copilotFollowup: copilotFollowupStatus,
       },

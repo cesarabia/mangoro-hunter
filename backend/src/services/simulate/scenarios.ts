@@ -55,6 +55,9 @@ export type ScenarioStep = {
     ssclinicalHandoffInteresadoNotification?: {
       workspaceId?: string;
     };
+    ssclinicalStaffWhatsAppNotification?: {
+      workspaceId?: string;
+    };
     stageAdminConfigurable?: {
       workspaceId?: string;
       slug?: string;
@@ -376,6 +379,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check ssclinical interesado notify',
         expect: { ssclinicalHandoffInteresadoNotification: { workspaceId: 'ssclinical' } },
+      },
+    ],
+  },
+  {
+    id: 'ssclinical_staff_whatsapp_notification',
+    name: 'SSClinical: INTERESADO -> WhatsApp al staff (o bloqueado con razón)',
+    description:
+      'Valida que al pasar a INTERESADO se intente notificar por WhatsApp al staff (según Membership.staffWhatsAppE164), respetando SAFE MODE/24h y dejando logs + fallback in-app.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check ssclinical staff whatsapp',
+        expect: { ssclinicalStaffWhatsAppNotification: { workspaceId: 'ssclinical' } },
       },
     ],
   },

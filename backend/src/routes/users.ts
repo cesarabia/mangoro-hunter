@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { prisma } from '../db/client';
 import { hashPassword } from '../services/passwordService';
 import { resolveWorkspaceAccess, isWorkspaceAdmin, isWorkspaceOwner } from '../services/workspaceAuthService';
+import { normalizeChilePhoneE164 } from '../utils/phone';
 
 function generateTempPassword(): string {
   return crypto.randomBytes(9).toString('base64url');
@@ -26,6 +27,7 @@ export async function registerUserRoutes(app: FastifyInstance) {
       name: m.user.name,
       role: m.role,
       assignedOnly: Boolean((m as any).assignedOnly),
+      staffWhatsAppE164: (m as any).staffWhatsAppE164 || null,
       addedAt: m.createdAt.toISOString(),
       archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null
     }));
@@ -86,7 +88,7 @@ export async function registerUserRoutes(app: FastifyInstance) {
     if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
 
     const { membershipId } = request.params as { membershipId: string };
-    const body = request.body as { role?: string; archived?: boolean; assignedOnly?: boolean };
+    const body = request.body as { role?: string; archived?: boolean; assignedOnly?: boolean; staffWhatsAppE164?: string | null };
 
     const membership = await prisma.membership.findFirst({
       where: { id: membershipId, workspaceId: access.workspaceId }
@@ -107,6 +109,15 @@ export async function registerUserRoutes(app: FastifyInstance) {
     if (typeof body.assignedOnly === 'boolean') {
       data.assignedOnly = body.assignedOnly;
     }
+    if (typeof body.staffWhatsAppE164 !== 'undefined') {
+      const raw = body.staffWhatsAppE164 === null ? '' : String(body.staffWhatsAppE164 || '');
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        data.staffWhatsAppE164 = null;
+      } else {
+        data.staffWhatsAppE164 = normalizeChilePhoneE164(trimmed);
+      }
+    }
 
     const updated = await prisma.membership.update({ where: { id: membershipId }, data });
     return {
@@ -114,6 +125,7 @@ export async function registerUserRoutes(app: FastifyInstance) {
       userId: updated.userId,
       role: updated.role,
       assignedOnly: Boolean((updated as any).assignedOnly),
+      staffWhatsAppE164: (updated as any).staffWhatsAppE164 || null,
       archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null
     };
   });

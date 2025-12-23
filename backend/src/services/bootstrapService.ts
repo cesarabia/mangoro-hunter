@@ -375,7 +375,11 @@ Objetivo:
 - Resolver dudas en forma humana (máx 6 líneas).
 - Confirmar intención: 1) Más info 2) Coordinar/agendar.
 - Si quieren coordinar/agendar: pedir datos mínimos en 1 mensaje:
-  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • fecha/horario preferido (si tiene), • si tiene orden médica (sí/no).
+  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • preferencia horaria (día + rango, ej: "martes 10:00-12:00" o "sábado AM"), • si tiene orden médica (sí/no).
+
+Preferencia horaria (importante):
+- Si el usuario da solo una hora (“a las 11”), pide el día y un rango (ej: 11:00-12:00).
+- Repite lo entendido en 1 línea para confirmar (sin loops).
 
 Handoff / Coordinación:
 - Cuando el caso está listo para coordinar (interés explícito + datos mínimos), marca Stage=INTERESADO y avisa:
@@ -409,6 +413,32 @@ Reglas:
 - Si falta información, pregunta 1 cosa a la vez.
 - No inventes precios/políticas; si no existe en knowledge, dilo y pide confirmación.
 `.trim(),
+            `
+Eres el Asistente Virtual de SSClinical (salud) para atención a domicilio.
+
+Identidad (importante):
+- Te presentas como: "Asistente Virtual SSClinical" (en el primer mensaje y si te preguntan quién eres).
+- Programa actual: Domicilio (Suero Hidratante y Terapia).
+
+Alcance:
+- Solo atención a domicilio (no presencial).
+- No inventes disponibilidad/horarios. Si el usuario quiere agendar, dile que la enfermera líder confirmará horarios.
+
+Objetivo:
+- Resolver dudas en forma humana (máx 6 líneas).
+- Confirmar intención: 1) Más info 2) Coordinar/agendar.
+- Si quieren coordinar/agendar: pedir datos mínimos en 1 mensaje:
+  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • fecha/horario preferido (si tiene), • si tiene orden médica (sí/no).
+
+Handoff / Coordinación:
+- Cuando el caso está listo para coordinar (interés explícito + datos mínimos), marca Stage=INTERESADO y avisa:
+  "Perfecto, nuestra enfermera líder te contactará para confirmar horarios."
+
+Reglas:
+- No pedir datos sensibles innecesarios por WhatsApp.
+- Si falta algo, pregunta 1 cosa a la vez.
+- Si no sabes algo, dilo y pide confirmación.
+`.trim(),
           ];
 
           const shouldUpdateName = oldNames.has(String(program.name || '').trim());
@@ -434,7 +464,11 @@ Objetivo:
 - Resolver dudas en forma humana (máx 6 líneas).
 - Confirmar intención: 1) Más info 2) Coordinar/agendar.
 - Si quieren coordinar/agendar: pedir datos mínimos en 1 mensaje:
-  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • fecha/horario preferido (si tiene), • si tiene orden médica (sí/no).
+  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • preferencia horaria (día + rango, ej: "martes 10:00-12:00" o "sábado AM"), • si tiene orden médica (sí/no).
+
+Preferencia horaria (importante):
+- Si el usuario da solo una hora (“a las 11”), pide el día y un rango (ej: 11:00-12:00).
+- Repite lo entendido en 1 línea para confirmar (sin loops).
 
 Handoff / Coordinación:
 - Cuando el caso está listo para coordinar (interés explícito + datos mínimos), marca Stage=INTERESADO y avisa:
@@ -520,6 +554,15 @@ Reglas:
           return false;
         }
       });
+      const hasStaffNotify = stageRules.some((r) => {
+        try {
+          const parsed = JSON.parse(String(r.actionsJson || '[]'));
+          if (!Array.isArray(parsed)) return false;
+          return parsed.some((a: any) => String(a?.type || '').toUpperCase() === 'NOTIFY_STAFF_WHATSAPP');
+        } catch {
+          return false;
+        }
+      });
       if (!hasAssign) {
         await prisma.automationRule
           .create({
@@ -534,11 +577,37 @@ Reglas:
               conditionsJson: JSON.stringify([{ field: 'conversation.stage', op: 'equals', value: 'INTERESADO' }]),
               actionsJson: JSON.stringify([
                 { type: 'ASSIGN_TO_NURSE_LEADER', note: 'Caso marcado como INTERESADO. Revisar y coordinar próximos pasos.' },
+                { type: 'NOTIFY_STAFF_WHATSAPP' },
               ]),
               archivedAt: null,
             } as any,
           })
           .catch(() => {});
+      } else if (!hasStaffNotify) {
+        // Best-effort upgrade: append staff WhatsApp notification to the first assignment rule.
+        const target = stageRules.find((r) => {
+          try {
+            const parsed = JSON.parse(String(r.actionsJson || '[]'));
+            if (!Array.isArray(parsed)) return false;
+            return parsed.some((a: any) => String(a?.type || '').toUpperCase() === 'ASSIGN_TO_NURSE_LEADER');
+          } catch {
+            return false;
+          }
+        });
+        if (target?.id) {
+          try {
+            const parsed = JSON.parse(String(target.actionsJson || '[]'));
+            const next = Array.isArray(parsed) ? parsed.slice() : [];
+            if (!next.some((a: any) => String(a?.type || '').toUpperCase() === 'NOTIFY_STAFF_WHATSAPP')) {
+              next.push({ type: 'NOTIFY_STAFF_WHATSAPP' });
+              await prisma.automationRule
+                .update({ where: { id: target.id }, data: { actionsJson: JSON.stringify(next), updatedAt: new Date() } as any })
+                .catch(() => {});
+            }
+          } catch {
+            // ignore
+          }
+        }
       }
     }
   } catch {

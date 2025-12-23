@@ -258,7 +258,11 @@ Objetivo:
 - Resolver dudas en forma humana (máx 6 líneas).
 - Confirmar intención: 1) Más info 2) Coordinar/agendar.
 - Si quieren coordinar/agendar: pedir datos mínimos en 1 mensaje:
-  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • fecha/horario preferido (si tiene), • si tiene orden médica (sí/no).
+  • Nombre y comuna/sector, • motivo/servicio (hidratación / sueroterapia), • preferencia horaria (día + rango, ej: "martes 10:00-12:00" o "sábado AM"), • si tiene orden médica (sí/no).
+
+Preferencia horaria (importante):
+- Si el usuario da solo una hora (“a las 11”), pide el día y un rango (ej: 11:00-12:00).
+- Repite lo entendido en 1 línea para confirmar (sin loops).
 
 Handoff / Coordinación:
 - Cuando el caso está listo para coordinar (interés explícito + datos mínimos), marca Stage=INTERESADO y avisa:
@@ -371,6 +375,11 @@ Reglas: no entregar diagnóstico; solo requisitos y próximos pasos.
       if (!Array.isArray(raw)) return false;
       return raw.some((a: any) => String(a?.type || '').toUpperCase() === 'ASSIGN_TO_NURSE_LEADER');
     });
+    const hasNotifyStaffWhatsApp = stageRules.some((r) => {
+      const raw = safeJsonParse(r.actionsJson) ?? [];
+      if (!Array.isArray(raw)) return false;
+      return raw.some((a: any) => String(a?.type || '').toUpperCase() === 'NOTIFY_STAFF_WHATSAPP');
+    });
     if (!hasAssignNurseLeader) {
       await prisma.automationRule
         .create({
@@ -388,10 +397,25 @@ Reglas: no entregar diagnóstico; solo requisitos y próximos pasos.
                 type: 'ASSIGN_TO_NURSE_LEADER',
                 note: 'Caso marcado como INTERESADO. Revisar y coordinar próximos pasos.',
               },
+              { type: 'NOTIFY_STAFF_WHATSAPP' },
             ]),
           },
         })
         .catch(() => {});
+    } else if (!hasNotifyStaffWhatsApp) {
+      const targetRule = stageRules.find((r) => {
+        const raw = safeJsonParse(r.actionsJson) ?? [];
+        if (!Array.isArray(raw)) return false;
+        return raw.some((a: any) => String(a?.type || '').toUpperCase() === 'ASSIGN_TO_NURSE_LEADER');
+      });
+      if (targetRule?.id) {
+        const raw = safeJsonParse(targetRule.actionsJson) ?? [];
+        const next = Array.isArray(raw) ? raw.slice() : [];
+        if (!next.some((a: any) => String(a?.type || '').toUpperCase() === 'NOTIFY_STAFF_WHATSAPP')) {
+          next.push({ type: 'NOTIFY_STAFF_WHATSAPP' });
+          await prisma.automationRule.update({ where: { id: targetRule.id }, data: { actionsJson: serializeJson(next) } }).catch(() => {});
+        }
+      }
     }
 
     const pilotOwnerEmail = normalizeEmail('csarabia@ssclinical.cl');

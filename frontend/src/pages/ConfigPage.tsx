@@ -194,6 +194,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [authorizedNumbersError, setAuthorizedNumbersError] = useState<string | null>(null);
 
   const [users, setUsers] = useState<any[]>([]);
+  const [userStaffWhatsAppDraft, setUserStaffWhatsAppDraft] = useState<Record<string, string>>({});
+  const [userStaffWhatsAppSavingId, setUserStaffWhatsAppSavingId] = useState<string | null>(null);
+  const [userStaffWhatsAppErrorById, setUserStaffWhatsAppErrorById] = useState<Record<string, string>>({});
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('MEMBER');
@@ -408,6 +411,19 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     const data = await apiClient.get('/api/users');
     setUsers(Array.isArray(data) ? data : []);
   };
+  useEffect(() => {
+    setUserStaffWhatsAppDraft((prev) => {
+      const next = { ...prev };
+      for (const u of users) {
+        const id = String(u?.membershipId || '').trim();
+        if (!id) continue;
+        if (typeof next[id] !== 'string') {
+          next[id] = String(u?.staffWhatsAppE164 || '');
+        }
+      }
+      return next;
+    });
+  }, [users]);
   const loadInvites = async (opts?: { includeArchived?: boolean }) => {
     setInvitesError(null);
     try {
@@ -1057,6 +1073,20 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     await apiClient.patch(`/api/users/${membershipId}`, { assignedOnly });
     await loadUsers();
   };
+  const saveUserStaffWhatsApp = async (membershipId: string, staffWhatsAppE164: string) => {
+    setUserStaffWhatsAppSavingId(membershipId);
+    setUserStaffWhatsAppErrorById((prev) => ({ ...prev, [membershipId]: '' }));
+    try {
+      await apiClient.patch(`/api/users/${membershipId}`, {
+        staffWhatsAppE164: staffWhatsAppE164.trim() ? staffWhatsAppE164.trim() : null,
+      });
+      await loadUsers();
+    } catch (err: any) {
+      setUserStaffWhatsAppErrorById((prev) => ({ ...prev, [membershipId]: err.message || 'No se pudo guardar' }));
+    } finally {
+      setUserStaffWhatsAppSavingId((prev) => (prev === membershipId ? null : prev));
+    }
+  };
 
   const inviteUser = async () => {
     setInviteStatus(null);
@@ -1523,7 +1553,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         trigger: 'STAGE_CHANGED',
         priority: 110,
         conditions: [{ field: 'conversation.stage', op: 'equals', value: 'INTERESADO' }],
-        actions: [{ type: 'ASSIGN_TO_NURSE_LEADER', note: 'Caso INTERESADO. Revisar y coordinar.' }]
+        actions: [
+          { type: 'ASSIGN_TO_NURSE_LEADER', note: 'Caso INTERESADO. Revisar y coordinar.' },
+          { type: 'NOTIFY_STAFF_WHATSAPP' }
+        ]
       });
       setAutomationTemplatePickerOpen(false);
       return;
@@ -2633,6 +2666,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Name</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Role</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Scope</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                    WhatsApp notificaciones{' '}
+                    <span title="Se usa para avisos automáticos (ej: cuando un caso pasa a INTERESADO). Formato: +56994830202">ⓘ</span>
+                  </th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>AddedAt</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
                 </tr>
@@ -2668,6 +2705,35 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                       ) : (
                         <span style={{ fontSize: 12, color: '#999' }}>—</span>
                       )}
+                    </td>
+                    <td style={{ padding: 10, fontSize: 13, minWidth: 220 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <input
+                          value={userStaffWhatsAppDraft[String(u.membershipId)] ?? String(u.staffWhatsAppE164 || '')}
+                          onChange={(e) =>
+                            setUserStaffWhatsAppDraft((prev) => ({ ...prev, [String(u.membershipId)]: e.target.value }))
+                          }
+                          placeholder="+56994830202"
+                          style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #ddd', fontSize: 13, width: 160 }}
+                        />
+                        <button
+                          onClick={() =>
+                            saveUserStaffWhatsApp(
+                              String(u.membershipId),
+                              userStaffWhatsAppDraft[String(u.membershipId)] ?? String(u.staffWhatsAppE164 || '')
+                            ).catch(() => {})
+                          }
+                          disabled={userStaffWhatsAppSavingId === String(u.membershipId)}
+                          style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                        >
+                          {userStaffWhatsAppSavingId === String(u.membershipId) ? 'Guardando…' : 'Guardar'}
+                        </button>
+                      </div>
+                      {userStaffWhatsAppErrorById[String(u.membershipId)] ? (
+                        <div style={{ marginTop: 6, fontSize: 12, color: '#b93800' }}>
+                          {userStaffWhatsAppErrorById[String(u.membershipId)]}
+                        </div>
+                      ) : null}
                     </td>
                     <td style={{ padding: 10, fontSize: 13 }}>{u.addedAt}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>

@@ -1696,6 +1696,232 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         }
       }
 
+      const ssclinicalStaffWhatsApp = (step.expect as any)?.ssclinicalStaffWhatsAppNotification;
+      if (ssclinicalStaffWhatsApp && typeof ssclinicalStaffWhatsApp === 'object') {
+        const wsId = String((ssclinicalStaffWhatsApp as any)?.workspaceId || 'ssclinical').trim() || 'ssclinical';
+        const now = new Date();
+
+        const ws = await prisma.workspace
+          .findUnique({
+            where: { id: wsId },
+            select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any },
+          } as any)
+          .catch(() => null);
+        assertions.push({
+          ok: Boolean(ws?.id) && !ws?.archivedAt,
+          message: ws?.id ? (ws.archivedAt ? `ssclinicalStaffWA: workspace ${wsId} archived` : `ssclinicalStaffWA: workspace ${wsId} OK`) : `ssclinicalStaffWA: workspace ${wsId} missing`,
+        });
+
+        const leaderEmail = String((ws as any)?.ssclinicalNurseLeaderEmail || '').trim().toLowerCase();
+        if (!leaderEmail) {
+          assertions.push({ ok: false, message: 'ssclinicalStaffWA: nurseLeaderEmail missing' });
+        } else {
+          const leaderUser = await prisma.user.findUnique({ where: { email: leaderEmail }, select: { id: true } }).catch(() => null);
+          const leaderMembership = leaderUser?.id
+            ? await prisma.membership
+                .findFirst({
+                  where: { workspaceId: wsId, userId: leaderUser.id, archivedAt: null },
+                  select: { id: true, staffWhatsAppE164: true as any },
+                })
+                .catch(() => null)
+            : null;
+          assertions.push({
+            ok: Boolean(leaderMembership?.id),
+            message: leaderMembership?.id ? 'ssclinicalStaffWA: leader membership OK' : 'ssclinicalStaffWA: leader membership missing',
+          });
+
+          let phoneLine = await prisma.phoneLine.findFirst({
+            where: { workspaceId: wsId, archivedAt: null, isActive: true },
+            select: { id: true },
+          });
+          let tempPhoneLineId: string | null = null;
+          if (!phoneLine?.id) {
+            tempPhoneLineId = `scenario-ssclinical-staffwa-line-${Date.now()}`;
+            const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+            const created = await prisma.phoneLine
+              .create({
+                data: {
+                  id: tempPhoneLineId,
+                  workspaceId: wsId,
+                  alias: 'Scenario SSClinical StaffWA (temp)',
+                  phoneE164: null,
+                  waPhoneNumberId,
+                  isActive: true,
+                  archivedAt: null,
+                  needsAttention: false,
+                } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            phoneLine = created?.id ? { id: created.id } : null;
+          }
+
+          if (!phoneLine?.id || !leaderUser?.id || !leaderMembership?.id) {
+            assertions.push({ ok: false, message: 'ssclinicalStaffWA: phoneLine o leaderUser/membership missing' });
+          } else {
+            // Best-effort: set staff WhatsApp to the TEST number (allowlist) for deterministic validation.
+            const staffE164 = '+56994830202';
+            const previousStaff = String((leaderMembership as any).staffWhatsAppE164 || '').trim();
+            if (previousStaff !== staffE164) {
+              await prisma.membership.update({ where: { id: leaderMembership.id }, data: { staffWhatsAppE164: staffE164 } as any }).catch(() => {});
+            }
+
+            // Pre-create staff conversation and an inbound message to open the 24h window.
+            const staffWaId = '56994830202';
+            let staffContact = await prisma.contact
+              .findFirst({ where: { workspaceId: wsId, waId: staffWaId } })
+              .catch(() => null);
+            let staffContactCreated = false;
+            if (!staffContact) {
+              staffContactCreated = true;
+              staffContact = await prisma.contact
+                .create({
+                  data: { workspaceId: wsId, waId: staffWaId, phone: `+${staffWaId}`, displayName: 'Scenario Staff', archivedAt: null } as any,
+                })
+                .catch(() => null);
+            }
+            let staffConv = staffContact?.id
+              ? await prisma.conversation
+                  .findFirst({
+                    where: { workspaceId: wsId, phoneLineId: phoneLine.id, contactId: staffContact.id, isAdmin: true, archivedAt: null },
+                    orderBy: { updatedAt: 'desc' },
+                  })
+                  .catch(() => null)
+              : null;
+            let staffConvCreated = false;
+            if (!staffConv && staffContact?.id) {
+              staffConvCreated = true;
+              staffConv = await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: phoneLine.id,
+                    programId: null,
+                    contactId: staffContact.id,
+                    status: 'OPEN',
+                    channel: 'staff',
+                    isAdmin: true,
+                    aiMode: 'OFF',
+                    archivedAt: null,
+                  } as any,
+                })
+                .catch(() => null);
+            }
+            if (staffConv?.id) {
+              await prisma.message
+                .create({
+                  data: {
+                    conversationId: staffConv.id,
+                    direction: 'INBOUND',
+                    text: 'activar',
+                    timestamp: now,
+                    read: true,
+                  } as any,
+                })
+                .catch(() => {});
+            }
+
+            // Create candidate conversation and set stage INTERESADO (triggers assignment + staff WA notify).
+            const contact = await prisma.contact
+              .create({
+                data: { workspaceId: wsId, displayName: 'Scenario SSClinical StaffWA', comuna: 'Providencia', availabilityText: 'martes 10:00-12:00', archivedAt: null } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            const conv = contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      programId: null,
+                      contactId: contact.id,
+                      status: 'NEW',
+                      conversationStage: 'NUEVO',
+                      channel: 'system',
+                      isAdmin: false,
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+            if (!conv?.id) {
+              assertions.push({ ok: false, message: 'ssclinicalStaffWA: no se pudo crear conversación cliente' });
+            } else {
+              await prisma.conversation.update({ where: { id: conv.id }, data: { conversationStage: 'INTERESADO' } as any }).catch(() => {});
+              await runAutomations({
+                app,
+                workspaceId: wsId,
+                eventType: 'STAGE_CHANGED',
+                conversationId: conv.id,
+                transportMode: 'NULL',
+              });
+
+              const assigned = await prisma.conversation.findUnique({ where: { id: conv.id }, select: { assignedToId: true } }).catch(() => null);
+              const assignedOk = String(assigned?.assignedToId || '') === String(leaderUser.id || '');
+              assertions.push({
+                ok: assignedOk,
+                message: assignedOk ? 'ssclinicalStaffWA: assignedToId OK' : `ssclinicalStaffWA: expected assignedToId=${leaderUser.id}, got ${String(assigned?.assignedToId || '—')}`,
+              });
+
+              const notif = await prisma.inAppNotification
+                .findFirst({
+                  where: { workspaceId: wsId, userId: leaderUser.id, conversationId: conv.id, archivedAt: null },
+                  orderBy: { createdAt: 'desc' },
+                  select: { id: true },
+                })
+                .catch(() => null);
+              assertions.push({
+                ok: Boolean(notif?.id),
+                message: notif?.id ? 'ssclinicalStaffWA: in-app notification OK' : 'ssclinicalStaffWA: missing in-app notification',
+              });
+
+              const today = now.toISOString().slice(0, 10);
+              const expectedDedupeKey = `staff_whatsapp:${conv.id}:INTERESADO:${today}`;
+              const outbound = staffConv?.id
+                ? await prisma.outboundMessageLog
+                    .findFirst({
+                      where: { conversationId: staffConv.id, dedupeKey: expectedDedupeKey },
+                      orderBy: { createdAt: 'desc' },
+                      select: { id: true, blockedReason: true },
+                    })
+                    .catch(() => null)
+                : null;
+              const outboundOk = Boolean(outbound?.id);
+              assertions.push({
+                ok: outboundOk,
+                message: outboundOk
+                  ? `ssclinicalStaffWA: outbound log OK${outbound?.blockedReason ? ` (blocked: ${outbound.blockedReason})` : ''}`
+                  : `ssclinicalStaffWA: missing outbound log (dedupeKey=${expectedDedupeKey})`,
+              });
+
+              // Cleanup: archive-only.
+              await prisma.inAppNotification.updateMany({ where: { id: notif?.id || '' }, data: { archivedAt: now } as any }).catch(() => {});
+              await prisma.conversation.updateMany({ where: { id: conv.id }, data: { archivedAt: now } as any }).catch(() => {});
+              await prisma.contact.updateMany({ where: { id: contact?.id || '' }, data: { archivedAt: now } as any }).catch(() => {});
+
+              if (staffConvCreated && staffConv?.id) {
+                await prisma.conversation.updateMany({ where: { id: staffConv.id }, data: { archivedAt: now } as any }).catch(() => {});
+              }
+              if (staffContactCreated && staffContact?.id) {
+                await prisma.contact.updateMany({ where: { id: staffContact.id }, data: { archivedAt: now } as any }).catch(() => {});
+              }
+            }
+
+            // Restore membership staff WhatsApp if we changed it.
+            if (previousStaff !== staffE164) {
+              await prisma.membership.update({ where: { id: leaderMembership.id }, data: { staffWhatsAppE164: previousStaff || null } as any }).catch(() => {});
+            }
+
+            if (tempPhoneLineId) {
+              await prisma.phoneLine.updateMany({ where: { id: tempPhoneLineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+            }
+          }
+        }
+      }
+
       const stageAdminConfigurable = (step.expect as any)?.stageAdminConfigurable;
       if (stageAdminConfigurable && typeof stageAdminConfigurable === 'object') {
         const wsId = String((stageAdminConfigurable as any)?.workspaceId || 'scenario-stage-config').trim() || 'scenario-stage-config';

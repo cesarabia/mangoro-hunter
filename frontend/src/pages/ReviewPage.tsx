@@ -47,6 +47,7 @@ const DOD_ITEMS: DodItem[] = [
   { id: 'programConsistency', label: 'Program consistency: Sugerir + RUN_AGENT + Automations usan Program correcto', kind: 'auto' },
   { id: 'stagesConfigurable', label: 'Stages configurables: CRUD + default + set en conversación', kind: 'auto' },
   { id: 'inAppNotifications', label: 'Notificaciones in-app: INTERESADO -> asigna + notifica (SSClinical)', kind: 'auto' },
+  { id: 'staffWhatsAppNotifications', label: 'Notificación WhatsApp staff: INTERESADO -> WhatsApp (o bloqueo con razón) + fallback in-app', kind: 'auto' },
   { id: 'programMenu', label: 'Program Menu: por PhoneLine + comando “menu”', kind: 'auto' },
   { id: 'copilotFollowup', label: 'Copilot: follow-up (“sí”) ejecuta lo prometido sin repreguntar', kind: 'auto' },
   { id: 'inboxUx', label: 'Inbox UX: chat-first + responsive sin perder estado', kind: 'manual' },

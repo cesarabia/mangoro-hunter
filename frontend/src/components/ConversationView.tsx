@@ -588,7 +588,17 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     { key: 'SELLER', label: 'Ventas' },
     { key: 'OFF', label: 'Manual' }
   ];
-  const programOptions = Array.isArray(programs) ? programs : [];
+  const allProgramOptions = Array.isArray(programs) ? programs : [];
+  const activeProgramOptions = allProgramOptions.filter((p: any) => p && p.isActive && !p.archivedAt);
+  const currentProgramOption =
+    programId && allProgramOptions.find((p: any) => String(p?.id || '') === String(programId)) ? allProgramOptions.find((p: any) => String(p?.id || '') === String(programId)) : null;
+  const programOptions = (() => {
+    if (currentProgramOption && !currentProgramOption.isActive) {
+      const exists = activeProgramOptions.some((p: any) => String(p?.id || '') === String(currentProgramOption.id));
+      return exists ? activeProgramOptions : [currentProgramOption, ...activeProgramOptions];
+    }
+    return activeProgramOptions;
+  })();
   const activeStageOptions = useMemo(() => {
     const list = Array.isArray(workspaceStages) ? workspaceStages : [];
     return list
@@ -871,8 +881,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   >
                     <option value="">—</option>
                     {programOptions.map((p: any) => (
-                      <option key={p.id} value={p.id}>
+                      <option key={p.id} value={p.id} disabled={!p.isActive}>
                         {p.name}
+                        {!p.isActive ? ' (Inactivo)' : ''}
                       </option>
                     ))}
                   </select>

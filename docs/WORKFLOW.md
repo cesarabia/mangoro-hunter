@@ -16,6 +16,10 @@ Iterar rápido **sin romper DEV/PROD/pilotos**, con evidencia reproducible (**lo
 5) WhatsApp:
    - Respetar ventana 24h (fuera → template; dentro → texto permitido).
    - Idempotencia inbound (por `Message.waMessageId`) y outbound (dedupeKey + anti‑loop).
+   - **Notificaciones a staff (SSClinical)**:
+     - Se configuran por usuario (workspace) en `Usuarios → WhatsApp de notificaciones` (E.164).
+     - Se disparan por automation (ej: `STAGE_CHANGED` a `INTERESADO`) y respetan SAFE MODE + 24h.
+     - Si se bloquea/falla, debe existir fallback **in‑app** + logs (Outbound blockedReason).
 
 ## Ciclo por iteración (siempre igual)
 1) **Definir entregables y criterios click‑only** (qué se valida desde UI).
@@ -49,3 +53,12 @@ Iterar rápido **sin romper DEV/PROD/pilotos**, con evidencia reproducible (**lo
 - Logs y replay/simulator funcionando (sin WhatsApp real).
 - 1 caso de negocio end‑to‑end validado (ej: SSClinical handoff + notificación + asignación).
 
+## Troubleshooting rápido (WhatsApp staff)
+Si un caso pasa a `INTERESADO` y **no llega WhatsApp al staff**:
+1) Config → Usuarios: revisar **WhatsApp de notificaciones** (formato `+569...`).
+2) Ayuda/QA → Logs → **Outbound**:
+   - `SAFE_OUTBOUND_BLOCKED:*`: estás en SAFE MODE y el número no está en allowlist (en DEV solo admin/test).
+   - `OUTSIDE_24H_REQUIRES_TEMPLATE`: fuera de ventana 24h (solución: pedir al staff que envíe “activar” al número de la línea para abrir ventana).
+   - `NO_CONTACTAR`: el contacto está marcado como NO_CONTACTAR (solo opt‑out).
+   - `DEDUPED_*`: ya se envió (dedupe por caso+stage+día).
+3) Ayuda/QA → Notificaciones: debe existir una notificación in‑app de fallback si el WhatsApp no se pudo enviar.
