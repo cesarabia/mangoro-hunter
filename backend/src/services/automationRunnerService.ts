@@ -1144,16 +1144,22 @@ export async function runAutomations(params: {
           const sendResult = exec.results?.[0] || null;
           const blockedReason = (sendResult as any)?.blockedReason || null;
           const blocked = Boolean((sendResult as any)?.blocked);
+          const providerResult = (sendResult as any)?.details?.sendResult || null;
+          const providerFailed = providerResult && providerResult.success === false;
 
-          if (blocked) {
+          if (blocked || providerFailed) {
             await createInAppNotification({
               workspaceId: params.workspaceId,
               userId: targetUser.id,
               conversationId: conversation.id,
-              type: 'STAFF_WHATSAPP_BLOCKED',
-              title: 'No se pudo enviar WhatsApp al staff',
-              body: blockedReason ? `Motivo: ${blockedReason}` : 'Motivo: bloqueo',
-              data: { blockedReason, to: staffE164, dedupeKey },
+              type: blocked ? 'STAFF_WHATSAPP_BLOCKED' : 'STAFF_WHATSAPP_FAILED',
+              title: blocked ? 'No se pudo enviar WhatsApp al staff' : 'Falló el envío WhatsApp al staff',
+              body: blocked
+                ? blockedReason
+                  ? `Motivo: ${blockedReason}`
+                  : 'Motivo: bloqueo'
+                : String(providerResult?.error || 'Error desconocido'),
+              data: { blockedReason: blockedReason || null, to: staffE164, dedupeKey, sendError: providerResult?.error || null },
               dedupeKey: `staff_wa_block:${conversation.id}:${stage}:${today}:${targetUser.id}`,
             }).catch(() => {});
           }
