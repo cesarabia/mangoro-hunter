@@ -1,13 +1,15 @@
 import OpenAI from 'openai';
 import { prisma } from '../../db/client';
 import { getEffectiveOpenAiKey } from '../aiService';
-import { getSystemConfig, DEFAULT_AI_MODEL, normalizeModelId } from '../configService';
+import { getSystemConfig, DEFAULT_AI_MODEL } from '../configService';
 import { serializeJson } from '../../utils/json';
 import { AgentResponse, AgentResponseSchema } from './commandSchema';
 import { normalizeText, piiSanitizeText, resolveLocation, stableHash, validateRut } from './tools';
 import { validateAgentResponseSemantics } from './semanticValidation';
 import { repairAgentResponseBeforeValidation } from './agentResponseRepair';
 import { normalizeWhatsAppId } from '../../utils/whatsapp';
+import { createChatCompletionWithModelFallback } from '../openAiChatCompletionService';
+import { resolveModelChain } from '../modelResolutionService';
 
 type WhatsAppWindowStatus = 'IN_24H' | 'OUTSIDE_24H';
 
@@ -723,6 +725,7 @@ export async function runAgent(event: AgentEvent): Promise<{
         `  - ADD_NOTE (conversationId, text)`,
         `  - SET_STAGE (conversationId, stageSlug, reason?)`,
         `  - SEND_CUSTOMER_MESSAGE (conversationId, text) [respeta SAFE MODE + 24h + NO_CONTACTAR]`,
+        `- Si el staff pide "clientes nuevos/casos nuevos/mis casos", primero ejecuta LIST_CASES y luego responde con un listado corto.`,
         `- Regla: no alucines. Si falta información del caso, usa GET_CASE_SUMMARY o pide una aclaración breve.`,
         '',
         programPromptBase,
@@ -757,7 +760,16 @@ export async function runAgent(event: AgentEvent): Promise<{
   });
 
   const client = new OpenAI({ apiKey });
-  const model = normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+  const resolvedModels = resolveModelChain({
+    modelOverride: (config as any).aiModelOverride,
+    modelAlias: (config as any).aiModelAlias,
+    legacyModel: config.aiModel,
+    defaultModel: DEFAULT_AI_MODEL,
+  });
+  let modelRequested = resolvedModels.modelRequested;
+  let modelResolved = modelRequested;
+  let activeModel = modelRequested;
+  const fallbackModels = resolvedModels.modelChain.slice(1);
   let usagePromptTokens = 0;
   let usageCompletionTokens = 0;
   let usageTotalTokens = 0;
@@ -807,15 +819,21 @@ export async function runAgent(event: AgentEvent): Promise<{
     let invalidAttempts = 0;
     while (safetyIterations < 6) {
       safetyIterations += 1;
-      const completion = await client.chat.completions.create({
-        model,
-        messages,
-        tools: tools as any,
-        tool_choice: 'auto',
-        temperature: 0.2,
-        max_tokens: 900,
-        response_format: { type: 'json_object' } as any,
-      });
+      const completionResult = await createChatCompletionWithModelFallback(
+        client,
+        {
+          messages,
+          tools: tools as any,
+          tool_choice: 'auto',
+          temperature: 0.2,
+          max_tokens: 900,
+          response_format: { type: 'json_object' } as any,
+        },
+        [activeModel, ...fallbackModels]
+      );
+      const completion = completionResult.completion;
+      activeModel = completionResult.modelResolved;
+      modelResolved = completionResult.modelResolved;
       const usage: any = (completion as any)?.usage;
       if (usage) {
         usagePromptTokens += Number(usage.prompt_tokens || 0) || 0;
@@ -961,7 +979,15 @@ export async function runAgent(event: AgentEvent): Promise<{
 
       await prisma.agentRunLog.update({
         where: { id: runLog.id },
-        data: { status: 'PLANNED', commandsJson: serializeJson(validated.data) },
+        data: {
+          status: 'PLANNED',
+          commandsJson: serializeJson(validated.data),
+          resultsJson: serializeJson({
+            modelRequested,
+            modelResolved,
+            modelFallbackUsed: modelResolved !== modelRequested,
+          }),
+        },
       });
 
       await prisma.aiUsageLog
@@ -969,7 +995,9 @@ export async function runAgent(event: AgentEvent): Promise<{
           data: {
             workspaceId: event.workspaceId,
             actor: 'AGENT_RUNTIME',
-            model,
+            model: modelResolved,
+            modelRequested,
+            modelResolved,
             inputTokens: usagePromptTokens,
             outputTokens: usageCompletionTokens,
             totalTokens: usageTotalTokens,
@@ -1003,7 +1031,9 @@ export async function runAgent(event: AgentEvent): Promise<{
         data: {
           workspaceId: event.workspaceId,
           actor: 'AGENT_RUNTIME',
-          model,
+          model: modelResolved,
+          modelRequested,
+          modelResolved,
           inputTokens: usagePromptTokens,
           outputTokens: usageCompletionTokens,
           totalTokens: usageTotalTokens,

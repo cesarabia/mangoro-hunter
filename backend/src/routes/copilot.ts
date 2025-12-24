@@ -15,6 +15,7 @@ import {
 import { resolveWorkspaceAccess, isWorkspaceAdmin, isWorkspaceOwner } from '../services/workspaceAuthService';
 import { serializeJson } from '../utils/json';
 import { SCENARIOS, getScenario } from '../services/simulate/scenarios';
+import { createChatCompletionWithModelFallback, getUniqueModelFallbackChain } from '../services/openAiChatCompletionService';
 
 const ViewSchema = z.enum(['inbox', 'inactive', 'simulator', 'agenda', 'config', 'review']);
 const ConfigTabSchema = z.enum(['workspace', 'integrations', 'users', 'phoneLines', 'programs', 'automations', 'logs', 'usage']);
@@ -962,11 +963,17 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
     }
 
     const client = new OpenAI({ apiKey });
-    // Copilot default model (V2): prefer gpt-5-mini (normalized to gpt-5-chat-latest) unless the workspace explicitly chose a different model.
-    const configuredModel = normalizeModelId(config.aiModel || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
-    const model = config.aiModel && normalizeModelId(config.aiModel) !== normalizeModelId(DEFAULT_AI_MODEL)
-      ? (normalizeModelId(config.aiModel) || configuredModel)
-      : (normalizeModelId('gpt-5-mini') || configuredModel);
+    const modelOverride = (typeof (config as any).aiModelOverride === 'string' ? (config as any).aiModelOverride.trim() : '') || null;
+    const modelAliasStored = (typeof (config as any).aiModelAlias === 'string' ? (config as any).aiModelAlias.trim() : '') || config.aiModel?.trim() || null;
+    const configuredAliasResolved = normalizeModelId(modelAliasStored || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+    const hasExplicitModel =
+      Boolean(modelOverride) ||
+      Boolean((config as any).aiModelAlias) ||
+      (config.aiModel && normalizeModelId(config.aiModel) !== normalizeModelId(DEFAULT_AI_MODEL));
+    const defaultCopilotAliasResolved = normalizeModelId('gpt-5-mini') || configuredAliasResolved;
+    const modelAliasResolved = hasExplicitModel ? configuredAliasResolved : defaultCopilotAliasResolved;
+    const modelChain = getUniqueModelFallbackChain([modelOverride || modelAliasResolved, modelAliasResolved, DEFAULT_AI_MODEL]);
+    const modelRequested = modelChain[0] || DEFAULT_AI_MODEL;
 
     const system = `
 Eres el Copilot interno de Hunter CRM (Agent OS).
@@ -1054,17 +1061,23 @@ Tu salida debe ser SOLO un JSON válido con el shape:
     let usagePrompt = 0;
     let usageCompletion = 0;
     let usageTotal = 0;
+    let modelResolved = modelRequested;
 
     try {
-      const completion = await client.chat.completions.create({
-        model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: serializeJson({ userMessage: text, context }) },
-        ],
-        temperature: 0.2,
-        max_tokens: 350,
-      });
+      const completionResult = await createChatCompletionWithModelFallback(
+        client,
+        {
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: serializeJson({ userMessage: text, context }) },
+          ],
+          temperature: 0.2,
+          max_tokens: 350,
+        },
+        modelChain
+      );
+      const completion = completionResult.completion;
+      modelResolved = completionResult.modelResolved;
 
       usagePrompt = completion.usage?.prompt_tokens || 0;
       usageCompletion = completion.usage?.completion_tokens || 0;
@@ -1121,7 +1134,9 @@ Tu salida debe ser SOLO un JSON válido con el shape:
             data: {
               workspaceId: access.workspaceId,
               actor: 'COPILOT',
-              model,
+              model: modelResolved,
+              modelRequested,
+              modelResolved,
               inputTokens: usagePrompt,
               outputTokens: usageCompletion,
               totalTokens: usageTotal,
@@ -1151,7 +1166,9 @@ Tu salida debe ser SOLO un JSON válido con el shape:
           data: {
             workspaceId: access.workspaceId,
             actor: 'COPILOT',
-            model,
+            model: modelResolved,
+            modelRequested,
+            modelResolved,
             inputTokens: usagePrompt,
             outputTokens: usageCompletion,
             totalTokens: usageTotal,

@@ -600,6 +600,8 @@ model AiUsageLog {
   workspaceId   String     @default("default")
   actor         String
   model         String
+  modelRequested String?
+  modelResolved  String?
   inputTokens   Int        @default(0)
   outputTokens  Int        @default(0)
   totalTokens   Int        @default(0)
@@ -739,6 +741,8 @@ model SystemConfig {
   openAiApiKey    String?
   aiPrompt        String?
   aiModel         String?
+  aiModelOverride String?
+  aiModelAlias    String?
   recruitJobSheet String?
   recruitFaq      String?
   adminEmail      String?
@@ -746,9 +750,13 @@ model SystemConfig {
   adminWaIds      String?
   adminAiPrompt   String?
   adminAiModel    String?
+  adminAiModelOverride String?
+  adminAiModelAlias    String?
   adminAiAddendum String?
   interviewAiPrompt String?
   interviewAiModel  String?
+  interviewAiModelOverride String?
+  interviewAiModelAlias    String?
   templateInterviewInvite String?
   templateGeneralFollowup String?
   templateLanguageCode String?

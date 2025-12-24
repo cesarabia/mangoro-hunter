@@ -160,6 +160,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [assignedToId, setAssignedToId] = useState<string>('');
   const [assignmentSaving, setAssignmentSaving] = useState(false);
   const [assignmentError, setAssignmentError] = useState<string | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     const handleResize = () => setIsNarrow(window.innerWidth < 900);
@@ -1234,8 +1235,53 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         {hasConversation && !within24h && !isAdmin && (
           <div style={{ fontSize: 13, color: '#b93800' }}>Fuera de ventana 24h. Debes usar una plantilla.</div>
         )}
+        {hasConversation && isStaff && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => {
+                onDraftChange('clientes nuevos');
+                composerRef.current?.focus();
+              }}
+              style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+            >
+              Casos nuevos
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onDraftChange('buscar caso de ');
+                composerRef.current?.focus();
+              }}
+              style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+            >
+              Buscar
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onDraftChange('cambiar estado del caso <id> a <STAGE>');
+                composerRef.current?.focus();
+              }}
+              style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+            >
+              Cambiar estado
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onDraftChange('enviar mensaje al cliente del caso <id>: ');
+                composerRef.current?.focus();
+              }}
+              style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+            >
+              Enviar msg
+            </button>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8 }}>
           <textarea
+            ref={composerRef}
             style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc', minHeight: 40 }}
             value={draftText}
             onChange={e => onDraftChange(e.target.value)}

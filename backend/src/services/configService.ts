@@ -289,6 +289,14 @@ export function normalizeModelId(value?: string | null): string | null {
   return "gpt-4.1-mini";
 }
 
+function normalizeModelOverride(value?: string | null): string | null {
+  return normalizeValue(value);
+}
+
+function normalizeModelAlias(value?: string | null): string | null {
+  return normalizeValue(value);
+}
+
 export async function updateWhatsAppConfig(input: {
   whatsappBaseUrl?: string | null;
   whatsappPhoneId?: string | null;
@@ -437,14 +445,33 @@ export async function updateAiModel(aiModel?: string | null): Promise<SystemConf
   return prisma.systemConfig.update({
     where: { id: config.id },
     data: {
-      aiModel: normalizeModelId(aiModel)
+      aiModelOverride: normalizeModelOverride(aiModel)
     }
+  });
+}
+
+export async function updateAiModelConfig(input: { modelOverride?: string | null; modelAlias?: string | null }): Promise<SystemConfig> {
+  const config = await ensureConfigRecord();
+  const data: any = {};
+  if (typeof input.modelOverride !== 'undefined') {
+    data.aiModelOverride = normalizeModelOverride(input.modelOverride);
+  }
+  if (typeof input.modelAlias !== 'undefined') {
+    data.aiModelAlias = normalizeModelAlias(input.modelAlias);
+    data.aiModel = normalizeModelAlias(input.modelAlias);
+  }
+  if (Object.keys(data).length === 0) return config;
+  return prisma.systemConfig.update({
+    where: { id: config.id },
+    data,
   });
 }
 
 export async function updateAdminAiConfig(input: {
   prompt?: string | null;
   model?: string | null;
+  modelOverride?: string | null;
+  modelAlias?: string | null;
   addendum?: string | null;
 }): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
@@ -452,8 +479,13 @@ export async function updateAdminAiConfig(input: {
   if (typeof input.prompt !== 'undefined') {
     data.adminAiPrompt = normalizeValue(input.prompt);
   }
-  if (typeof input.model !== 'undefined') {
-    data.adminAiModel = normalizeModelId(input.model);
+  const override = typeof input.modelOverride !== 'undefined' ? input.modelOverride : typeof input.model !== 'undefined' ? input.model : undefined;
+  if (typeof override !== 'undefined') {
+    (data as any).adminAiModelOverride = normalizeModelOverride(override);
+  }
+  if (typeof input.modelAlias !== 'undefined') {
+    (data as any).adminAiModelAlias = normalizeModelAlias(input.modelAlias);
+    data.adminAiModel = normalizeModelAlias(input.modelAlias);
   }
   if (typeof input.addendum !== 'undefined') {
     data.adminAiAddendum = normalizeValue(input.addendum);
@@ -499,14 +531,21 @@ export async function updateAdminAccount(email: string, passwordHash: string): P
 export async function updateInterviewAiConfig(input: {
   prompt?: string | null;
   model?: string | null;
+  modelOverride?: string | null;
+  modelAlias?: string | null;
 }): Promise<SystemConfig> {
   const config = await ensureConfigRecord();
   const data: Record<string, string | null | undefined> = {};
   if (typeof input.prompt !== 'undefined') {
     data.interviewAiPrompt = normalizeValue(input.prompt);
   }
-  if (typeof input.model !== 'undefined') {
-    data.interviewAiModel = normalizeModelId(input.model);
+  const override = typeof input.modelOverride !== 'undefined' ? input.modelOverride : typeof input.model !== 'undefined' ? input.model : undefined;
+  if (typeof override !== 'undefined') {
+    (data as any).interviewAiModelOverride = normalizeModelOverride(override);
+  }
+  if (typeof input.modelAlias !== 'undefined') {
+    (data as any).interviewAiModelAlias = normalizeModelAlias(input.modelAlias);
+    data.interviewAiModel = normalizeModelAlias(input.modelAlias);
   }
   return prisma.systemConfig.update({
     where: { id: config.id },
@@ -630,7 +669,11 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         whatsappPricing: null,
         interviewAiPrompt: DEFAULT_INTERVIEW_AI_PROMPT,
         interviewAiModel: DEFAULT_INTERVIEW_AI_MODEL,
+        interviewAiModelAlias: DEFAULT_INTERVIEW_AI_MODEL,
         aiModel: DEFAULT_AI_MODEL,
+        aiModelAlias: DEFAULT_AI_MODEL,
+        adminAiModel: DEFAULT_ADMIN_AI_MODEL,
+        adminAiModelAlias: DEFAULT_ADMIN_AI_MODEL,
         recruitJobSheet: DEFAULT_RECRUIT_JOB_SHEET,
         recruitFaq: DEFAULT_RECRUIT_FAQ,
         adminNotificationDetailLevel: DEFAULT_ADMIN_NOTIFICATION_DETAIL_LEVEL,
@@ -700,11 +743,6 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.aiModel) {
     updates.aiModel = DEFAULT_AI_MODEL;
-  } else {
-    const normalized = normalizeModelId(existing.aiModel);
-    if (normalized && normalized !== existing.aiModel) {
-      updates.aiModel = normalized;
-    }
   }
   if (typeof (existing as any).adminAiAddendum === 'undefined') {
     updates.adminAiAddendum = DEFAULT_ADMIN_AI_ADDENDUM;
@@ -769,18 +807,8 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.interviewAiModel) {
     updates.interviewAiModel = DEFAULT_INTERVIEW_AI_MODEL;
-  } else {
-    const normalizedInterview = normalizeModelId(existing.interviewAiModel);
-    if (normalizedInterview && normalizedInterview !== existing.interviewAiModel) {
-      updates.interviewAiModel = normalizedInterview;
-    }
   }
-  if (existing.adminAiModel) {
-    const normalizedAdmin = normalizeModelId(existing.adminAiModel);
-    if (normalizedAdmin && normalizedAdmin !== existing.adminAiModel) {
-      updates.adminAiModel = normalizedAdmin;
-    }
-  }
+  // No normalizar modelos persistidos: usar fallback en runtime sin mutar DB.
   if (Object.keys(updates).length > 0) {
     existing = await prisma.systemConfig.update({
       where: { id: existing.id },

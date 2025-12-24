@@ -95,6 +95,7 @@ export const CopilotWidget: React.FC<{
   const [threadId, setThreadId] = useState<string | null>(null);
   const [threadsLoading, setThreadsLoading] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const sendTextRef = useRef<((text: string) => Promise<void>) | null>(null);
 
   const selectedConversationId = (() => {
     try {
@@ -115,6 +116,25 @@ export const CopilotWidget: React.FC<{
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
+  }, []);
+
+  useEffect(() => {
+    const handler = (ev: any) => {
+      const detail = ev?.detail || {};
+      const text = typeof detail?.text === 'string' ? String(detail.text) : '';
+      const autoSend = Boolean(detail?.autoSend);
+      setOpen(true);
+      setShowHistory(false);
+      if (text) {
+        if (autoSend) {
+          sendTextRef.current?.(text).catch(() => {});
+        } else {
+          setInput(text);
+        }
+      }
+    };
+    window.addEventListener('copilot:open', handler as any);
+    return () => window.removeEventListener('copilot:open', handler as any);
   }, []);
 
   useEffect(() => {
@@ -352,8 +372,8 @@ export const CopilotWidget: React.FC<{
     }
   };
 
-  const send = async () => {
-    const text = input.trim();
+  const sendText = async (rawText: string) => {
+    const text = String(rawText || '').trim();
     if (!text || loading) return;
     setError(null);
     setLoading(true);
@@ -398,6 +418,10 @@ export const CopilotWidget: React.FC<{
       setLoading(false);
     }
   };
+
+  sendTextRef.current = sendText;
+
+  const send = async () => sendText(input);
 
   const bubbleStyle = (role: 'user' | 'assistant'): React.CSSProperties => ({
     maxWidth: '92%',

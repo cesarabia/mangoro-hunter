@@ -4,7 +4,9 @@ import { prisma } from '../db/client';
 import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceAuthService';
 import { serializeJson } from '../utils/json';
 import { getEffectiveOpenAiKey } from '../services/aiService';
-import { DEFAULT_AI_MODEL, getSystemConfig, normalizeModelId } from '../services/configService';
+import { DEFAULT_AI_MODEL, getSystemConfig } from '../services/configService';
+import { createChatCompletionWithModelFallback } from '../services/openAiChatCompletionService';
+import { resolveModelChain } from '../services/modelResolutionService';
 
 function slugify(value: string): string {
   return value
@@ -540,7 +542,14 @@ export async function registerProgramRoutes(app: FastifyInstance) {
     const apiKey = getEffectiveOpenAiKey(config);
     if (!apiKey) return reply.code(400).send({ error: 'OpenAI key no configurada (Config → Integraciones).' });
 
-    const model = normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+    const resolvedModels = resolveModelChain({
+      modelOverride: (config as any).aiModelOverride,
+      modelAlias: (config as any).aiModelAlias,
+      legacyModel: config.aiModel,
+      defaultModel: DEFAULT_AI_MODEL,
+    });
+    const modelChain = resolvedModels.modelChain;
+    const modelRequested = resolvedModels.modelRequested;
     const client = new OpenAI({ apiKey });
 
     const knowledgeText = (() => {
@@ -596,15 +605,20 @@ Reglas:
       tools: toolsText || null,
     });
 
-    const completion = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.2,
-      max_tokens: 1200,
-    });
+    const completionResult = await createChatCompletionWithModelFallback(
+      client,
+      {
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.2,
+        max_tokens: 1200,
+      },
+      modelChain
+    );
+    const completion = completionResult.completion;
+    const modelResolved = completionResult.modelResolved;
 
     const suggestionRaw = String(completion.choices[0]?.message?.content || '').trim();
     const suggestion = suggestionRaw.replace(/```[\s\S]*?```/g, '').trim();
@@ -616,7 +630,9 @@ Reglas:
         data: {
           workspaceId: access.workspaceId,
           actor: 'PROGRAM_PROMPT_BUILDER',
-          model,
+          model: modelResolved,
+          modelRequested,
+          modelResolved,
           inputTokens: Number(usage?.prompt_tokens || 0) || 0,
           outputTokens: Number(usage?.completion_tokens || 0) || 0,
           totalTokens: Number(usage?.total_tokens || 0) || 0,

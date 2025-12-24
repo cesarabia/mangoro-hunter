@@ -1,7 +1,9 @@
 import OpenAI from 'openai';
 import { env } from '../config/env';
-import { getSystemConfig, DEFAULT_AI_MODEL, normalizeModelId } from './configService';
+import { getSystemConfig, DEFAULT_AI_MODEL } from './configService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
+import { createChatCompletionWithModelFallback } from './openAiChatCompletionService';
+import { resolveModelChain } from './modelResolutionService';
 
 interface SuggestedOptions {
   prompt?: string;
@@ -22,22 +24,32 @@ export async function getSuggestedReply(
   }
 
   const client = new OpenAI({ apiKey });
-  const model = normalizeModelId(options?.model || config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
-
-  const completion = await client.chat.completions.create({
-    model,
-    messages: [
-      {
-        role: 'system',
-        content: prompt
-      },
-      {
-        role: 'user',
-        content: conversationContext || 'Conversación previa del candidato'
-      }
-    ],
-    max_tokens: 180
+  const resolvedModels = resolveModelChain({
+    modelOverride: typeof options?.model === 'string' ? options.model : (config as any).aiModelOverride,
+    modelAlias: (config as any).aiModelAlias,
+    legacyModel: config.aiModel,
+    defaultModel: DEFAULT_AI_MODEL,
   });
+  const modelChain = resolvedModels.modelChain;
+
+  const completionResult = await createChatCompletionWithModelFallback(
+    client,
+    {
+      messages: [
+        {
+          role: 'system',
+          content: prompt,
+        },
+        {
+          role: 'user',
+          content: conversationContext || 'Conversación previa del candidato',
+        },
+      ],
+      max_tokens: 180,
+    },
+    modelChain
+  );
+  const completion = completionResult.completion;
 
   const text = completion.choices[0]?.message?.content || '';
   return text.trim();

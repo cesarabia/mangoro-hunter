@@ -877,6 +877,28 @@ export async function handleInboundWhatsAppMessage(
     }
   }
 
+  const personaPrompted = await maybeHandlePersonaAutoPrompt(app, {
+    workspaceId,
+    phoneLineId,
+    conversation,
+    contact,
+    inboundText: effectiveText,
+    effectiveKind,
+    baseKind,
+    allowedKinds,
+    hasActiveOverride: Boolean(overrideKind && allowedKinds.includes(overrideKind)),
+    autoReplyEnabled: Boolean(config?.botAutoReply),
+    ttlMinutes: Number.isFinite((workspace as any)?.personaSwitchTtlMinutes)
+      ? Number((workspace as any).personaSwitchTtlMinutes)
+      : 360,
+    allowPersonaSwitch: typeof (workspace as any)?.allowPersonaSwitchByWhatsApp === "boolean"
+      ? Boolean((workspace as any).allowPersonaSwitchByWhatsApp)
+      : true,
+  }).catch(() => false);
+  if (personaPrompted) {
+    return { conversationId: conversation.id };
+  }
+
   const personaHandled = await maybeHandlePersonaSwitchCommand(app, {
     workspaceId,
     phoneLineId,
@@ -5236,6 +5258,256 @@ async function maybeHandleOptOut(
   return true;
 }
 
+const PERSONA_MENU_PENDING_TAG = "persona_menu_pending";
+
+function normalizeLooseTag(value: string): string {
+  return stripAccents(String(value || "")).toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function parseStageTagsValue(raw: unknown): string[] {
+  if (!raw) return [];
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((v) => normalizeLooseTag(String(v))).filter(Boolean);
+      }
+    } catch {
+      // ignore
+    }
+    return trimmed
+      .split(/[,\n]/g)
+      .map((v) => normalizeLooseTag(v))
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function serializeStageTags(tags: string[]): string | null {
+  const unique: string[] = [];
+  for (const tag of tags) {
+    const t = normalizeLooseTag(tag);
+    if (!t) continue;
+    if (!unique.includes(t)) unique.push(t);
+  }
+  return unique.length > 0 ? JSON.stringify(unique) : null;
+}
+
+function buildPersonaMenuText(allowedKinds: string[]): { text: string; orderedKinds: string[] } {
+  const normalized = Array.from(
+    new Set(
+      (Array.isArray(allowedKinds) ? allowedKinds : [])
+        .map((k) => String(k || "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  const preferredOrder = ["STAFF", "CLIENT", "PARTNER", "ADMIN"];
+  const orderedKinds = [
+    ...preferredOrder.filter((k) => normalized.includes(k)),
+    ...normalized.filter((k) => !preferredOrder.includes(k)),
+  ];
+  const label = (k: string) => {
+    if (k === "STAFF") return "Staff";
+    if (k === "CLIENT") return "Cliente";
+    if (k === "PARTNER") return "Proveedor";
+    if (k === "ADMIN") return "Admin";
+    return k;
+  };
+  const lines = orderedKinds.map((k, idx) => `${idx + 1}) ${label(k)}`).join("\n");
+  const text = `¿En qué modo quieres usar este WhatsApp?\nResponde con el número:\n${lines}\n\nTip: también puedes escribir “modo cliente”, “modo staff” o “modo proveedor”.`;
+  return { text, orderedKinds };
+}
+
+function resolvePersonaChoice(inboundText: string, orderedKinds: string[]): string | null {
+  const normalized = stripAccents(String(inboundText || "")).toLowerCase().trim();
+  if (!normalized) return null;
+  const numeric = normalized.match(/^(\d{1,2})\b/);
+  if (numeric?.[1]) {
+    const idx = parseInt(numeric[1], 10);
+    if (Number.isFinite(idx) && idx >= 1 && idx <= orderedKinds.length) return orderedKinds[idx - 1];
+  }
+  if (normalized.includes("cliente")) return orderedKinds.includes("CLIENT") ? "CLIENT" : null;
+  if (normalized.includes("staff")) return orderedKinds.includes("STAFF") ? "STAFF" : null;
+  if (normalized.includes("proveedor") || normalized.includes("partner") || normalized.includes("aliado"))
+    return orderedKinds.includes("PARTNER") ? "PARTNER" : null;
+  if (normalized.includes("admin")) return orderedKinds.includes("ADMIN") ? "ADMIN" : null;
+  return null;
+}
+
+async function maybeHandlePersonaAutoPrompt(
+  app: FastifyInstance,
+  params: {
+    workspaceId: string;
+    phoneLineId: string;
+    conversation: any;
+    contact: any;
+    inboundText: string | null;
+    effectiveKind: string;
+    baseKind: string;
+    allowedKinds: string[];
+    hasActiveOverride: boolean;
+    autoReplyEnabled: boolean;
+    ttlMinutes: number;
+    allowPersonaSwitch: boolean;
+  },
+): Promise<boolean> {
+  if (!params.allowPersonaSwitch) return false;
+  if (!params.conversation?.id) return false;
+  const kind = String((params.conversation as any)?.conversationKind || "CLIENT").toUpperCase();
+  if (kind !== "STAFF") return false;
+  if (params.conversation.isAdmin) return false;
+
+  const allowedKinds = Array.from(
+    new Set(
+      (Array.isArray(params.allowedKinds) ? params.allowedKinds : [])
+        .map((k) => String(k || "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  if (allowedKinds.length <= 1) return false;
+  if (params.hasActiveOverride) return false;
+
+  const inboundRaw = String(params.inboundText || "");
+  const inboundNormalized = stripAccents(inboundRaw).toLowerCase().trim();
+  if (!inboundNormalized) return false;
+  if (
+    inboundNormalized === "modo" ||
+    inboundNormalized === "roles" ||
+    inboundNormalized === "rol" ||
+    inboundNormalized === "cambiar modo" ||
+    inboundNormalized.startsWith("modo ")
+  ) {
+    return false;
+  }
+  if (
+    inboundNormalized === "menu" ||
+    inboundNormalized === "programas" ||
+    inboundNormalized.includes("cambiar programa") ||
+    inboundNormalized.includes("cambiar de programa") ||
+    inboundNormalized.includes("menu de programas")
+  ) {
+    return false;
+  }
+
+  // Only prompt proactively when the intent is ambiguous (greetings/help). If the staff message is operational
+  // (e.g. "clientes nuevos"), let the agent run in STAFF by default to avoid blocking workflows.
+  const isAmbiguousGreeting =
+    inboundNormalized === "hola" ||
+    inboundNormalized.startsWith("hola ") ||
+    inboundNormalized === "buenas" ||
+    inboundNormalized.startsWith("buenas ") ||
+    inboundNormalized.includes("ayuda") ||
+    inboundNormalized === "hi" ||
+    inboundNormalized === "hello" ||
+    inboundNormalized === "hey";
+  const tags = parseStageTagsValue((params.conversation as any).stageTags);
+  const awaiting = tags.includes(PERSONA_MENU_PENDING_TAG);
+  if (!awaiting && !isAmbiguousGreeting) return false;
+
+  const { text: menuText, orderedKinds } = buildPersonaMenuText(allowedKinds);
+
+  const phoneLine = await prisma.phoneLine
+    .findUnique({ where: { id: params.conversation.phoneLineId }, select: { waPhoneNumberId: true } })
+    .catch(() => null);
+  const phoneNumberId = phoneLine?.waPhoneNumberId || null;
+
+  const sendMenu = async (): Promise<void> => {
+    let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+    if (params.autoReplyEnabled && params.contact?.waId) {
+      sendResultRaw = await sendWhatsAppText(params.contact.waId, menuText, { phoneNumberId });
+    } else if (!params.autoReplyEnabled) {
+      sendResultRaw = { success: false, error: "BOT_AUTO_REPLY_DISABLED" };
+    }
+    const normalizedSendResult = {
+      success: sendResultRaw.success,
+      messageId: "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+      error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+    };
+    const dedupeKey = `persona_prompt:${params.conversation.id}:${stableHash(menuText).slice(0, 10)}`;
+    await prisma.outboundMessageLog
+      .create({
+        data: {
+          workspaceId: params.workspaceId,
+          conversationId: params.conversation.id,
+          relatedConversationId: null,
+          agentRunId: null,
+          channel: "WHATSAPP",
+          type: "SESSION_TEXT",
+          templateName: null,
+          dedupeKey,
+          textHash: stableHash(`TEXT:${menuText}`),
+          blockedReason: normalizedSendResult.success ? null : String(normalizedSendResult.error || "SEND_FAILED"),
+          waMessageId: normalizedSendResult.messageId || null,
+        } as any,
+      })
+      .catch(() => {});
+    await prisma.message
+      .create({
+        data: {
+          conversationId: params.conversation.id,
+          direction: "OUTBOUND",
+          text: menuText,
+          rawPayload: serializeJson({ system: true, personaPrompt: true, sendResult: normalizedSendResult }),
+          timestamp: new Date(),
+          read: true,
+        },
+      })
+      .catch(() => {});
+    if (normalizedSendResult.success && params.conversation.phoneLineId) {
+      await prisma.phoneLine.update({ where: { id: params.conversation.phoneLineId }, data: { lastOutboundAt: new Date() } }).catch(() => {});
+    }
+  };
+
+  if (awaiting) {
+    const choice = resolvePersonaChoice(inboundRaw, orderedKinds);
+    if (choice && allowedKinds.includes(choice)) {
+      const nextTags = tags.filter((t) => t !== PERSONA_MENU_PENDING_TAG);
+      await prisma.conversation
+        .update({
+          where: { id: params.conversation.id },
+          data: { stageTags: serializeStageTags(nextTags), updatedAt: new Date() } as any,
+        })
+        .catch(() => {});
+      (params.conversation as any).stageTags = serializeStageTags(nextTags);
+
+      const toInbound =
+        choice === "STAFF" ? "modo staff" : choice === "CLIENT" ? "modo cliente" : choice === "PARTNER" ? "modo proveedor" : "modo admin";
+      return maybeHandlePersonaSwitchCommand(app, {
+        workspaceId: params.workspaceId,
+        phoneLineId: params.phoneLineId,
+        conversation: params.conversation,
+        contact: params.contact,
+        inboundText: toInbound,
+        effectiveKind: params.effectiveKind,
+        baseKind: params.baseKind,
+        allowedKinds: params.allowedKinds,
+        autoReplyEnabled: params.autoReplyEnabled,
+        ttlMinutes: params.ttlMinutes,
+        allowPersonaSwitch: params.allowPersonaSwitch,
+      });
+    }
+
+    await sendMenu();
+    return true;
+  }
+
+  if (!tags.includes(PERSONA_MENU_PENDING_TAG)) {
+    tags.push(PERSONA_MENU_PENDING_TAG);
+    await prisma.conversation
+      .update({
+        where: { id: params.conversation.id },
+        data: { stageTags: serializeStageTags(tags), updatedAt: new Date() } as any,
+      })
+      .catch(() => {});
+    (params.conversation as any).stageTags = serializeStageTags(tags);
+  }
+
+  await sendMenu();
+  return true;
+}
+
 async function maybeHandlePersonaSwitchCommand(
   app: FastifyInstance,
   params: {
@@ -5260,6 +5532,23 @@ async function maybeHandlePersonaSwitchCommand(
   const wantsClear = inbound === "modo auto" || inbound === "modo normal" || inbound === "modo automático" || inbound === "modo automatico";
   const wantsSet = inbound.startsWith("modo ");
   if (!isHelp && !wantsClear && !wantsSet) return false;
+
+  // If we're mid persona-menu prompt, clear it once the user explicitly interacts.
+  try {
+    const tags = parseStageTagsValue((params.conversation as any).stageTags);
+    if (tags.includes(PERSONA_MENU_PENDING_TAG)) {
+      const nextTags = tags.filter((t) => t !== PERSONA_MENU_PENDING_TAG);
+      await prisma.conversation
+        .update({
+          where: { id: params.conversation.id },
+          data: { stageTags: serializeStageTags(nextTags), updatedAt: new Date() } as any,
+        })
+        .catch(() => {});
+      (params.conversation as any).stageTags = serializeStageTags(nextTags);
+    }
+  } catch {
+    // ignore
+  }
 
   const currentKind = String(params.effectiveKind || "").toUpperCase() || "CLIENT";
   const baseKind = String(params.baseKind || "").toUpperCase() || currentKind;

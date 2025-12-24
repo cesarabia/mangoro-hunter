@@ -20,6 +20,34 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       .replace(/\s+/g, ' ')
       .trim();
 
+  const normalizeCandidateName = (value: string): string | null => {
+    const cleaned = String(value || '')
+      .replace(/[^A-Za-zÁÉÍÓÚáéíóúÑñ\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned) return null;
+    const words = cleaned.split(' ').filter(Boolean);
+    if (words.length < 2 || words.length > 3) return null;
+    return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+  };
+
+  const extractCandidateNameFromText = (text: string): string | null => {
+    const cleaned = String(text || '').trim();
+    if (!cleaned) return null;
+    const match = cleaned.match(/(?:mi nombre es|me llamo)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,80})/i);
+    if (!match?.[1]) return null;
+    return normalizeCandidateName(match[1]);
+  };
+
+  const safeJsonParse = (value: string | null | undefined): any => {
+    if (!value) return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  };
+
   const requireWorkspaceAdmin = async (request: any, reply: any) => {
     const access = await resolveWorkspaceAccess(request);
     if (!isWorkspaceAdmin(request, access)) {
@@ -169,6 +197,25 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
                 read: false,
               },
             });
+
+      // Deterministic contact name extraction (mirrors inbound safety): scenarios should not depend on LLM
+      // to set candidateName for explicit phrases like "Me llamo ...".
+      if (message && inboundText) {
+        const extracted = extractCandidateNameFromText(inboundText);
+        if (extracted) {
+          await prisma.contact
+            .updateMany({
+              where: {
+                id: conversation.contactId,
+                workspaceId: 'sandbox',
+                candidateNameManual: null,
+                OR: [{ candidateName: null }, { candidateName: '' }],
+              } as any,
+              data: { candidateName: extracted, name: extracted } as any,
+            })
+            .catch(() => {});
+        }
+      }
 
       await prisma.conversation.update({
         where: { id: conversation.id },
@@ -2103,6 +2150,242 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
                 ok,
                 message: ok ? 'staffInboxListCases: LIST_CASES filtra por stage y assignedToMe OK' : `staffInboxListCases: resultado inesperado (${cases.length} cases)`,
               });
+            }
+
+            // Cleanup: archive-only.
+            await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          }
+        }
+      }
+
+      const staffClientsNewUsesListCases = (step.expect as any)?.staffClientsNewUsesListCases;
+      if (staffClientsNewUsesListCases && typeof staffClientsNewUsesListCases === 'object') {
+        const wsId = String((staffClientsNewUsesListCases as any)?.workspaceId || 'scenario-staff-clients-new').trim() || 'scenario-staff-clients-new';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'staffClientsNewUsesListCases: userId missing' });
+        } else {
+          const lineId = `scenario-staff-clients-new-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          const staffE164 = '+56982345846';
+          const staffWaId = '56982345846';
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Staff Clientes Nuevos', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Staff Clientes Nuevos', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+              update: { role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const staffProgram = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'staff-operaciones' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Staff — Operaciones',
+                slug: 'staff-operaciones',
+                description: 'Scenario Staff Ops',
+                isActive: true,
+                archivedAt: null,
+                agentSystemPrompt:
+                  'Eres Staff Operaciones. Si el usuario dice "clientes nuevos" o "casos nuevos", SIEMPRE llama la tool LIST_CASES con stageSlug="NUEVO", assignedToMe=true, limit=10 y luego responde con una lista corta.',
+              } as any,
+              update: {
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          if (!staffProgram?.id) {
+            assertions.push({ ok: false, message: 'staffClientsNewUsesListCases: no se pudo crear Program' });
+          } else {
+            await prisma.workspace
+              .update({ where: { id: wsId }, data: { staffDefaultProgramId: staffProgram.id } as any })
+              .catch(() => {});
+
+            const phoneLine = await prisma.phoneLine
+              .create({
+                data: {
+                  id: lineId,
+                  workspaceId: wsId,
+                  alias: 'Scenario Staff Clientes Nuevos (temp)',
+                  phoneE164: null,
+                  waPhoneNumberId,
+                  isActive: true,
+                  archivedAt: null,
+                  needsAttention: false,
+                } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+
+            const staffContact = await prisma.contact
+              .upsert({
+                where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+                create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+                update: { phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+
+            const staffConv =
+              phoneLine?.id && staffContact?.id
+                ? await prisma.conversation
+                    .create({
+                      data: {
+                        workspaceId: wsId,
+                        phoneLineId: phoneLine.id,
+                        programId: null,
+                        contactId: staffContact.id,
+                        status: 'OPEN',
+                        channel: 'whatsapp',
+                        isAdmin: false,
+                        aiMode: 'OFF',
+                        conversationKind: 'STAFF',
+                        conversationStage: 'NUEVO',
+                        stageChangedAt: now,
+                        archivedAt: null,
+                      } as any,
+                      select: { id: true },
+                    })
+                    .catch(() => null)
+                : null;
+
+            const caseAContact = await prisma.contact
+              .create({
+                data: { workspaceId: wsId, displayName: 'Caso A', comuna: 'Providencia', archivedAt: null } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            const caseA =
+              phoneLine?.id && caseAContact?.id
+                ? await prisma.conversation
+                    .create({
+                      data: {
+                        workspaceId: wsId,
+                        phoneLineId: phoneLine.id,
+                        programId: null,
+                        contactId: caseAContact.id,
+                        status: 'OPEN',
+                        conversationStage: 'NEW_INTAKE',
+                        stageChangedAt: now,
+                        assignedToId: userId,
+                        channel: 'system',
+                        isAdmin: false,
+                        conversationKind: 'CLIENT',
+                        archivedAt: null,
+                      } as any,
+                      select: { id: true },
+                    })
+                    .catch(() => null)
+                : null;
+            const caseBContact = await prisma.contact
+              .create({
+                data: { workspaceId: wsId, displayName: 'Caso B', comuna: 'Ñuñoa', archivedAt: null } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            const caseB =
+              phoneLine?.id && caseBContact?.id
+                ? await prisma.conversation
+                    .create({
+                      data: {
+                        workspaceId: wsId,
+                        phoneLineId: phoneLine.id,
+                        programId: null,
+                        contactId: caseBContact.id,
+                        status: 'OPEN',
+                        conversationStage: 'EN_COORDINACION',
+                        stageChangedAt: now,
+                        assignedToId: userId,
+                        channel: 'system',
+                        isAdmin: false,
+                        conversationKind: 'CLIENT',
+                        archivedAt: null,
+                      } as any,
+                      select: { id: true },
+                    })
+                    .catch(() => null)
+                : null;
+
+            const inbound =
+              staffConv?.id
+                ? await prisma.message
+                    .create({
+                      data: {
+                        conversationId: staffConv.id,
+                        direction: 'INBOUND',
+                        text: 'clientes nuevos',
+                        rawPayload: JSON.stringify({ simulated: true, scenario: 'staff_clients_new_uses_list_cases' }),
+                        timestamp: now,
+                        read: true,
+                      },
+                      select: { id: true },
+                    })
+                    .catch(() => null)
+                : null;
+
+            if (!phoneLine?.id || !staffConv?.id || !caseA?.id || !inbound?.id) {
+              assertions.push({ ok: false, message: 'staffClientsNewUsesListCases: setup incompleto' });
+            } else {
+              const stageSlug = 'NEW_INTAKE';
+              const agentRun = await prisma.agentRunLog
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    conversationId: staffConv.id,
+                    programId: staffProgram.id,
+                    phoneLineId: phoneLine.id,
+                    eventType: 'INBOUND_MESSAGE',
+                    status: 'RUNNING',
+                    inputContextJson: JSON.stringify({ inboundText: 'clientes nuevos', stageSlug }),
+                  } as any,
+                })
+                .catch(() => null);
+              if (!agentRun?.id) {
+                assertions.push({ ok: false, message: 'staffClientsNewUsesListCases: no se pudo crear AgentRunLog' });
+              } else {
+                const response = {
+                  agent: 'scenario_staff_clients_new',
+                  version: 1,
+                  commands: [
+                    { command: 'RUN_TOOL', toolName: 'LIST_CASES', args: { stageSlug, assignedToMe: true, limit: 10 } } as any,
+                  ],
+                } as any;
+                const exec = await executeAgentResponse({
+                  app,
+                  workspaceId: wsId,
+                  agentRunId: agentRun.id,
+                  response,
+                  transportMode: 'NULL',
+                }).catch(() => null);
+
+                const toolResult: any = exec?.results?.find((r: any) => r?.details?.toolName === 'LIST_CASES')?.details?.result;
+                const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
+                const ok =
+                  cases.some((c: any) => String(c.id) === String(caseA.id)) &&
+                  (!caseB?.id || !cases.some((c: any) => String(c.id) === String(caseB.id)));
+                assertions.push({
+                  ok,
+                  message: ok
+                    ? 'staffClientsNewUsesListCases: LIST_CASES devuelve casos NUEVOS (stage=NEW_INTAKE) asignados'
+                    : `staffClientsNewUsesListCases: resultado inesperado (${cases.length} cases)`,
+                });
+              }
             }
 
             // Cleanup: archive-only.

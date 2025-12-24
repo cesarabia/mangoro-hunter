@@ -178,6 +178,7 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'ssclinical_handoff_interesado_notification',
       'ssclinical_staff_whatsapp_notification',
       // V2.2: Staff WhatsApp (tools + reply-to + templates + requireAvailability)
+      'staff_clients_new_uses_list_cases',
       'staff_inbox_list_cases',
       'staff_notification_template_variables',
       'staff_reply_to_notification_updates_case',

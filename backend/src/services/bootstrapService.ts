@@ -276,6 +276,36 @@ Reglas:
 - Si el nombre tiene typos: fuzzy match; si hay ambigüedad lista top 3 para confirmar.
 `.trim();
 
+  const staffOpsPrompt = `
+Programa: Staff — Operaciones (WhatsApp).
+Objetivo: operar casos/clientes en el CRM de forma segura y determinista.
+
+Reglas NO negociables:
+- Para operar el sistema, usa SIEMPRE tools antes de responder cuando aplique:
+  - LIST_CASES (filtros: stageSlug, assignedToMe, status, limit)
+  - GET_CASE_SUMMARY (conversationId)
+  - ADD_NOTE (conversationId, text)
+  - SET_STAGE (conversationId, stageSlug, reason?)
+  - SEND_CUSTOMER_MESSAGE (conversationId, text) [respeta SAFE MODE + 24h + NO_CONTACTAR]
+- No alucines: si falta información de un caso, usa GET_CASE_SUMMARY o pide 1 aclaración.
+- Si el usuario dice "clientes nuevos", "casos nuevos", "mis casos", "pendientes", primero ejecuta LIST_CASES y luego responde con una lista corta (máx 8) con: nombre, comuna, stage y id corto.
+
+Saludo / Menú (si te dicen “hola” o “menu”):
+1) Casos nuevos / pendientes
+2) Buscar caso (por nombre/teléfono)
+3) Cambiar estado (por id de caso)
+4) Enviar mensaje al cliente (por id de caso)
+Pregunta 1 cosa concreta para avanzar.
+
+Ejemplos:
+- Usuario: "clientes nuevos"
+  → LIST_CASES(stageSlug="NUEVO", limit=10) y responde listado.
+- Usuario: "cambia el caso abcd a INTERESADO"
+  → SET_STAGE(conversationId="abcd", stageSlug="INTERESADO", reason="staff")
+- Usuario: "envía al caso abcd: llegamos 10:30"
+  → SEND_CUSTOMER_MESSAGE(conversationId="abcd", text="...") y confirma resultado.
+`.trim();
+
   const salesPrompt = `
 Programa: Ventas.
 Objetivo: apoyar a vendedores con pitch, objeciones y registro de visitas/ventas; generar resumen diario/semanal para admin.
@@ -305,11 +335,26 @@ Objetivo: apoyar a vendedores con pitch, objeciones y registro de visitas/ventas
     slug: 'admin',
     agentSystemPrompt: config?.adminAiPrompt?.trim() || DEFAULT_ADMIN_AI_PROMPT || adminPrompt
   });
+  const pStaffOps = await ensureProgram({
+    workspaceId: 'default',
+    name: 'Staff — Operaciones',
+    slug: 'staff-operaciones',
+    agentSystemPrompt: staffOpsPrompt,
+  });
 
   await ensureProgram({ workspaceId: 'sandbox', name: 'Reclutamiento', slug: 'recruitment', agentSystemPrompt: pRecruit.agentSystemPrompt });
   await ensureProgram({ workspaceId: 'sandbox', name: 'Entrevista', slug: 'interview', agentSystemPrompt: pInterview.agentSystemPrompt });
   await ensureProgram({ workspaceId: 'sandbox', name: 'Ventas', slug: 'sales', agentSystemPrompt: pSales.agentSystemPrompt });
   await ensureProgram({ workspaceId: 'sandbox', name: 'Admin', slug: 'admin', agentSystemPrompt: pAdmin.agentSystemPrompt });
+  await ensureProgram({ workspaceId: 'sandbox', name: 'Staff — Operaciones', slug: 'staff-operaciones', agentSystemPrompt: pStaffOps.agentSystemPrompt });
+
+  // Default staff program per workspace (do not override if user already set one).
+  await prisma.workspace
+    .updateMany({ where: { id: 'default', staffDefaultProgramId: null } as any, data: { staffDefaultProgramId: pStaffOps.id } as any })
+    .catch(() => {});
+  await prisma.workspace
+    .updateMany({ where: { id: 'sandbox', staffDefaultProgramId: null } as any, data: { staffDefaultProgramId: pStaffOps.id } as any })
+    .catch(() => {});
 
   // Default demo connector (base for Program Tools)
   await ensureConnector({
@@ -355,6 +400,12 @@ Objetivo: apoyar a vendedores con pitch, objeciones y registro de visitas/ventas
       await ensureDefaultAutomationRule({ workspaceId: 'ssclinical', enabled: hasKey }).catch(() => {});
 
       // Seed SSClinical Programs (no-op if already exist).
+      const ssclinicalStaffOps = await ensureProgram({
+        workspaceId: 'ssclinical',
+        name: 'SSClinical Staff — Operaciones',
+        slug: 'staff-operaciones',
+        agentSystemPrompt: `${staffOpsPrompt}\n\nContexto SSClinical: atención a domicilio (suero hidratante / sueroterapia).`.trim(),
+      }).catch(() => null);
       await ensureProgram({
         workspaceId: 'ssclinical',
         name: 'Asistente Virtual SSClinical — Domicilio (Suero Hidratante y Terapia)',
@@ -507,6 +558,12 @@ Reglas:
         agentSystemPrompt:
           'Eres Médico (SSClinical). Objetivo: revisar/solicitar orden médica y orientar al siguiente paso. Responde breve y en español.',
       }).catch(() => {});
+
+      if (ssclinicalStaffOps?.id) {
+        await prisma.workspace
+          .updateMany({ where: { id: 'ssclinical', staffDefaultProgramId: null } as any, data: { staffDefaultProgramId: ssclinicalStaffOps.id } as any })
+          .catch(() => {});
+      }
 
       // Seed pilot invites (archive-only; no crea usuarios automáticamente).
       await ensureWorkspaceInvite({ workspaceId: 'ssclinical', email: 'csarabia@ssclinical.cl', role: 'OWNER' }).catch(() => {});

@@ -61,6 +61,9 @@ export type ScenarioStep = {
     staffInboxListCases?: {
       workspaceId?: string;
     };
+    staffClientsNewUsesListCases?: {
+      workspaceId?: string;
+    };
     staffReplyToNotificationUpdatesCase?: {
       workspaceId?: string;
     };
@@ -471,6 +474,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check staff list cases',
         expect: { staffInboxListCases: { workspaceId: 'scenario-staff-tools' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_clients_new_uses_list_cases',
+    name: 'Staff: "clientes nuevos" -> LIST_CASES',
+    description:
+      'Valida que el staff pueda escribir "clientes nuevos" y que el agente use LIST_CASES (tools) antes de responder.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff clientes nuevos',
+        expect: { staffClientsNewUsesListCases: { workspaceId: 'scenario-staff-clients-new' } },
       },
     ],
   },

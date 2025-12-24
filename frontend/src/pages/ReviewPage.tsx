@@ -94,6 +94,8 @@ export const ReviewPage: React.FC<{
   const [phoneLines, setPhoneLines] = useState<any[]>([]);
   const [programs, setPrograms] = useState<any[]>([]);
   const [automations, setAutomations] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [workspace, setWorkspace] = useState<any | null>(null);
   const [workspaceConnectors, setWorkspaceConnectors] = useState<any[]>([]);
   const [workspaceConnectorsError, setWorkspaceConnectorsError] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
@@ -285,7 +287,7 @@ export const ReviewPage: React.FC<{
     setSetupError(null);
     setWorkspaceConnectorsError(null);
     try {
-      const [lines, progs, autos, conns] = await Promise.all([
+      const [lines, progs, autos, conns, ws, us] = await Promise.all([
         apiClient.get('/api/phone-lines'),
         apiClient.get('/api/programs'),
         apiClient.get('/api/automations'),
@@ -293,16 +295,22 @@ export const ReviewPage: React.FC<{
           setWorkspaceConnectorsError(err?.message || 'No se pudieron cargar connectors (requiere OWNER)');
           return null;
         }),
+        apiClient.get('/api/workspaces/current').catch(() => null),
+        apiClient.get('/api/users').catch(() => []),
       ]);
       setPhoneLines(Array.isArray(lines) ? lines : []);
       setPrograms(Array.isArray(progs) ? progs : []);
       setAutomations(Array.isArray(autos) ? autos : []);
       setWorkspaceConnectors(Array.isArray(conns) ? conns : []);
+      setWorkspace(ws && typeof ws === 'object' ? ws : null);
+      setUsers(Array.isArray(us) ? us : []);
     } catch (err: any) {
       setPhoneLines([]);
       setPrograms([]);
       setAutomations([]);
       setWorkspaceConnectors([]);
+      setWorkspace(null);
+      setUsers([]);
       setSetupError(err.message || 'No se pudo cargar configuración');
     }
   };
@@ -454,6 +462,28 @@ export const ReviewPage: React.FC<{
 
   const phoneLineOk = useMemo(() => (phoneLines || []).some((l: any) => Boolean(l?.isActive) && l?.waPhoneNumberId), [phoneLines]);
   const programsOk = useMemo(() => (programs || []).some((p: any) => Boolean(p?.isActive) && !p?.archivedAt), [programs]);
+  const staffNumbersOk = useMemo(() => {
+    return (users || []).some((u: any) => {
+      const primary = String(u?.staffWhatsAppE164 || '').trim();
+      const extras = Array.isArray(u?.staffWhatsAppExtraE164s) ? u.staffWhatsAppExtraE164s : [];
+      return Boolean(primary) || extras.length > 0;
+    });
+  }, [users]);
+  const staffDefaultProgramOk = useMemo(() => Boolean(String(workspace?.staffDefaultProgramId || '').trim()), [workspace]);
+  const personasOk = useMemo(() => {
+    if (!staffNumbersOk) return true;
+    return staffDefaultProgramOk;
+  }, [staffNumbersOk, staffDefaultProgramOk]);
+  const notificationsOk = useMemo(() => {
+    if (!staffNumbersOk) return true;
+    return (automations || []).some((r: any) => {
+      if (!r?.enabled) return false;
+      const trigger = String(r?.trigger || '').toUpperCase();
+      if (trigger !== 'STAGE_CHANGED') return false;
+      const actions = Array.isArray(r?.actions) ? r.actions : [];
+      return actions.some((a: any) => String(a?.type || '').toUpperCase() === 'NOTIFY_STAFF_WHATSAPP');
+    });
+  }, [automations, staffNumbersOk]);
   const ssclinicalWorkspaceOk = currentWorkspaceId === 'ssclinical';
   const ssclinicalProgramsOk = useMemo(() => {
     if (!ssclinicalWorkspaceOk) return false;
@@ -483,6 +513,7 @@ export const ReviewPage: React.FC<{
     [automations]
   );
   const lastQaOk = Boolean(release?.lastQa?.ok);
+  const goLiveOk = safeModeOk && phoneLineOk && personasOk && programsOk && automationsOk && notificationsOk && lastQaOk;
 
   const [firstStepsEvaluatedAt, setFirstStepsEvaluatedAt] = useState<string | null>(null);
   const reevaluateFirstSteps = async () => {
@@ -861,6 +892,14 @@ export const ReviewPage: React.FC<{
     },
   ];
 
+  const openCopilotFix = (text: string, autoSend = true) => {
+    try {
+      window.dispatchEvent(new CustomEvent('copilot:open', { detail: { text, autoSend } }));
+    } catch {
+      // ignore
+    }
+  };
+
   const helpSteps = [
     {
       title: 'Paso 1: Confirmar SAFE MODE (DEV)',
@@ -868,6 +907,9 @@ export const ReviewPage: React.FC<{
       detail: safeModeOk ? 'ALLOWLIST_ONLY con 2 números autorizados.' : 'Revisa policy/allowlist.',
       action: () => openConfigTab('workspace'),
       actionLabel: 'Ir a Config',
+      fixPrompt: safeModeOk
+        ? null
+        : 'Necesito dejar SAFE MODE en ALLOWLIST_ONLY y la allowlist efectiva EXACTA solo con 56982345846 y 56994830202. ¿Qué debo ajustar en Configuración → Workspace?',
     },
     {
       title: 'Paso 2: Confirmar PhoneLine',
@@ -875,27 +917,65 @@ export const ReviewPage: React.FC<{
       detail: phoneLineOk ? 'Hay al menos 1 línea activa.' : 'No hay líneas activas.',
       action: () => openConfigTab('phoneLines'),
       actionLabel: 'Ir a Números WhatsApp',
+      fixPrompt: phoneLineOk
+        ? null
+        : 'Ayúdame a crear una PhoneLine (Números WhatsApp) para este workspace y dejarla activa. Luego quiero setear Default Program correctamente.',
     },
     {
-      title: 'Paso 3: Crear/confirmar Programs',
+      title: 'Paso 3: Confirmar Personas (Staff Mode)',
+      ok: personasOk,
+      detail: personasOk
+        ? staffNumbersOk
+          ? 'Staff configurado y Program default STAFF seleccionado.'
+          : 'Sin staff configurado (ok).'
+        : 'Falta seleccionar Staff Default Program o configurar WhatsApp staff.',
+      action: () => openConfigTab('users'),
+      actionLabel: 'Ir a Usuarios',
+      fixPrompt: personasOk
+        ? null
+        : 'Necesito configurar Staff Mode: (1) asignar WhatsApp staff a un usuario en Configuración → Usuarios, y (2) seleccionar Staff Default Program en Configuración → Workspace. Guíame y propón los cambios.',
+    },
+    {
+      title: 'Paso 4: Crear/confirmar Programs',
       ok: programsOk,
       detail: programsOk ? 'Hay al menos 1 Program activo.' : 'No hay Programs activos.',
       action: () => openConfigTab('programs'),
       actionLabel: 'Ir a Programs',
+      fixPrompt: programsOk ? null : 'Crea un Program base para este workspace (nombre, slug, prompt) y déjalo activo.',
     },
     {
-      title: 'Paso 4: Activar automation básica (RUN_AGENT)',
+      title: 'Paso 5: Activar automation básica (RUN_AGENT)',
       ok: automationsOk,
       detail: automationsOk ? 'Hay una regla inbound → RUN_AGENT.' : 'Falta regla básica RUN_AGENT.',
       action: () => openConfigTab('automations'),
       actionLabel: 'Ir a Automations',
+      fixPrompt: automationsOk ? null : 'Crea una automation inbound (INBOUND_MESSAGE) que ejecute RUN_AGENT y déjala enabled.',
     },
     {
-      title: 'Paso 5 (recomendado): Probar en Simulator',
+      title: 'Paso 6: Notificaciones (staff WhatsApp)',
+      ok: notificationsOk,
+      detail: notificationsOk ? 'Existe automation STAGE_CHANGED con NOTIFY_STAFF_WHATSAPP.' : 'Falta automation de notificación staff por WhatsApp.',
+      action: () => openConfigTab('automations'),
+      actionLabel: 'Ir a Automations',
+      fixPrompt: notificationsOk
+        ? null
+        : 'Crea una automation STAGE_CHANGED (ej: stage=INTERESADO) que haga ASSIGN + NOTIFY_IN_APP + NOTIFY_STAFF_WHATSAPP usando template determinístico y dedupe.',
+    },
+    {
+      title: 'Paso 7: Smoke Scenarios (Simulator)',
       ok: lastQaOk,
       detail: lastQaOk ? 'Último QA: PASS.' : 'Aún no hay QA reciente o falló.',
       action: () => setActiveTab('qa'),
       actionLabel: 'Ir a QA',
+      fixPrompt: lastQaOk ? null : 'Ejecuta “Run Smoke Scenarios” en el sandbox y dime cuáles fallan y por qué. Luego propón el fix.',
+    },
+    {
+      title: 'Paso 8: Go-live (precheck)',
+      ok: goLiveOk,
+      detail: goLiveOk ? '✅ Configuración mínima completa.' : '⚠️ Falta completar pasos anteriores.',
+      action: () => openConfigTab('workspace'),
+      actionLabel: 'Ver Workspace',
+      fixPrompt: goLiveOk ? null : 'Ayúdame a completar el Setup Wizard: revisa qué gates están en FAIL y propón correcciones concretas.',
     },
   ];
 
@@ -1084,7 +1164,15 @@ export const ReviewPage: React.FC<{
                     <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>{s.detail}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    {s.title.includes('Paso 4') && !automationsOk ? (
+                    {!s.ok && (s as any).fixPrompt ? (
+                      <button
+                        onClick={() => openCopilotFix(String((s as any).fixPrompt || ''), true)}
+                        style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#fff', color: '#111', fontSize: 12, fontWeight: 800 }}
+                      >
+                        Fix with Copilot
+                      </button>
+                    ) : null}
+                    {s.title.includes('RUN_AGENT') && !automationsOk ? (
                       <button
                         onClick={() => ensureDefaultInboundAutomation().catch(() => {})}
                         disabled={ensuringAutomation}
@@ -1096,10 +1184,10 @@ export const ReviewPage: React.FC<{
                     <button onClick={s.action} style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}>
                       {s.actionLabel}
                     </button>
-                    {s.title.includes('Paso 4') && !automationsOk && ensureAutomationStatus ? (
+                    {s.title.includes('RUN_AGENT') && !automationsOk && ensureAutomationStatus ? (
                       <span style={{ fontSize: 12, color: '#1a7f37' }}>{ensureAutomationStatus}</span>
                     ) : null}
-                    {s.title.includes('Paso 4') && !automationsOk && ensureAutomationError ? (
+                    {s.title.includes('RUN_AGENT') && !automationsOk && ensureAutomationError ? (
                       <span style={{ fontSize: 12, color: '#b93800' }}>{ensureAutomationError}</span>
                     ) : null}
                   </div>

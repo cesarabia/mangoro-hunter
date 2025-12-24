@@ -38,6 +38,7 @@ import {
   updateInterviewScheduleConfig,
   updateSalesAiConfig,
   updateAiModel,
+  updateAiModelConfig,
   updateRecruitmentContent,
   updateAdminNotificationConfig,
   updateWorkflowConfig,
@@ -533,12 +534,22 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!config) {
       return {
         hasOpenAiKey: false,
-        aiModel: DEFAULT_AI_MODEL
+        aiModel: DEFAULT_AI_MODEL,
+        aiModelOverride: null,
+        aiModelAlias: DEFAULT_AI_MODEL,
+        aiModelAliasResolved: DEFAULT_AI_MODEL,
       };
     }
+    const modelOverride = ((config as any).aiModelOverride || null) as string | null;
+    const modelAlias = String((config as any).aiModelAlias || config.aiModel || DEFAULT_AI_MODEL).trim() || DEFAULT_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_AI_MODEL;
+    const modelPreview = modelOverride || modelAliasResolved || DEFAULT_AI_MODEL;
     return {
       hasOpenAiKey: Boolean(config.openAiApiKey),
-      aiModel: config.aiModel || DEFAULT_AI_MODEL
+      aiModel: modelPreview,
+      aiModelOverride: modelOverride,
+      aiModelAlias: modelAlias,
+      aiModelAliasResolved: modelAliasResolved,
     };
   });
 
@@ -547,22 +558,39 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const body = request.body as { openAiApiKey?: string | null; aiModel?: string | null };
+    const body = request.body as {
+      openAiApiKey?: string | null;
+      aiModel?: string | null;
+      aiModelOverride?: string | null;
+      aiModelAlias?: string | null;
+    };
     const updated = await executeUpdate(reply, async () => {
       let cfg = await getSystemConfig();
       if (typeof body?.openAiApiKey !== 'undefined') {
         cfg = await updateAiConfig(body.openAiApiKey);
       }
-      if (typeof body?.aiModel !== 'undefined') {
+      if (typeof body?.aiModelOverride !== 'undefined' || typeof body?.aiModelAlias !== 'undefined') {
+        await updateAiModelConfig({
+          modelOverride: typeof body.aiModelOverride === 'undefined' ? undefined : body.aiModelOverride,
+          modelAlias: typeof body.aiModelAlias === 'undefined' ? undefined : body.aiModelAlias,
+        });
+      } else if (typeof body?.aiModel !== 'undefined') {
         await updateAiModel(body.aiModel ?? null);
       }
       return cfg;
     });
     if (!updated) return;
     const fresh = await getSystemConfig();
+    const modelOverride = ((fresh as any).aiModelOverride || null) as string | null;
+    const modelAlias = String((fresh as any).aiModelAlias || fresh.aiModel || DEFAULT_AI_MODEL).trim() || DEFAULT_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_AI_MODEL;
+    const modelPreview = modelOverride || modelAliasResolved || DEFAULT_AI_MODEL;
     return {
       hasOpenAiKey: Boolean(fresh.openAiApiKey),
-      aiModel: fresh.aiModel || DEFAULT_AI_MODEL
+      aiModel: modelPreview,
+      aiModelOverride: modelOverride,
+      aiModelAlias: modelAlias,
+      aiModelAliasResolved: modelAliasResolved,
     };
   });
 
@@ -580,20 +608,53 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'OpenAI API Key no está configurada.' });
     }
 
-    const model = normalizeModelId(config.aiModel || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
+    const modelOverride = ((config as any).aiModelOverride || null) as string | null;
+    const modelAlias = String((config as any).aiModelAlias || config.aiModel || DEFAULT_AI_MODEL).trim() || DEFAULT_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_AI_MODEL;
+    const modelRequested = (modelOverride || modelAliasResolved || DEFAULT_AI_MODEL).trim();
+    const candidates = [modelRequested, modelAliasResolved, DEFAULT_AI_MODEL]
+      .map((m) => String(m || '').trim())
+      .filter(Boolean);
+    const uniqueModels: string[] = [];
+    for (const m of candidates) if (!uniqueModels.includes(m)) uniqueModels.push(m);
     const client = new OpenAI({ apiKey });
     try {
-      const completion = await client.chat.completions.create({
-        model,
-        messages: [
-          { role: 'system', content: 'Eres un verificador de conectividad. Responde solo "OK".' },
-          { role: 'user', content: 'ping' },
-        ],
-        max_tokens: 5,
-        temperature: 0,
-      });
+      let usedModel = uniqueModels[0] || DEFAULT_AI_MODEL;
+      let fallbackUsed = false;
+      let completion: any = null;
+      let lastError: any = null;
+      for (let idx = 0; idx < uniqueModels.length; idx += 1) {
+        const candidate = uniqueModels[idx];
+        try {
+          completion = await client.chat.completions.create({
+            model: candidate,
+            messages: [
+              { role: 'system', content: 'Eres un verificador de conectividad. Responde solo "OK".' },
+              { role: 'user', content: 'ping' },
+            ],
+            max_tokens: 5,
+            temperature: 0,
+          });
+          usedModel = candidate;
+          fallbackUsed = idx > 0;
+          lastError = null;
+          break;
+        } catch (err: any) {
+          lastError = err;
+          if (err instanceof OpenAI.APIError) {
+            const code = (err as any).code || err.status;
+            if (code === 'invalid_model' || code === 'model_not_found') {
+              continue;
+            }
+          }
+          throw err;
+        }
+      }
+      if (!completion) {
+        throw lastError || new Error('OpenAI test failed');
+      }
       const text = completion.choices?.[0]?.message?.content?.trim() || '';
-      return { ok: true, model, sample: text || null };
+      return { ok: true, modelRequested, modelResolved: usedModel, fallbackUsed, sample: text || null };
     } catch (err: any) {
       const message = err instanceof Error ? err.message : String(err || 'Error');
       request.log.warn({ err: message }, 'OpenAI test failed');
@@ -665,13 +726,23 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return {
         aiPrompt: DEFAULT_AI_PROMPT,
         aiModel: DEFAULT_AI_MODEL,
+        aiModelOverride: null,
+        aiModelAlias: DEFAULT_AI_MODEL,
+        aiModelAliasResolved: DEFAULT_AI_MODEL,
         jobSheet: DEFAULT_RECRUIT_JOB_SHEET,
         faq: DEFAULT_RECRUIT_FAQ
       };
     }
+    const modelOverride = ((config as any).aiModelOverride || null) as string | null;
+    const modelAlias = String((config as any).aiModelAlias || config.aiModel || DEFAULT_AI_MODEL).trim() || DEFAULT_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_AI_MODEL;
+    const modelPreview = modelOverride || modelAliasResolved || DEFAULT_AI_MODEL;
     return {
       aiPrompt: config.aiPrompt || DEFAULT_AI_PROMPT,
-      aiModel: config.aiModel || DEFAULT_AI_MODEL,
+      aiModel: modelPreview,
+      aiModelOverride: modelOverride,
+      aiModelAlias: modelAlias,
+      aiModelAliasResolved: modelAliasResolved,
       jobSheet: (config as any).recruitJobSheet || DEFAULT_RECRUIT_JOB_SHEET,
       faq: typeof (config as any).recruitFaq === 'string' ? (config as any).recruitFaq : DEFAULT_RECRUIT_FAQ
     };
@@ -682,12 +753,24 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
 
-    const body = request.body as { aiPrompt?: string | null; aiModel?: string | null; jobSheet?: string | null; faq?: string | null };
+    const body = request.body as {
+      aiPrompt?: string | null;
+      aiModel?: string | null;
+      aiModelOverride?: string | null;
+      aiModelAlias?: string | null;
+      jobSheet?: string | null;
+      faq?: string | null;
+    };
     const updated = await executeUpdate(reply, async () => {
       if (typeof body?.aiPrompt !== 'undefined') {
         await updateAiPrompt(body.aiPrompt ?? null);
       }
-      if (typeof body?.aiModel !== 'undefined') {
+      if (typeof body?.aiModelOverride !== 'undefined' || typeof body?.aiModelAlias !== 'undefined') {
+        await updateAiModelConfig({
+          modelOverride: typeof body.aiModelOverride === 'undefined' ? undefined : body.aiModelOverride,
+          modelAlias: typeof body.aiModelAlias === 'undefined' ? undefined : body.aiModelAlias,
+        });
+      } else if (typeof body?.aiModel !== 'undefined') {
         await updateAiModel(body.aiModel ?? null);
       }
       if (typeof body?.jobSheet !== 'undefined' || typeof body?.faq !== 'undefined') {
@@ -700,9 +783,16 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     });
     if (!updated) return;
     const fresh = await getSystemConfig();
+    const modelOverride = ((fresh as any).aiModelOverride || null) as string | null;
+    const modelAlias = String((fresh as any).aiModelAlias || fresh.aiModel || DEFAULT_AI_MODEL).trim() || DEFAULT_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_AI_MODEL;
+    const modelPreview = modelOverride || modelAliasResolved || DEFAULT_AI_MODEL;
     return {
       aiPrompt: fresh.aiPrompt || DEFAULT_AI_PROMPT,
-      aiModel: fresh.aiModel || DEFAULT_AI_MODEL,
+      aiModel: modelPreview,
+      aiModelOverride: modelOverride,
+      aiModelAlias: modelAlias,
+      aiModelAliasResolved: modelAliasResolved,
       jobSheet: (fresh as any).recruitJobSheet || DEFAULT_RECRUIT_JOB_SHEET,
       faq: typeof (fresh as any).recruitFaq === 'string' ? (fresh as any).recruitFaq : DEFAULT_RECRUIT_FAQ
     };
@@ -717,13 +807,23 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return {
         prompt: DEFAULT_ADMIN_AI_PROMPT,
         hasCustomPrompt: false,
-        model: DEFAULT_ADMIN_AI_MODEL
+        model: DEFAULT_ADMIN_AI_MODEL,
+        modelOverride: null,
+        modelAlias: DEFAULT_ADMIN_AI_MODEL,
+        modelAliasResolved: DEFAULT_ADMIN_AI_MODEL,
       };
     }
+    const modelOverride = ((config as any).adminAiModelOverride || null) as string | null;
+    const modelAlias = String((config as any).adminAiModelAlias || config.adminAiModel || DEFAULT_ADMIN_AI_MODEL).trim() || DEFAULT_ADMIN_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_ADMIN_AI_MODEL;
+    const modelPreview = modelOverride || modelAliasResolved || DEFAULT_ADMIN_AI_MODEL;
     return {
       prompt: config.adminAiPrompt || DEFAULT_ADMIN_AI_PROMPT,
       hasCustomPrompt: Boolean(config.adminAiPrompt),
-      model: config.adminAiModel || DEFAULT_ADMIN_AI_MODEL
+      model: modelPreview,
+      modelOverride,
+      modelAlias,
+      modelAliasResolved,
     };
   });
 
@@ -731,18 +831,27 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
-    const body = request.body as { prompt?: string | null; model?: string | null };
+    const body = request.body as { prompt?: string | null; model?: string | null; modelOverride?: string | null; modelAlias?: string | null };
     const updated = await executeUpdate(reply, () =>
       updateAdminAiConfig({
         prompt: typeof body?.prompt === 'undefined' ? undefined : body.prompt,
-        model: typeof body?.model === 'undefined' ? undefined : body.model
+        model: typeof body?.model === 'undefined' ? undefined : body.model,
+        modelOverride: typeof body?.modelOverride === 'undefined' ? undefined : body.modelOverride,
+        modelAlias: typeof body?.modelAlias === 'undefined' ? undefined : body.modelAlias,
       })
     );
     if (!updated) return;
+    const modelOverride = ((updated as any).adminAiModelOverride || null) as string | null;
+    const modelAlias = String((updated as any).adminAiModelAlias || updated.adminAiModel || DEFAULT_ADMIN_AI_MODEL).trim() || DEFAULT_ADMIN_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_ADMIN_AI_MODEL;
+    const modelPreview = modelOverride || modelAliasResolved || DEFAULT_ADMIN_AI_MODEL;
     return {
       prompt: updated.adminAiPrompt || DEFAULT_ADMIN_AI_PROMPT,
       hasCustomPrompt: Boolean(updated.adminAiPrompt),
-      model: updated.adminAiModel || DEFAULT_ADMIN_AI_MODEL
+      model: modelPreview,
+      modelOverride,
+      modelAlias,
+      modelAliasResolved,
     };
   });
 
@@ -755,13 +864,23 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       return {
         prompt: DEFAULT_INTERVIEW_AI_PROMPT,
         hasCustomPrompt: false,
-        model: DEFAULT_INTERVIEW_AI_MODEL
+        model: DEFAULT_INTERVIEW_AI_MODEL,
+        modelOverride: null,
+        modelAlias: DEFAULT_INTERVIEW_AI_MODEL,
+        modelAliasResolved: DEFAULT_INTERVIEW_AI_MODEL,
       };
     }
+    const modelOverride = ((config as any).interviewAiModelOverride || null) as string | null;
+    const modelAlias = String((config as any).interviewAiModelAlias || config.interviewAiModel || DEFAULT_INTERVIEW_AI_MODEL).trim() || DEFAULT_INTERVIEW_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_INTERVIEW_AI_MODEL;
+    const modelPreview = modelOverride || modelAliasResolved || DEFAULT_INTERVIEW_AI_MODEL;
     return {
       prompt: config.interviewAiPrompt || DEFAULT_INTERVIEW_AI_PROMPT,
       hasCustomPrompt: Boolean(config.interviewAiPrompt),
-      model: config.interviewAiModel || DEFAULT_INTERVIEW_AI_MODEL
+      model: modelPreview,
+      modelOverride,
+      modelAlias,
+      modelAliasResolved,
     };
   });
 
@@ -769,18 +888,27 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (!isAdmin(request)) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
-    const body = request.body as { prompt?: string | null; model?: string | null };
+    const body = request.body as { prompt?: string | null; model?: string | null; modelOverride?: string | null; modelAlias?: string | null };
     const updated = await executeUpdate(reply, () =>
       updateInterviewAiConfig({
         prompt: typeof body?.prompt === 'undefined' ? undefined : body.prompt,
-        model: typeof body?.model === 'undefined' ? undefined : body.model
+        model: typeof body?.model === 'undefined' ? undefined : body.model,
+        modelOverride: typeof body?.modelOverride === 'undefined' ? undefined : body.modelOverride,
+        modelAlias: typeof body?.modelAlias === 'undefined' ? undefined : body.modelAlias,
       })
     );
     if (!updated) return;
+    const modelOverride = ((updated as any).interviewAiModelOverride || null) as string | null;
+    const modelAlias = String((updated as any).interviewAiModelAlias || updated.interviewAiModel || DEFAULT_INTERVIEW_AI_MODEL).trim() || DEFAULT_INTERVIEW_AI_MODEL;
+    const modelAliasResolved = normalizeModelId(modelAlias) || DEFAULT_INTERVIEW_AI_MODEL;
+    const modelPreview = modelOverride || modelAliasResolved || DEFAULT_INTERVIEW_AI_MODEL;
     return {
       prompt: updated.interviewAiPrompt || DEFAULT_INTERVIEW_AI_PROMPT,
       hasCustomPrompt: Boolean(updated.interviewAiPrompt),
-      model: updated.interviewAiModel || DEFAULT_INTERVIEW_AI_MODEL
+      model: modelPreview,
+      modelOverride,
+      modelAlias,
+      modelAliasResolved,
     };
   });
 

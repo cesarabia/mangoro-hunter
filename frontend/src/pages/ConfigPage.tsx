@@ -177,7 +177,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [tempOffError, setTempOffError] = useState<string | null>(null);
 
   const [integrationsAi, setIntegrationsAi] = useState<any | null>(null);
-  const [integrationsAiModel, setIntegrationsAiModel] = useState<string>('');
+  const [integrationsAiModelOverride, setIntegrationsAiModelOverride] = useState<string>('');
+  const [integrationsAiModelAlias, setIntegrationsAiModelAlias] = useState<string>('gpt-4.1-mini');
   const [integrationsAiKey, setIntegrationsAiKey] = useState<string>('');
   const [integrationsAiStatus, setIntegrationsAiStatus] = useState<string | null>(null);
   const [integrationsAiError, setIntegrationsAiError] = useState<string | null>(null);
@@ -714,7 +715,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       apiClient.get('/api/connectors'),
     ]);
     setIntegrationsAi(ai);
-    setIntegrationsAiModel(typeof ai?.aiModel === 'string' ? ai.aiModel : '');
+    setIntegrationsAiModelOverride(typeof ai?.aiModelOverride === 'string' ? ai.aiModelOverride : '');
+    setIntegrationsAiModelAlias(
+      typeof ai?.aiModelAlias === 'string'
+        ? ai.aiModelAlias
+        : typeof ai?.aiModel === 'string'
+          ? ai.aiModel
+          : ''
+    );
     setIntegrationsAiTest(null);
     setIntegrationsAiStatus(null);
     setIntegrationsAiError(null);
@@ -753,8 +761,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setIntegrationsAiTest(null);
     try {
       const payload: any = {};
-      const model = integrationsAiModel.trim();
-      if (model) payload.aiModel = model;
+      payload.aiModelOverride = integrationsAiModelOverride.trim() || null;
+      payload.aiModelAlias = integrationsAiModelAlias.trim() || null;
       const key = integrationsAiKey.trim();
       if (key) payload.openAiApiKey = key;
       await apiClient.put('/api/config/ai', payload);
@@ -787,7 +795,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setIntegrationsAiError(null);
     try {
       const res: any = await apiClient.post('/api/config/ai/test', {});
-      setIntegrationsAiTest(`OK (${res?.model || 'model'})`);
+      const resolved = res?.modelResolved || res?.model || '';
+      const requested = res?.modelRequested || '';
+      const suffix = res?.fallbackUsed ? ' (fallback)' : '';
+      setIntegrationsAiTest(`OK (${resolved || 'model'}${suffix}${requested && requested !== resolved ? ` · requested: ${requested}` : ''})`);
     } catch (err: any) {
       setIntegrationsAiTest(null);
       setIntegrationsAiError(err.message || 'Test falló');
@@ -2597,13 +2608,31 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'start' }}>
               <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Default model</div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Model (exact)</div>
                 <input
-                  value={integrationsAiModel}
-                  onChange={(e) => setIntegrationsAiModel(e.target.value)}
-                  placeholder="Ej: gpt-4.1-mini"
+                  value={integrationsAiModelOverride}
+                  onChange={(e) => setIntegrationsAiModelOverride(e.target.value)}
+                  placeholder="Ej: gpt-5-mini-2025-08-07"
                   style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
                 />
+                <div style={{ marginTop: 10, fontSize: 12, color: '#666', marginBottom: 6 }}>Model (alias / fallback)</div>
+                <select
+                  value={integrationsAiModelAlias}
+                  onChange={(e) => setIntegrationsAiModelAlias(e.target.value)}
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd', background: '#fff' }}
+                >
+                  <option value="">(usar default)</option>
+                  <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                  <option value="gpt-5-chat-latest">gpt-5-chat-latest</option>
+                </select>
+                <div style={{ marginTop: 8, fontSize: 12, color: '#666', lineHeight: 1.35 }}>
+                  Se intenta <b>Model (exact)</b> primero. Si falla por <span style={{ fontFamily: 'monospace' }}>model_not_found</span>, se usa el alias. No se muta la configuración guardada.
+                </div>
+                {integrationsAi?.aiModelAliasResolved && integrationsAi.aiModelAliasResolved !== integrationsAiModelAlias ? (
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#7a3b00' }}>
+                    Alias se resolverá a: <span style={{ fontFamily: 'monospace' }}>{integrationsAi.aiModelAliasResolved}</span>
+                  </div>
+                ) : null}
               </div>
               <div>
                 <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>API Key (masked)</div>
