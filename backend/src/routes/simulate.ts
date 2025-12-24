@@ -2756,8 +2756,9 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         } else {
           const staffE164 = '+56982345846';
           const staffWaId = '56982345846';
-          const lineId = `${wsId}-line-${Date.now()}`;
-          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          // Keep scenario fixtures idempotent across runs (archive-only DB).
+          const lineId = `${wsId}-line`;
+          const waPhoneNumberId = `${wsId}-wa`;
 
           await prisma.workspace
             .upsert({
@@ -2789,13 +2790,20 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           const progC = await createProgram('scenario-staff-menu-c', 'Scenario Staff Menu C (Inactivo)', false);
 
           const phoneLine = await prisma.phoneLine
-            .create({
-              data: {
+            .upsert({
+              where: { id: lineId },
+              create: {
                 id: lineId,
                 workspaceId: wsId,
                 alias: 'Scenario Staff Menu (temp)',
                 phoneE164: null,
                 waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              update: {
+                alias: 'Scenario Staff Menu (temp)',
                 isActive: true,
                 archivedAt: null,
                 needsAttention: false,
