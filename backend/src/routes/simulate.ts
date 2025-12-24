@@ -1982,8 +1982,10 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             assertions.push({ ok: false, message: 'staffInboxListCases: no se pudo crear phoneLine' });
           } else {
             const staffContact = await prisma.contact
-              .create({
-                data: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              .upsert({
+                where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+                create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+                update: { phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
                 select: { id: true },
               })
               .catch(() => null);
@@ -2157,8 +2159,10 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             .catch(() => null);
 
           const staffContact = await prisma.contact
-            .create({
-              data: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+              create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              update: { phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
               select: { id: true },
             })
             .catch(() => null);
@@ -2453,8 +2457,10 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             .catch(() => null);
 
           const staffContact = await prisma.contact
-            .create({
-              data: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+              create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              update: { phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
               select: { id: true },
             })
             .catch(() => null);
@@ -3076,7 +3082,12 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             .catch(() => null);
 
           const staffContact = await prisma.contact
-            .create({ data: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any, select: { id: true } })
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+              create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              update: { phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              select: { id: true },
+            })
             .catch(() => null);
           const staffConv = staffContact?.id
             ? await prisma.conversation
@@ -3191,7 +3202,12 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             .catch(() => null);
 
           const staffContact = await prisma.contact
-            .create({ data: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any, select: { id: true } })
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+              create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              update: { phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              select: { id: true },
+            })
             .catch(() => null);
           const staffConv = staffContact?.id
             ? await prisma.conversation
