@@ -2633,8 +2633,9 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           await prisma.workspace
             .upsert({
               where: { id: wsId },
-              create: { id: wsId, name: 'Scenario Persona Routing', isSandbox: true, archivedAt: null } as any,
-              update: { name: 'Scenario Persona Routing', isSandbox: true, archivedAt: null } as any,
+              // Important: inbound routing ignores workspaces marked as sandbox.
+              create: { id: wsId, name: 'Scenario Persona Routing', isSandbox: false, archivedAt: null } as any,
+              update: { name: 'Scenario Persona Routing', isSandbox: false, archivedAt: null } as any,
             })
             .catch(() => {});
 
@@ -2918,8 +2919,9 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           await prisma.workspace
             .upsert({
               where: { id: wsId },
-              create: { id: wsId, name: 'Scenario Persona Switch', isSandbox: true, archivedAt: null } as any,
-              update: { name: 'Scenario Persona Switch', isSandbox: true, archivedAt: null } as any,
+              // Important: inbound routing ignores workspaces marked as sandbox.
+              create: { id: wsId, name: 'Scenario Persona Switch', isSandbox: false, archivedAt: null } as any,
+              update: { name: 'Scenario Persona Switch', isSandbox: false, archivedAt: null } as any,
             })
             .catch(() => {});
           await prisma.workspace.update({ where: { id: wsId }, data: { allowPersonaSwitchByWhatsApp: true, personaSwitchTtlMinutes: 360 } as any }).catch(() => {});

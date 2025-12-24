@@ -1349,10 +1349,22 @@ export async function runAutomations(params: {
             .catch(() => null);
           const partnerDefaultProgramId = (workspace as any)?.partnerDefaultProgramId || null;
 
-          const parseRecipients = (raw: any): string[] => {
+          const parseRecipientsList = (raw: any): string[] => {
             const out: string[] = [];
             if (!raw) return out;
-            const items = Array.isArray(raw) ? raw : String(raw).split(/[,\n]/g);
+            if (Array.isArray(raw)) {
+              for (const item of raw) {
+                const t = String(item || '').trim();
+                if (!t) continue;
+                if (!out.includes(t)) out.push(t);
+              }
+              return out;
+            }
+
+            const rawText = String(raw || '').trim();
+            if (!rawText) return out;
+            const fromJson = safeJsonParseArray(rawText);
+            const items = fromJson ?? rawText.split(/[,\n]/g);
             for (const item of items) {
               const t = String(item || '').trim();
               if (!t) continue;
@@ -1360,8 +1372,22 @@ export async function runAutomations(params: {
             }
             return out;
           };
-          const recipientsRaw = (action as any).recipients ?? (workspace as any)?.partnerPhoneE164sJson ?? null;
-          const recipients = parseRecipients(recipientsRaw);
+
+          const resolveRecipients = (): string[] => {
+            const spec = (action as any).recipients;
+            if (spec === null || typeof spec === 'undefined') {
+              return parseRecipientsList((workspace as any)?.partnerPhoneE164sJson ?? null);
+            }
+            if (typeof spec === 'string') {
+              const upper = spec.trim().toUpperCase();
+              if (upper === 'ALL_PARTNERS' || upper === 'ALLPARTNERS') {
+                return parseRecipientsList((workspace as any)?.partnerPhoneE164sJson ?? null);
+              }
+            }
+            return parseRecipientsList(spec);
+          };
+
+          const recipients = resolveRecipients();
           if (recipients.length === 0) {
             outputs.push({ action: 'NOTIFY_PARTNER_WHATSAPP', ok: false, error: 'no_recipients' });
             continue;
