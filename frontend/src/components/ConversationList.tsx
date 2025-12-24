@@ -102,7 +102,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const unreadCount = c.unreadCount || 0;
           const hasUnread = unreadCount > 0;
           const isAdmin = Boolean(c.isAdmin);
-          const isStaff = String(c.conversationKind || 'CLIENT').toUpperCase() === 'STAFF';
+          const kind = String(c.conversationKind || 'CLIENT').toUpperCase();
+          const isStaff = kind === 'STAFF';
+          const isPartner = kind === 'PARTNER';
           const rawCandidate = c.contact?.candidateName || null;
           const validCandidate = !isAdmin && rawCandidate && !isSuspiciousCandidateName(rawCandidate);
           const waId = c.contact?.waId || c.contact?.phone || '';
@@ -176,6 +178,23 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                       }}
                     >
                       STAFF
+                    </span>
+                  )}
+                  {isPartner && (
+                    <span
+                      title="Conversación de proveedor/partner (WhatsApp)"
+                      style={{
+                        background: '#fff7e6',
+                        border: '1px solid #ffd591',
+                        color: '#ad4e00',
+                        borderRadius: 999,
+                        fontSize: 11,
+                        padding: '2px 8px',
+                        marginRight: 6,
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      PROVEEDOR
                     </span>
                   )}
                   {noContact && (

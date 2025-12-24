@@ -7,7 +7,7 @@ import { resolveLocation, stableHash, stripAccents, validateRut } from './agent/
 import { createInAppNotification } from './notificationService';
 import { getContactDisplayName } from '../utils/contactDisplay';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
-import { ensureStaffConversation } from './staffConversationService';
+import { ensurePartnerConversation, ensureStaffConversation } from './staffConversationService';
 
 type ProgramSummary = { id: string; name: string; slug: string };
 
@@ -129,12 +129,35 @@ function parseProgramMenuIdsJson(raw: unknown): string[] {
 
 async function listSelectablePrograms(params: { workspaceId: string; conversation: any }): Promise<ProgramSummary[]> {
   const programsAll = await listActivePrograms(params.workspaceId);
+  const kind = String((params.conversation as any)?.conversationKind || 'CLIENT').toUpperCase();
   let programs = params.conversation.isAdmin
     ? programsAll
     : programsAll.filter((p) => normalizeLoose(p.slug) !== 'admin');
   if (programs.length === 0) return [];
 
-  if (!params.conversation.isAdmin && params.conversation.phoneLineId) {
+  const workspaceMenus = await prisma.workspace
+    .findFirst({
+      where: { id: params.workspaceId, archivedAt: null },
+      select: {
+        staffProgramMenuIdsJson: true as any,
+        clientProgramMenuIdsJson: true as any,
+        partnerProgramMenuIdsJson: true as any,
+      },
+    })
+    .catch(() => null);
+  const menuIdsRaw =
+    kind === 'STAFF'
+      ? (workspaceMenus as any)?.staffProgramMenuIdsJson
+      : kind === 'PARTNER'
+        ? (workspaceMenus as any)?.partnerProgramMenuIdsJson
+        : (workspaceMenus as any)?.clientProgramMenuIdsJson;
+  const allowedIdsFromWorkspace = parseProgramMenuIdsJson(menuIdsRaw);
+  if (allowedIdsFromWorkspace.length > 0) {
+    const filtered = programs.filter((p) => allowedIdsFromWorkspace.includes(p.id));
+    if (filtered.length > 0) programs = filtered;
+  }
+
+  if (!params.conversation.isAdmin && kind === 'CLIENT' && params.conversation.phoneLineId) {
     const line = await prisma.phoneLine
       .findFirst({
         where: { id: params.conversation.phoneLineId, workspaceId: params.workspaceId, archivedAt: null },
@@ -448,6 +471,14 @@ type ActionRow =
       targetEmail?: string;
       messageTemplate?: string;
       // v2.2:
+      templateText?: string;
+      recipients?: any;
+      requireAvailability?: boolean;
+      dedupePolicy?: string;
+      dedupeKey?: string;
+    }
+  | {
+      type: 'NOTIFY_PARTNER_WHATSAPP';
       templateText?: string;
       recipients?: any;
       requireAvailability?: boolean;
@@ -894,7 +925,26 @@ export async function runAutomations(params: {
           const ciudad = String(conversation.contact?.ciudad || '').trim();
           const region = String(conversation.contact?.region || '').trim();
           const location = [comuna, ciudad, region].filter(Boolean).join(' · ');
-          const availability = String((conversation.contact as any)?.availabilityText || '').trim();
+          const availability = (() => {
+            const confirmedAtRaw = (conversation as any).availabilityConfirmedAt || null;
+            const parsedRaw = String((conversation as any).availabilityParsedJson || '').trim();
+            if (confirmedAtRaw && parsedRaw) {
+              try {
+                const parsed = JSON.parse(parsedRaw);
+                const day = String((parsed as any)?.day || '').trim();
+                const range = String((parsed as any)?.timeRange || (parsed as any)?.range || '').trim();
+                const date = String((parsed as any)?.date || '').trim();
+                const parts = [date || null, day || null, range || null].filter(Boolean);
+                const label = parts.join(' ');
+                if (label) return label;
+              } catch {
+                // ignore
+              }
+            }
+            const raw = String((conversation as any).availabilityRaw || '').trim();
+            if (raw) return raw;
+            return String((conversation.contact as any)?.availabilityText || '').trim();
+          })();
           const requireAvailability = Boolean((action as any).requireAvailability);
           if (requireAvailability && !availability) {
             outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: true, skipped: true, reason: 'require_availability' });
@@ -1103,6 +1153,24 @@ export async function runAutomations(params: {
                   } as any,
                 })
                 .catch(() => {});
+              await prisma.notificationLog
+                .create({
+                  data: {
+                    workspaceId: params.workspaceId,
+                    sourceConversationId: conversation.id,
+                    targetConversationId: staffThread.conversation.id,
+                    targetKind: 'STAFF',
+                    targetE164: staffE164,
+                    channel: 'WHATSAPP',
+                    dedupeKey,
+                    templateText: templateRaw || null,
+                    renderedText: text,
+                    varsJson: serializeJson(vars),
+                    blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+                    waMessageId: null,
+                  } as any,
+                })
+                .catch(() => {});
               await createInAppNotification({
                 workspaceId: params.workspaceId,
                 userId: targetUser.id,
@@ -1176,6 +1244,30 @@ export async function runAutomations(params: {
             const blocked = Boolean((sendResult as any)?.blocked);
             const providerResult = (sendResult as any)?.details?.sendResult || null;
             const providerFailed = providerResult && providerResult.success === false;
+            const notificationBlockedReason = blocked
+              ? blockedReason || 'BLOCKED'
+              : providerFailed
+                ? `SEND_FAILED:${String(providerResult?.error || 'unknown')}`
+                : null;
+            const providerMessageId = providerResult && typeof providerResult === 'object' ? (providerResult as any).messageId || null : null;
+            await prisma.notificationLog
+              .create({
+                data: {
+                  workspaceId: params.workspaceId,
+                  sourceConversationId: conversation.id,
+                  targetConversationId: staffThread.conversation.id,
+                  targetKind: 'STAFF',
+                  targetE164: staffE164,
+                  channel: 'WHATSAPP',
+                  dedupeKey,
+                  templateText: templateRaw || null,
+                  renderedText: text,
+                  varsJson: serializeJson(vars),
+                  blockedReason: notificationBlockedReason,
+                  waMessageId: providerMessageId,
+                } as any,
+              })
+              .catch(() => {});
 
             if (blocked || providerFailed) {
               await createInAppNotification({
@@ -1198,6 +1290,300 @@ export async function runAutomations(params: {
           }
 
           outputs.push({ action: 'NOTIFY_STAFF_WHATSAPP', ok: true, dedupeKey, recipients: perRecipient });
+          continue;
+        }
+        if (action.type === 'NOTIFY_PARTNER_WHATSAPP') {
+          if (conversation.isAdmin) {
+            outputs.push({ action: 'NOTIFY_PARTNER_WHATSAPP', ok: false, error: 'admin_conversation' });
+            continue;
+          }
+
+          const stage = String(conversation.conversationStage || '').trim() || 'STAGE';
+          const clientName = getContactDisplayName(conversation.contact);
+          const programName = String(conversation.program?.name || '').trim();
+          const comuna = String(conversation.contact?.comuna || '').trim();
+          const ciudad = String(conversation.contact?.ciudad || '').trim();
+          const region = String(conversation.contact?.region || '').trim();
+          const location = [comuna, ciudad, region].filter(Boolean).join(' · ');
+          const availability = (() => {
+            const confirmedAtRaw = (conversation as any).availabilityConfirmedAt || null;
+            const parsedRaw = String((conversation as any).availabilityParsedJson || '').trim();
+            if (confirmedAtRaw && parsedRaw) {
+              try {
+                const parsed = JSON.parse(parsedRaw);
+                const day = String((parsed as any)?.day || '').trim();
+                const range = String((parsed as any)?.timeRange || (parsed as any)?.range || '').trim();
+                const date = String((parsed as any)?.date || '').trim();
+                const parts = [date || null, day || null, range || null].filter(Boolean);
+                const label = parts.join(' ');
+                if (label) return label;
+              } catch {
+                // ignore
+              }
+            }
+            const raw = String((conversation as any).availabilityRaw || '').trim();
+            if (raw) return raw;
+            return String((conversation.contact as any)?.availabilityText || '').trim();
+          })();
+          const requireAvailability = Boolean((action as any).requireAvailability);
+          if (requireAvailability && !availability) {
+            outputs.push({ action: 'NOTIFY_PARTNER_WHATSAPP', ok: true, skipped: true, reason: 'require_availability' });
+            continue;
+          }
+
+          const vars: Record<string, string> = {
+            clientName,
+            service: programName,
+            location,
+            availability,
+            stage,
+            conversationId: conversation.id,
+            conversationIdShort: String(conversation.id || '').slice(0, 10),
+          };
+
+          const workspace = await prisma.workspace
+            .findFirst({
+              where: { id: params.workspaceId, archivedAt: null },
+              select: { partnerPhoneE164sJson: true as any, partnerDefaultProgramId: true as any },
+            })
+            .catch(() => null);
+          const partnerDefaultProgramId = (workspace as any)?.partnerDefaultProgramId || null;
+
+          const parseRecipients = (raw: any): string[] => {
+            const out: string[] = [];
+            if (!raw) return out;
+            const items = Array.isArray(raw) ? raw : String(raw).split(/[,\n]/g);
+            for (const item of items) {
+              const t = String(item || '').trim();
+              if (!t) continue;
+              if (!out.includes(t)) out.push(t);
+            }
+            return out;
+          };
+          const recipientsRaw = (action as any).recipients ?? (workspace as any)?.partnerPhoneE164sJson ?? null;
+          const recipients = parseRecipients(recipientsRaw);
+          if (recipients.length === 0) {
+            outputs.push({ action: 'NOTIFY_PARTNER_WHATSAPP', ok: false, error: 'no_recipients' });
+            continue;
+          }
+
+          const templateRaw = String((action as any).templateText || '').trim();
+          const defaultText = [
+            `🔔 Caso actualizado: ${vars.stage}`,
+            `👤 ${vars.clientName}`,
+            vars.service ? `🧭 Servicio: ${vars.service}` : null,
+            vars.location ? `📍 Ubicación: ${vars.location}` : null,
+            vars.availability ? `⏱️ Preferencia horaria: ${vars.availability}` : null,
+            `ID: ${vars.conversationIdShort}`,
+          ]
+            .filter(Boolean)
+            .join('\n');
+          const text = renderSimpleTemplate(templateRaw || defaultText, vars).trim();
+
+          const dedupePolicy = String((action as any).dedupePolicy || 'DAILY').trim().toUpperCase();
+          const today = new Date().toISOString().slice(0, 10);
+          const stageChangedAtRaw = (conversation as any).stageChangedAt ? new Date((conversation as any).stageChangedAt) : null;
+          const stageStamp = stageChangedAtRaw && Number.isFinite(stageChangedAtRaw.getTime()) ? stageChangedAtRaw.toISOString() : null;
+          const defaultDedupeKey =
+            dedupePolicy === 'PER_STAGE_CHANGE' && stageStamp
+              ? `partner_whatsapp:${conversation.id}:${stage}:${stageStamp}`
+              : `partner_whatsapp:${conversation.id}:${stage}:${today}`;
+          const dedupeKey = String((action as any).dedupeKey || '').trim() || defaultDedupeKey;
+
+          const perRecipient: any[] = [];
+          for (const partnerE164Raw of recipients) {
+            const partnerE164 = String(partnerE164Raw || '').trim();
+            const partnerWaId = normalizeWhatsAppId(partnerE164);
+            if (!partnerWaId) {
+              perRecipient.push({ to: partnerE164, ok: false, error: 'invalid_partner_whatsapp' });
+              continue;
+            }
+
+            const partnerLabel = 'Partner';
+            const partnerThread = await ensurePartnerConversation({
+              workspaceId: params.workspaceId,
+              phoneLineId: conversation.phoneLineId,
+              partnerWaId,
+              partnerLabel,
+              partnerProgramId: partnerDefaultProgramId,
+            }).catch((err) => {
+              params.app.log.warn({ err }, 'ensurePartnerConversation failed');
+              return null;
+            });
+            if (!partnerThread?.conversation?.id) {
+              perRecipient.push({ to: partnerE164, ok: false, error: 'partner_conversation_failed' });
+              continue;
+            }
+
+            const existingOutbound = await prisma.outboundMessageLog
+              .findFirst({
+                where: { conversationId: partnerThread.conversation.id, dedupeKey },
+                select: { id: true },
+              })
+              .catch(() => null);
+            if (existingOutbound?.id) {
+              perRecipient.push({ to: partnerE164, ok: true, deduped: true });
+              continue;
+            }
+
+            const strictWindow = await computeWhatsAppWindowStatusStrict(partnerThread.conversation.id).catch(() => 'OUTSIDE_24H' as const);
+            if (strictWindow === 'OUTSIDE_24H') {
+              const textHash = stableHash(`WINDOW:SESSION_TEXT:${text}`);
+              await prisma.outboundMessageLog
+                .create({
+                  data: {
+                    workspaceId: params.workspaceId,
+                    conversationId: partnerThread.conversation.id,
+                    relatedConversationId: conversation.id,
+                    agentRunId: null,
+                    channel: 'WHATSAPP',
+                    type: 'SESSION_TEXT',
+                    templateName: null,
+                    dedupeKey,
+                    textHash,
+                    blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+                    waMessageId: null,
+                  } as any,
+                })
+                .catch(() => {});
+              await prisma.notificationLog
+                .create({
+                  data: {
+                    workspaceId: params.workspaceId,
+                    sourceConversationId: conversation.id,
+                    targetConversationId: partnerThread.conversation.id,
+                    targetKind: 'PARTNER',
+                    targetE164: partnerE164,
+                    channel: 'WHATSAPP',
+                    dedupeKey,
+                    templateText: templateRaw || null,
+                    renderedText: text,
+                    varsJson: serializeJson(vars),
+                    blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+                    waMessageId: null,
+                  } as any,
+                })
+                .catch(() => {});
+              if (conversation.assignedToId) {
+                await createInAppNotification({
+                  workspaceId: params.workspaceId,
+                  userId: conversation.assignedToId,
+                  conversationId: conversation.id,
+                  type: 'PARTNER_WHATSAPP_BLOCKED',
+                  title: 'No se pudo enviar WhatsApp al partner (fuera de ventana 24h)',
+                  body: partnerE164,
+                  data: { blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE', to: partnerE164, dedupeKey },
+                  dedupeKey: `partner_wa_block:${conversation.id}:${stage}:${today}:${partnerE164}`,
+                }).catch(() => {});
+              }
+              perRecipient.push({ to: partnerE164, ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+              continue;
+            }
+
+            const partnerRun = await prisma.agentRunLog.create({
+              data: {
+                workspaceId: params.workspaceId,
+                conversationId: partnerThread.conversation.id,
+                programId: partnerThread.conversation.programId || null,
+                phoneLineId: partnerThread.conversation.phoneLineId || null,
+                eventType: 'PARTNER_WHATSAPP_NOTIFICATION',
+                status: 'RUNNING',
+                inputContextJson: serializeJson({
+                  sourceConversationId: conversation.id,
+                  automationRuleId: rule.id,
+                  targetE164: partnerE164,
+                  stage,
+                  dedupeKey,
+                }),
+                commandsJson: serializeJson({
+                  agent: 'system_partner_notifier',
+                  version: 1,
+                  commands: [
+                    {
+                      command: 'SEND_MESSAGE',
+                      conversationId: partnerThread.conversation.id,
+                      channel: 'WHATSAPP',
+                      type: 'SESSION_TEXT',
+                      text,
+                      dedupeKey,
+                    },
+                  ],
+                }),
+              },
+            });
+
+            const exec = await executeAgentResponse({
+              app: params.app,
+              workspaceId: params.workspaceId,
+              agentRunId: partnerRun.id,
+              response: {
+                agent: 'system_partner_notifier',
+                version: 1,
+                commands: [
+                  {
+                    command: 'SEND_MESSAGE',
+                    conversationId: partnerThread.conversation.id,
+                    channel: 'WHATSAPP',
+                    type: 'SESSION_TEXT',
+                    text,
+                    dedupeKey,
+                  } as any,
+                ],
+              } as any,
+              transportMode: params.transportMode,
+            });
+
+            const sendResult = exec.results?.[0] || null;
+            const blockedReason = (sendResult as any)?.blockedReason || null;
+            const blocked = Boolean((sendResult as any)?.blocked);
+            const providerResult = (sendResult as any)?.details?.sendResult || null;
+            const providerFailed = providerResult && providerResult.success === false;
+            const notificationBlockedReason = blocked
+              ? blockedReason || 'BLOCKED'
+              : providerFailed
+                ? `SEND_FAILED:${String(providerResult?.error || 'unknown')}`
+                : null;
+            const providerMessageId = providerResult && typeof providerResult === 'object' ? (providerResult as any).messageId || null : null;
+            await prisma.notificationLog
+              .create({
+                data: {
+                  workspaceId: params.workspaceId,
+                  sourceConversationId: conversation.id,
+                  targetConversationId: partnerThread.conversation.id,
+                  targetKind: 'PARTNER',
+                  targetE164: partnerE164,
+                  channel: 'WHATSAPP',
+                  dedupeKey,
+                  templateText: templateRaw || null,
+                  renderedText: text,
+                  varsJson: serializeJson(vars),
+                  blockedReason: notificationBlockedReason,
+                  waMessageId: providerMessageId,
+                } as any,
+              })
+              .catch(() => {});
+
+            if ((blocked || providerFailed) && conversation.assignedToId) {
+              await createInAppNotification({
+                workspaceId: params.workspaceId,
+                userId: conversation.assignedToId,
+                conversationId: conversation.id,
+                type: blocked ? 'PARTNER_WHATSAPP_BLOCKED' : 'PARTNER_WHATSAPP_FAILED',
+                title: blocked ? 'No se pudo enviar WhatsApp al partner' : 'Falló el envío WhatsApp al partner',
+                body: blocked
+                  ? blockedReason
+                    ? `Motivo: ${blockedReason}`
+                    : 'Motivo: bloqueo'
+                  : String(providerResult?.error || 'Error desconocido'),
+                data: { blockedReason: blockedReason || null, to: partnerE164, dedupeKey, sendError: providerResult?.error || null },
+                dedupeKey: `partner_wa_block:${conversation.id}:${stage}:${today}:${partnerE164}`,
+              }).catch(() => {});
+            }
+
+            perRecipient.push({ to: partnerE164, ok: true, blocked, blockedReason });
+          }
+
+          outputs.push({ action: 'NOTIFY_PARTNER_WHATSAPP', ok: true, dedupeKey, recipients: perRecipient });
           continue;
         }
         if (action.type === 'RUN_AGENT') {

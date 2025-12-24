@@ -52,7 +52,8 @@ import {
   isWeeklySummaryRequest,
 } from "./sellerService";
 import { runAutomations } from "./automationRunnerService";
-import { ensureStaffConversation } from "./staffConversationService";
+import { ensurePartnerConversation, ensureStaffConversation } from "./staffConversationService";
+import { stableHash } from "./agent/tools";
 
 interface InboundMedia {
   type: string;
@@ -233,7 +234,164 @@ export async function handleInboundWhatsAppMessage(
     }
   }
 
-  if (isAdminSender && normalizedSender) {
+  const workspace = await prisma.workspace
+    .findUnique({
+      where: { id: workspaceId },
+      select: {
+        id: true,
+        archivedAt: true,
+        staffDefaultProgramId: true as any,
+        clientDefaultProgramId: true as any,
+        partnerDefaultProgramId: true as any,
+        allowPersonaSwitchByWhatsApp: true as any,
+        personaSwitchTtlMinutes: true as any,
+        partnerPhoneE164sJson: true as any,
+      } as any,
+    })
+    .catch(() => null);
+  if (!workspace || (workspace as any).archivedAt) return { conversationId: "" };
+
+  const replyToWaMessageId = (() => {
+    const payload = params.rawPayload as any;
+    if (!payload || typeof payload !== "object") return null;
+    if (payload.context && typeof payload.context === "object") {
+      const id = String((payload.context as any).id || "").trim();
+      return id || null;
+    }
+    // Some webhook payloads nest reply context differently; tolerate common shapes.
+    const ctxId =
+      payload?.message?.context?.id ||
+      payload?.messages?.[0]?.context?.id ||
+      payload?.value?.messages?.[0]?.context?.id;
+    const id = typeof ctxId === "string" ? ctxId.trim() : "";
+    return id || null;
+  })();
+
+  const replyRoute =
+    replyToWaMessageId && replyToWaMessageId.trim()
+      ? await (async () => {
+          const outbound = await prisma.outboundMessageLog
+            .findFirst({
+              where: { workspaceId, waMessageId: replyToWaMessageId.trim() },
+              select: { conversationId: true },
+              orderBy: { createdAt: "desc" },
+            })
+            .catch(() => null);
+          if (!outbound?.conversationId) return null;
+          const convo = await prisma.conversation
+            .findFirst({
+              where: { id: outbound.conversationId, workspaceId, phoneLineId, archivedAt: null, isAdmin: false } as any,
+              include: { contact: true },
+            })
+            .catch(() => null);
+          if (!convo?.id) return null;
+          const kind = String((convo as any).conversationKind || "").toUpperCase();
+          if (kind !== "STAFF" && kind !== "PARTNER") return null;
+          return { conversation: convo, contact: convo.contact, kind };
+        })()
+      : null;
+
+  const staffMemberships =
+    normalizedSender
+      ? await prisma.membership
+          .findMany({
+            where: {
+              workspaceId,
+              archivedAt: null,
+              OR: [{ staffWhatsAppE164: { not: null } }, { staffWhatsAppExtraE164sJson: { not: null } as any }],
+            } as any,
+            include: { user: { select: { id: true, email: true, name: true } } },
+          })
+          .catch(() => [])
+      : [];
+  const staffMatch =
+    normalizedSender && staffMemberships.length > 0
+      ? staffMemberships.find((m) => {
+          const primary = normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || "")) === normalizedSender;
+          if (primary) return true;
+          const extraRaw = String((m as any).staffWhatsAppExtraE164sJson || "").trim();
+          if (!extraRaw) return false;
+          try {
+            const parsed = JSON.parse(extraRaw);
+            if (Array.isArray(parsed)) {
+              return parsed.some((v) => normalizeWhatsAppId(String(v || "")) === normalizedSender);
+            }
+          } catch {
+            // ignore
+          }
+          return extraRaw
+            .split(/[,\n]/g)
+            .map((v) => normalizeWhatsAppId(String(v || "")) || "")
+            .filter(Boolean)
+            .includes(normalizedSender);
+        })
+      : null;
+
+  const partnerMatch = (() => {
+    if (!normalizedSender) return false;
+    const raw = String((workspace as any).partnerPhoneE164sJson || "").trim();
+    if (!raw) return false;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.some((v) => normalizeWhatsAppId(String(v || "")) === normalizedSender);
+      }
+    } catch {
+      // ignore
+    }
+    return raw
+      .split(/[,\n]/g)
+      .map((v) => normalizeWhatsAppId(String(v || "")) || "")
+      .filter(Boolean)
+      .includes(normalizedSender);
+  })();
+
+  const contactForRouting = replyRoute?.contact || (await mergeOrCreateContact({ workspaceId, waId }))!;
+  const activeOverride = await prisma.conversation
+    .findFirst({
+      where: {
+        workspaceId,
+        phoneLineId,
+        contactId: contactForRouting.id,
+        archivedAt: null,
+        activePersonaKind: { not: null },
+        activePersonaUntilAt: { gt: new Date() },
+      } as any,
+      select: { activePersonaKind: true as any, activePersonaUntilAt: true as any },
+      orderBy: { activePersonaUntilAt: "desc" },
+    })
+    .catch(() => null);
+  const overrideKindRaw = String((activeOverride as any)?.activePersonaKind || "").trim().toUpperCase();
+  const overrideKind = overrideKindRaw || null;
+
+  const allowedKinds = (() => {
+    if (staffMatch) {
+      const raw = String((staffMatch as any).allowedPersonaKindsJson || "").trim();
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed.map((v) => String(v || "").trim().toUpperCase()).filter(Boolean);
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return ["STAFF", "CLIENT"];
+    }
+    if (partnerMatch) return ["PARTNER"];
+    if (isAdminSender) return ["ADMIN"];
+    return ["CLIENT"];
+  })();
+
+  const baseKind = staffMatch ? "STAFF" : partnerMatch ? "PARTNER" : isAdminSender ? "ADMIN" : "CLIENT";
+  const effectiveKind = replyRoute?.kind
+    ? replyRoute.kind
+    : overrideKind && allowedKinds.includes(overrideKind)
+      ? overrideKind
+      : baseKind;
+
+  if (effectiveKind === "ADMIN" && normalizedSender) {
     const adminThread = await ensureAdminConversation({ workspaceId, waId, normalizedAdmin: normalizedSender, phoneLineId });
     const baseText = buildInboundText(params.text, params.media);
     let adminMessage;
@@ -531,42 +689,38 @@ export async function handleInboundWhatsAppMessage(
   return { conversationId: adminThread.conversation.id };
 }
 
-  const staffMemberships =
-    !isAdminSender && normalizedSender
-      ? await prisma.membership
-          .findMany({
-            where: {
-              workspaceId,
-              archivedAt: null,
-              staffWhatsAppE164: { not: null },
-            },
-            include: { user: { select: { id: true, email: true, name: true } } },
-          })
-          .catch(() => [])
-      : [];
-  const staffMatch =
-    normalizedSender && staffMemberships.length > 0
-      ? staffMemberships.find((m) => normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || "")) === normalizedSender)
-      : null;
-
   let contact: any = null;
   let conversation: any = null;
-  const isStaffConversation = Boolean(staffMatch?.id);
+  const staffDefaultProgramId = (workspace as any)?.staffDefaultProgramId || null;
+  const partnerDefaultProgramId = (workspace as any)?.partnerDefaultProgramId || null;
+  const clientDefaultProgramId = useDefaultProgram
+    ? phoneLine?.defaultProgramId || (workspace as any)?.clientDefaultProgramId || null
+    : null;
+  const isStaffConversation = effectiveKind === "STAFF";
+  const isPartnerConversation = effectiveKind === "PARTNER";
 
-  if (isStaffConversation && normalizedSender) {
-    const workspace = await prisma.workspace
-      .findUnique({
-        where: { id: workspaceId },
-        select: { staffDefaultProgramId: true as any },
-      } as any)
-      .catch(() => null);
+  if (replyRoute?.conversation?.id) {
+    contact = replyRoute.contact;
+    conversation = replyRoute.conversation;
+    const kind = String((conversation as any).conversationKind || "").toUpperCase();
+    const desiredProgramId =
+      kind === "STAFF" ? staffDefaultProgramId : kind === "PARTNER" ? partnerDefaultProgramId : null;
+    if (!conversation.programId && desiredProgramId) {
+      conversation = await prisma.conversation
+        .update({
+          where: { id: conversation.id },
+          data: { programId: desiredProgramId, updatedAt: new Date() },
+        })
+        .catch(() => conversation);
+    }
+  } else if (isStaffConversation && normalizedSender) {
     const staffLabel = String(staffMatch?.user?.name || staffMatch?.user?.email || "Staff");
     const staffThread = await ensureStaffConversation({
       workspaceId,
       phoneLineId,
       staffWaId: normalizedSender,
       staffLabel,
-      staffProgramId: (workspace as any)?.staffDefaultProgramId || null,
+      staffProgramId: staffDefaultProgramId,
     }).catch((err) => {
       app.log.warn({ err, workspaceId, phoneLineId }, "ensureStaffConversation failed");
       return null;
@@ -576,12 +730,29 @@ export async function handleInboundWhatsAppMessage(
     }
     contact = staffThread.contact;
     conversation = staffThread.conversation;
+  } else if (isPartnerConversation && normalizedSender) {
+    const partnerLabel = "Partner";
+    const partnerThread = await ensurePartnerConversation({
+      workspaceId,
+      phoneLineId,
+      partnerWaId: normalizedSender,
+      partnerLabel,
+      partnerProgramId: partnerDefaultProgramId,
+    }).catch((err) => {
+      app.log.warn({ err, workspaceId, phoneLineId }, "ensurePartnerConversation failed");
+      return null;
+    });
+    if (!partnerThread?.conversation?.id) {
+      return { conversationId: "" };
+    }
+    contact = partnerThread.contact;
+    conversation = partnerThread.conversation;
   } else {
-    contact = (await mergeOrCreateContact({ workspaceId, waId }))!;
+    contact = contactForRouting;
     await maybeUpdateContactName(contact, params.profileName, params.text, config);
 
     conversation = await prisma.conversation.findFirst({
-      where: { contactId: contact.id, isAdmin: false, workspaceId, phoneLineId },
+      where: { contactId: contact.id, isAdmin: false, workspaceId, phoneLineId, conversationKind: "CLIENT" } as any,
       orderBy: { updatedAt: "desc" },
     });
 
@@ -593,7 +764,7 @@ export async function handleInboundWhatsAppMessage(
         data: {
           workspaceId,
           phoneLineId,
-          programId: defaultProgramId,
+          programId: clientDefaultProgramId,
           contactId: contact.id,
           status: "NEW",
           conversationStage: defaultStageSlug,
@@ -628,10 +799,10 @@ export async function handleInboundWhatsAppMessage(
     } catch {
       // ignore
     }
-    if (!conversation.programId && defaultProgramId) {
+    if (!conversation.programId && clientDefaultProgramId) {
       conversation = await prisma.conversation.update({
         where: { id: conversation.id },
-        data: { programId: defaultProgramId },
+        data: { programId: clientDefaultProgramId },
       });
     }
   }
@@ -693,21 +864,44 @@ export async function handleInboundWhatsAppMessage(
   });
   const effectiveText = buildPolicyText(params, latestMessage);
 
-  const optedIn = await maybeHandleOptIn(app, conversation, contact, effectiveText);
-  if (optedIn) {
-    contact.noContact = false;
-    return { conversationId: conversation.id };
+  if (!isStaffConversation && !isPartnerConversation) {
+    const optedIn = await maybeHandleOptIn(app, conversation, contact, effectiveText);
+    if (optedIn) {
+      contact.noContact = false;
+      return { conversationId: conversation.id };
+    }
+
+    const optedOut = await maybeHandleOptOut(app, conversation, contact, effectiveText);
+    if (optedOut) {
+      return { conversationId: conversation.id };
+    }
   }
 
-  const optedOut = await maybeHandleOptOut(app, conversation, contact, effectiveText);
-  if (optedOut) {
+  const personaHandled = await maybeHandlePersonaSwitchCommand(app, {
+    workspaceId,
+    phoneLineId,
+    conversation,
+    contact,
+    inboundText: effectiveText,
+    effectiveKind,
+    allowedKinds,
+    baseKind,
+    autoReplyEnabled: Boolean(config?.botAutoReply),
+    ttlMinutes: Number.isFinite((workspace as any)?.personaSwitchTtlMinutes)
+      ? Number((workspace as any).personaSwitchTtlMinutes)
+      : 360,
+    allowPersonaSwitch: typeof (workspace as any)?.allowPersonaSwitchByWhatsApp === "boolean"
+      ? Boolean((workspace as any).allowPersonaSwitchByWhatsApp)
+      : true,
+  }).catch(() => false);
+  if (personaHandled) {
     return { conversationId: conversation.id };
   }
 
   const mediaType = params.media?.type || null;
   const isAttachment = mediaType === "image" || mediaType === "document";
   const extractedText = (latestMessage?.transcriptText || "").trim();
-  if (isAttachment && !extractedText && !isStaffConversation) {
+  if (isAttachment && !extractedText && !isStaffConversation && !isPartnerConversation) {
     const lastOutbound = await prisma.message.findFirst({
       where: { conversationId: conversation.id, direction: "OUTBOUND" },
       orderBy: { timestamp: "desc" },
@@ -779,7 +973,7 @@ export async function handleInboundWhatsAppMessage(
     return { conversationId: conversation.id };
   }
 
-  if (isStaffConversation) {
+  if (isStaffConversation || isPartnerConversation) {
     // Staff conversations should not fall back to legacy candidate pipelines.
     return { conversationId: conversation.id };
   }
@@ -5042,6 +5236,188 @@ async function maybeHandleOptOut(
   return true;
 }
 
+async function maybeHandlePersonaSwitchCommand(
+  app: FastifyInstance,
+  params: {
+    workspaceId: string;
+    phoneLineId: string;
+    conversation: any;
+    contact: any;
+    inboundText: string | null;
+    effectiveKind: string;
+    baseKind: string;
+    allowedKinds: string[];
+    autoReplyEnabled: boolean;
+    ttlMinutes: number;
+    allowPersonaSwitch: boolean;
+  },
+): Promise<boolean> {
+  if (!params.allowPersonaSwitch) return false;
+  const inbound = stripAccents(String(params.inboundText || "")).toLowerCase().trim();
+  if (!inbound) return false;
+
+  const isHelp = inbound === "modo" || inbound === "roles" || inbound === "rol" || inbound === "cambiar modo";
+  const wantsClear = inbound === "modo auto" || inbound === "modo normal" || inbound === "modo automático" || inbound === "modo automatico";
+  const wantsSet = inbound.startsWith("modo ");
+  if (!isHelp && !wantsClear && !wantsSet) return false;
+
+  const currentKind = String(params.effectiveKind || "").toUpperCase() || "CLIENT";
+  const baseKind = String(params.baseKind || "").toUpperCase() || currentKind;
+  const allowedKinds = Array.isArray(params.allowedKinds) ? params.allowedKinds.map((k) => String(k).toUpperCase()) : [];
+  const ttlMinutes = Number.isFinite(params.ttlMinutes) ? Math.max(5, Math.floor(params.ttlMinutes)) : 360;
+
+  const normalizeKindLabel = (kind: string): string => {
+    const k = String(kind || "").toUpperCase();
+    if (k === "CLIENT") return "cliente";
+    if (k === "STAFF") return "staff";
+    if (k === "PARTNER") return "proveedor";
+    if (k === "ADMIN") return "admin";
+    return k.toLowerCase();
+  };
+
+  const resolveDesiredKind = (): string | null => {
+    if (wantsClear) return "AUTO";
+    if (!wantsSet) return null;
+    if (inbound.includes("cliente")) return "CLIENT";
+    if (inbound.includes("staff")) return "STAFF";
+    if (inbound.includes("proveedor") || inbound.includes("partner") || inbound.includes("aliado")) return "PARTNER";
+    if (inbound.includes("admin")) return "ADMIN";
+    return null;
+  };
+
+  const desiredKind = resolveDesiredKind();
+  if (wantsSet && !desiredKind) {
+    // Unknown mode -> show help.
+    return maybeHandlePersonaSwitchCommand(app, { ...params, inboundText: "modo" });
+  }
+
+  const phoneLine = await prisma.phoneLine
+    .findUnique({
+      where: { id: params.conversation.phoneLineId },
+      select: { waPhoneNumberId: true },
+    })
+    .catch(() => null);
+  const phoneNumberId = phoneLine?.waPhoneNumberId || null;
+
+  const replyText = (() => {
+    if (desiredKind === "AUTO") {
+      return `Listo. Volví al modo automático.\nModo actual: ${normalizeKindLabel(baseKind)}.\n\nTip: escribe “menu” para cambiar de programa.`;
+    }
+    if (desiredKind && !allowedKinds.includes(desiredKind)) {
+      const allowedLabel = allowedKinds.length > 0 ? allowedKinds.map(normalizeKindLabel).join(", ") : "cliente";
+      return `No tienes permiso para usar el modo “${normalizeKindLabel(desiredKind)}”.\nModos permitidos: ${allowedLabel}.\n\nEscribe “modo” para ver opciones.`;
+    }
+    if (desiredKind && desiredKind !== "AUTO") {
+      return `Listo. Modo: ${normalizeKindLabel(desiredKind)} (por ${ttlMinutes} min).\n\nTip: escribe “menu” para cambiar de programa.`;
+    }
+    const allowedLabel = allowedKinds.length > 0 ? allowedKinds.map(normalizeKindLabel).join(", ") : "cliente";
+    return `Modo actual: ${normalizeKindLabel(currentKind)}.\nModo por defecto: ${normalizeKindLabel(baseKind)}.\n\nModos disponibles: ${allowedLabel}.\nPara cambiar: escribe “modo cliente”, “modo staff” o “modo proveedor”.\nPara volver al automático: “modo auto”.`;
+  })();
+
+  // Persist override (archive-only, no deletes): keep it in the current conversation and clear others to avoid ambiguity.
+  if (desiredKind === "AUTO") {
+    await prisma.conversation.updateMany({
+      where: {
+        workspaceId: params.workspaceId,
+        phoneLineId: params.phoneLineId,
+        contactId: params.conversation.contactId,
+        archivedAt: null,
+        activePersonaKind: { not: null },
+      } as any,
+      data: { activePersonaKind: null, activePersonaUntilAt: null },
+    });
+  } else if (desiredKind && allowedKinds.includes(desiredKind)) {
+    const untilAt = new Date(Date.now() + ttlMinutes * 60_000);
+    await prisma.conversation.updateMany({
+      where: {
+        workspaceId: params.workspaceId,
+        phoneLineId: params.phoneLineId,
+        contactId: params.conversation.contactId,
+        archivedAt: null,
+        activePersonaKind: { not: null },
+      } as any,
+      data: { activePersonaKind: null, activePersonaUntilAt: null },
+    });
+    await prisma.conversation.update({
+      where: { id: params.conversation.id },
+      data: { activePersonaKind: desiredKind, activePersonaUntilAt: untilAt, updatedAt: new Date() } as any,
+    });
+    await prisma.message
+      .create({
+        data: {
+          conversationId: params.conversation.id,
+          direction: "OUTBOUND",
+          text: `🔁 Cambio de rol: ${normalizeKindLabel(currentKind)} → ${normalizeKindLabel(desiredKind)} (${ttlMinutes} min)`,
+          rawPayload: serializeJson({ system: true, personaSwitch: true, from: currentKind, to: desiredKind, ttlMinutes }),
+          timestamp: new Date(),
+          read: true,
+        },
+      })
+      .catch(() => {});
+  }
+
+  let sendResultRaw: SendResult = { success: false, error: "waId is missing" };
+  if (!params.autoReplyEnabled) {
+    sendResultRaw = { success: false, error: "BOT_AUTO_REPLY_DISABLED" };
+  } else if (params.contact?.waId) {
+    sendResultRaw = await sendWhatsAppText(params.contact.waId, replyText, { phoneNumberId });
+  }
+  const normalizedSendResult = {
+    success: sendResultRaw.success,
+    messageId: "messageId" in sendResultRaw ? (sendResultRaw.messageId ?? null) : null,
+    error: "error" in sendResultRaw ? (sendResultRaw.error ?? null) : null,
+  };
+
+  const dedupeKey = `persona_mode:${params.conversation.id}:${String(desiredKind || "HELP")}:${stableHash(replyText).slice(0, 10)}`;
+  await prisma.outboundMessageLog
+    .create({
+      data: {
+        workspaceId: params.workspaceId,
+        conversationId: params.conversation.id,
+        relatedConversationId: null,
+        agentRunId: null,
+        channel: "WHATSAPP",
+        type: "SESSION_TEXT",
+        templateName: null,
+        dedupeKey,
+        textHash: stableHash(`TEXT:${replyText}`),
+        blockedReason: normalizedSendResult.success ? null : String(normalizedSendResult.error || "SEND_FAILED"),
+        waMessageId: normalizedSendResult.messageId || null,
+      } as any,
+    })
+    .catch(() => {});
+
+  await prisma.message
+    .create({
+      data: {
+        conversationId: params.conversation.id,
+        direction: "OUTBOUND",
+        text: replyText,
+        rawPayload: serializeJson({
+          autoReply: true,
+          personaSwitch: true,
+          desiredKind: desiredKind === "AUTO" ? null : desiredKind,
+          baseKind,
+          currentKind,
+          allowedKinds,
+          ttlMinutes,
+          sendResult: normalizedSendResult,
+        }),
+        timestamp: new Date(),
+        read: true,
+      },
+    })
+    .catch(() => {});
+
+  if (normalizedSendResult.success && params.conversation.phoneLineId) {
+    await prisma.phoneLine
+      .update({ where: { id: params.conversation.phoneLineId }, data: { lastOutboundAt: new Date() } })
+      .catch(() => {});
+  }
+
+  return true;
+}
+
 async function detectAdminTemplateIntent(
   text: string,
   config: SystemConfig,
@@ -5156,6 +5532,7 @@ async function ensureAdminConversation(params: {
         channel: "admin",
         isAdmin: true,
         aiMode: "OFF",
+        conversationKind: "ADMIN",
       },
     });
   }

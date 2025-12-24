@@ -37,6 +37,16 @@ model Workspace {
   ssclinicalNurseLeaderEmail String?
   staffDefaultProgram Program? @relation("WorkspaceStaffDefaultProgram", fields: [staffDefaultProgramId], references: [id])
   staffDefaultProgramId String?
+  clientDefaultProgram Program? @relation("WorkspaceClientDefaultProgram", fields: [clientDefaultProgramId], references: [id])
+  clientDefaultProgramId String?
+  partnerDefaultProgram Program? @relation("WorkspacePartnerDefaultProgram", fields: [partnerDefaultProgramId], references: [id])
+  partnerDefaultProgramId String?
+  allowPersonaSwitchByWhatsApp Boolean @default(true)
+  personaSwitchTtlMinutes Int @default(360)
+  staffProgramMenuIdsJson String?
+  clientProgramMenuIdsJson String?
+  partnerProgramMenuIdsJson String?
+  partnerPhoneE164sJson String?
   archivedAt  DateTime?
   stages      WorkspaceStage[]
   notifications InAppNotification[]
@@ -54,6 +64,7 @@ model Workspace {
   contacts    Contact[]
   agentRuns   AgentRunLog[]
   outboundLogs OutboundMessageLog[]
+  notificationLogs NotificationLog[]
   copilotRuns CopilotRunLog[]
   copilotThreads CopilotThread[]
   aiUsageLogs AiUsageLog[]
@@ -131,6 +142,8 @@ model Membership {
   role        String
   assignedOnly Boolean  @default(false)
   staffWhatsAppE164 String?
+  staffWhatsAppExtraE164sJson String?
+  allowedPersonaKindsJson String?
   archivedAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -207,6 +220,8 @@ model Program {
   conversations   Conversation[]
   defaultInLines  PhoneLine[] @relation("PhoneLineDefaultProgram")
   staffDefaultInWorkspaces Workspace[] @relation("WorkspaceStaffDefaultProgram")
+  clientDefaultInWorkspaces Workspace[] @relation("WorkspaceClientDefaultProgram")
+  partnerDefaultInWorkspaces Workspace[] @relation("WorkspacePartnerDefaultProgram")
   automations     AutomationRule[]
   agentRuns       AgentRunLog[]
   aiUsageLogs     AiUsageLog[]
@@ -362,10 +377,15 @@ model Conversation {
   contactId     String
   status        String             @default("NEW")
   conversationKind String          @default("CLIENT")
+  activePersonaKind String?
+  activePersonaUntilAt DateTime?
   conversationStage String         @default("NEW_INTAKE")
   stageChangedAt DateTime?
   stageReason   String?
   stageTags     String?
+  availabilityRaw String?
+  availabilityParsedJson String?
+  availabilityConfirmedAt DateTime?
   archivedAt    DateTime?
   archivedSummary String?
   sandboxSourceConversationId String?
@@ -387,6 +407,8 @@ model Conversation {
   askedFields   ConversationAskedField[]
   agentRuns     AgentRunLog[]
   outboundLogs  OutboundMessageLog[]
+  notificationLogsSource NotificationLog[] @relation("NotificationSourceConversation")
+  notificationLogsTarget NotificationLog[] @relation("NotificationTargetConversation")
   notifications InAppNotification[]
   copilotRuns   CopilotRunLog[]
   aiUsageLogs   AiUsageLog[]
@@ -492,6 +514,34 @@ model OutboundMessageLog {
   @@index([conversationId])
   @@index([relatedConversationId])
   @@index([workspaceId])
+  @@index([createdAt])
+  @@index([dedupeKey])
+  @@index([waMessageId])
+}
+
+model NotificationLog {
+  id                    String      @id @default(cuid())
+  workspace             Workspace   @relation(fields: [workspaceId], references: [id])
+  workspaceId           String      @default("default")
+  sourceConversation    Conversation @relation("NotificationSourceConversation", fields: [sourceConversationId], references: [id])
+  sourceConversationId  String
+  targetConversation    Conversation? @relation("NotificationTargetConversation", fields: [targetConversationId], references: [id])
+  targetConversationId  String?
+  targetKind            String
+  targetE164            String
+  channel               String
+  dedupeKey             String
+  templateText          String?
+  renderedText          String?
+  varsJson              String?
+  blockedReason         String?
+  waMessageId           String?
+  createdAt             DateTime    @default(now())
+  archivedAt            DateTime?
+
+  @@index([workspaceId])
+  @@index([sourceConversationId])
+  @@index([targetConversationId])
   @@index([createdAt])
   @@index([dedupeKey])
   @@index([waMessageId])

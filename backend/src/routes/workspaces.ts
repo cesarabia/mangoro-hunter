@@ -41,6 +41,14 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         isSandbox: true,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
+        clientDefaultProgramId: true as any,
+        partnerDefaultProgramId: true as any,
+        allowPersonaSwitchByWhatsApp: true as any,
+        personaSwitchTtlMinutes: true as any,
+        staffProgramMenuIdsJson: true as any,
+        clientProgramMenuIdsJson: true as any,
+        partnerProgramMenuIdsJson: true as any,
+        partnerPhoneE164sJson: true as any,
         createdAt: true,
         updatedAt: true,
         archivedAt: true,
@@ -53,6 +61,46 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       isSandbox: Boolean(workspace.isSandbox),
       ssclinicalNurseLeaderEmail: (workspace as any).ssclinicalNurseLeaderEmail || null,
       staffDefaultProgramId: (workspace as any).staffDefaultProgramId || null,
+      clientDefaultProgramId: (workspace as any).clientDefaultProgramId || null,
+      partnerDefaultProgramId: (workspace as any).partnerDefaultProgramId || null,
+      allowPersonaSwitchByWhatsApp: typeof (workspace as any).allowPersonaSwitchByWhatsApp === 'boolean' ? Boolean((workspace as any).allowPersonaSwitchByWhatsApp) : true,
+      personaSwitchTtlMinutes: Number.isFinite((workspace as any).personaSwitchTtlMinutes) ? Number((workspace as any).personaSwitchTtlMinutes) : 360,
+      staffProgramMenuIds: (() => {
+        try {
+          const raw = String((workspace as any).staffProgramMenuIdsJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      clientProgramMenuIds: (() => {
+        try {
+          const raw = String((workspace as any).clientProgramMenuIdsJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      partnerProgramMenuIds: (() => {
+        try {
+          const raw = String((workspace as any).partnerProgramMenuIdsJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      partnerPhoneE164s: (() => {
+        try {
+          const raw = String((workspace as any).partnerPhoneE164sJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return [];
+        }
+      })(),
       createdAt: new Date(workspace.createdAt).toISOString(),
       updatedAt: new Date(workspace.updatedAt).toISOString(),
     };
@@ -63,13 +111,43 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
     const userId = request.user?.userId ? String(request.user.userId) : null;
 
-    const body = request.body as { ssclinicalNurseLeaderEmail?: string | null; staffDefaultProgramId?: string | null };
+    const body = request.body as {
+      ssclinicalNurseLeaderEmail?: string | null;
+      staffDefaultProgramId?: string | null;
+      clientDefaultProgramId?: string | null;
+      partnerDefaultProgramId?: string | null;
+      allowPersonaSwitchByWhatsApp?: boolean;
+      personaSwitchTtlMinutes?: number;
+      staffProgramMenuIds?: string[] | null;
+      clientProgramMenuIds?: string[] | null;
+      partnerProgramMenuIds?: string[] | null;
+      partnerPhoneE164s?: string[] | null;
+    };
     const hasEmail = Object.prototype.hasOwnProperty.call(body || {}, 'ssclinicalNurseLeaderEmail');
     const hasStaffProgram = Object.prototype.hasOwnProperty.call(body || {}, 'staffDefaultProgramId');
-    if (!hasEmail && !hasStaffProgram) {
+    const hasClientProgram = Object.prototype.hasOwnProperty.call(body || {}, 'clientDefaultProgramId');
+    const hasPartnerProgram = Object.prototype.hasOwnProperty.call(body || {}, 'partnerDefaultProgramId');
+    const hasAllowPersonaSwitch = Object.prototype.hasOwnProperty.call(body || {}, 'allowPersonaSwitchByWhatsApp');
+    const hasPersonaTtl = Object.prototype.hasOwnProperty.call(body || {}, 'personaSwitchTtlMinutes');
+    const hasStaffMenu = Object.prototype.hasOwnProperty.call(body || {}, 'staffProgramMenuIds');
+    const hasClientMenu = Object.prototype.hasOwnProperty.call(body || {}, 'clientProgramMenuIds');
+    const hasPartnerMenu = Object.prototype.hasOwnProperty.call(body || {}, 'partnerProgramMenuIds');
+    const hasPartnerPhones = Object.prototype.hasOwnProperty.call(body || {}, 'partnerPhoneE164s');
+    if (
+      !hasEmail &&
+      !hasStaffProgram &&
+      !hasClientProgram &&
+      !hasPartnerProgram &&
+      !hasAllowPersonaSwitch &&
+      !hasPersonaTtl &&
+      !hasStaffMenu &&
+      !hasClientMenu &&
+      !hasPartnerMenu &&
+      !hasPartnerPhones
+    ) {
       return reply
         .code(400)
-        .send({ error: '"ssclinicalNurseLeaderEmail" o "staffDefaultProgramId" es requerido (string|null).' });
+        .send({ error: 'Body vacío. Envía al menos 1 campo para actualizar.' });
     }
 
     const emailRaw = body?.ssclinicalNurseLeaderEmail;
@@ -86,9 +164,61 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: '"staffDefaultProgramId" es demasiado largo (max 64).' });
     }
 
+    const clientProgramRaw = body?.clientDefaultProgramId;
+    const nextClientProgramId =
+      clientProgramRaw === null ? null : typeof clientProgramRaw === 'string' ? clientProgramRaw.trim() : null;
+    if (typeof clientProgramRaw === 'string' && nextClientProgramId && nextClientProgramId.length > 64) {
+      return reply.code(400).send({ error: '"clientDefaultProgramId" es demasiado largo (max 64).' });
+    }
+
+    const partnerProgramRaw = body?.partnerDefaultProgramId;
+    const nextPartnerProgramId =
+      partnerProgramRaw === null ? null : typeof partnerProgramRaw === 'string' ? partnerProgramRaw.trim() : null;
+    if (typeof partnerProgramRaw === 'string' && nextPartnerProgramId && nextPartnerProgramId.length > 64) {
+      return reply.code(400).send({ error: '"partnerDefaultProgramId" es demasiado largo (max 64).' });
+    }
+
+    const nextAllowPersonaSwitch =
+      typeof body.allowPersonaSwitchByWhatsApp === 'boolean' ? Boolean(body.allowPersonaSwitchByWhatsApp) : null;
+    const ttlRaw = typeof body.personaSwitchTtlMinutes === 'number' ? body.personaSwitchTtlMinutes : null;
+    const nextPersonaTtlMinutes =
+      ttlRaw === null
+        ? null
+        : Number.isFinite(ttlRaw)
+          ? Math.min(10_080, Math.max(5, Math.floor(ttlRaw)))
+          : null;
+
+    const normalizeIdList = (value: any): string[] => {
+      if (!Array.isArray(value)) return [];
+      const out: string[] = [];
+      for (const item of value) {
+        const id = String(item || '').trim();
+        if (!id) continue;
+        if (!out.includes(id)) out.push(id);
+      }
+      return out;
+    };
+    const nextStaffMenuIds = hasStaffMenu ? normalizeIdList(body.staffProgramMenuIds) : null;
+    const nextClientMenuIds = hasClientMenu ? normalizeIdList(body.clientProgramMenuIds) : null;
+    const nextPartnerMenuIds = hasPartnerMenu ? normalizeIdList(body.partnerProgramMenuIds) : null;
+    const nextPartnerPhones = hasPartnerPhones ? normalizeIdList(body.partnerPhoneE164s) : null;
+
     const existing = await prisma.workspace.findUnique({
       where: { id: access.workspaceId },
-      select: { id: true, archivedAt: true, ssclinicalNurseLeaderEmail: true as any, staffDefaultProgramId: true as any },
+      select: {
+        id: true,
+        archivedAt: true,
+        ssclinicalNurseLeaderEmail: true as any,
+        staffDefaultProgramId: true as any,
+        clientDefaultProgramId: true as any,
+        partnerDefaultProgramId: true as any,
+        allowPersonaSwitchByWhatsApp: true as any,
+        personaSwitchTtlMinutes: true as any,
+        staffProgramMenuIdsJson: true as any,
+        clientProgramMenuIdsJson: true as any,
+        partnerProgramMenuIdsJson: true as any,
+        partnerPhoneE164sJson: true as any,
+      } as any,
     });
     if (!existing || existing.archivedAt) return reply.code(404).send({ error: 'Workspace no encontrado.' });
 
@@ -102,14 +232,51 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       }
     }
 
+    const validateActiveProgram = async (programId: string): Promise<boolean> => {
+      const exists = await prisma.program.findFirst({
+        where: { id: programId, workspaceId: access.workspaceId, archivedAt: null, isActive: true },
+        select: { id: true },
+      });
+      return Boolean(exists?.id);
+    };
+    if (typeof clientProgramRaw === 'string' && nextClientProgramId) {
+      const ok = await validateActiveProgram(nextClientProgramId);
+      if (!ok) return reply.code(400).send({ error: 'clientDefaultProgramId no existe o está inactivo para este workspace.' });
+    }
+    if (typeof partnerProgramRaw === 'string' && nextPartnerProgramId) {
+      const ok = await validateActiveProgram(nextPartnerProgramId);
+      if (!ok) return reply.code(400).send({ error: 'partnerDefaultProgramId no existe o está inactivo para este workspace.' });
+    }
+
     const updated = await prisma.workspace.update({
       where: { id: access.workspaceId },
       data: {
         ...(hasEmail ? { ssclinicalNurseLeaderEmail: typeof emailRaw === 'string' ? nextEmail || null : null } : {}),
         ...(hasStaffProgram ? { staffDefaultProgramId: typeof staffProgramRaw === 'string' ? nextStaffProgramId || null : null } : {}),
+        ...(hasClientProgram ? { clientDefaultProgramId: typeof clientProgramRaw === 'string' ? nextClientProgramId || null : null } : {}),
+        ...(hasPartnerProgram ? { partnerDefaultProgramId: typeof partnerProgramRaw === 'string' ? nextPartnerProgramId || null : null } : {}),
+        ...(hasAllowPersonaSwitch && nextAllowPersonaSwitch !== null ? { allowPersonaSwitchByWhatsApp: nextAllowPersonaSwitch } : {}),
+        ...(hasPersonaTtl && nextPersonaTtlMinutes !== null ? { personaSwitchTtlMinutes: nextPersonaTtlMinutes } : {}),
+        ...(hasStaffMenu ? { staffProgramMenuIdsJson: nextStaffMenuIds && nextStaffMenuIds.length > 0 ? serializeJson(nextStaffMenuIds) : null } : {}),
+        ...(hasClientMenu ? { clientProgramMenuIdsJson: nextClientMenuIds && nextClientMenuIds.length > 0 ? serializeJson(nextClientMenuIds) : null } : {}),
+        ...(hasPartnerMenu ? { partnerProgramMenuIdsJson: nextPartnerMenuIds && nextPartnerMenuIds.length > 0 ? serializeJson(nextPartnerMenuIds) : null } : {}),
+        ...(hasPartnerPhones ? { partnerPhoneE164sJson: nextPartnerPhones && nextPartnerPhones.length > 0 ? serializeJson(nextPartnerPhones) : null } : {}),
         updatedAt: new Date(),
       } as any,
-      select: { id: true, ssclinicalNurseLeaderEmail: true as any, staffDefaultProgramId: true as any, updatedAt: true },
+      select: {
+        id: true,
+        ssclinicalNurseLeaderEmail: true as any,
+        staffDefaultProgramId: true as any,
+        clientDefaultProgramId: true as any,
+        partnerDefaultProgramId: true as any,
+        allowPersonaSwitchByWhatsApp: true as any,
+        personaSwitchTtlMinutes: true as any,
+        staffProgramMenuIdsJson: true as any,
+        clientProgramMenuIdsJson: true as any,
+        partnerProgramMenuIdsJson: true as any,
+        partnerPhoneE164sJson: true as any,
+        updatedAt: true,
+      } as any,
     });
 
     if (hasEmail) {
@@ -139,11 +306,83 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         .catch(() => {});
     }
 
+    if (hasClientProgram || hasPartnerProgram || hasAllowPersonaSwitch || hasPersonaTtl || hasStaffMenu || hasClientMenu || hasPartnerMenu || hasPartnerPhones) {
+      await prisma.configChangeLog
+        .create({
+          data: {
+            workspaceId: access.workspaceId,
+            userId,
+            type: 'WORKSPACE_PERSONA_ROUTING',
+            beforeJson: serializeJson({
+              clientDefaultProgramId: (existing as any).clientDefaultProgramId || null,
+              partnerDefaultProgramId: (existing as any).partnerDefaultProgramId || null,
+              allowPersonaSwitchByWhatsApp: typeof (existing as any).allowPersonaSwitchByWhatsApp === 'boolean' ? Boolean((existing as any).allowPersonaSwitchByWhatsApp) : true,
+              personaSwitchTtlMinutes: Number.isFinite((existing as any).personaSwitchTtlMinutes) ? Number((existing as any).personaSwitchTtlMinutes) : 360,
+              staffProgramMenuIdsJson: (existing as any).staffProgramMenuIdsJson || null,
+              clientProgramMenuIdsJson: (existing as any).clientProgramMenuIdsJson || null,
+              partnerProgramMenuIdsJson: (existing as any).partnerProgramMenuIdsJson || null,
+              partnerPhoneE164sJson: (existing as any).partnerPhoneE164sJson || null,
+            }),
+            afterJson: serializeJson({
+              clientDefaultProgramId: (updated as any).clientDefaultProgramId || null,
+              partnerDefaultProgramId: (updated as any).partnerDefaultProgramId || null,
+              allowPersonaSwitchByWhatsApp: typeof (updated as any).allowPersonaSwitchByWhatsApp === 'boolean' ? Boolean((updated as any).allowPersonaSwitchByWhatsApp) : true,
+              personaSwitchTtlMinutes: Number.isFinite((updated as any).personaSwitchTtlMinutes) ? Number((updated as any).personaSwitchTtlMinutes) : 360,
+              staffProgramMenuIdsJson: (updated as any).staffProgramMenuIdsJson || null,
+              clientProgramMenuIdsJson: (updated as any).clientProgramMenuIdsJson || null,
+              partnerProgramMenuIdsJson: (updated as any).partnerProgramMenuIdsJson || null,
+              partnerPhoneE164sJson: (updated as any).partnerPhoneE164sJson || null,
+            }),
+          },
+        })
+        .catch(() => {});
+    }
+
     return {
       ok: true,
       ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null,
       staffDefaultProgramId: (updated as any).staffDefaultProgramId || null,
-      updatedAt: updated.updatedAt.toISOString(),
+      clientDefaultProgramId: (updated as any).clientDefaultProgramId || null,
+      partnerDefaultProgramId: (updated as any).partnerDefaultProgramId || null,
+      allowPersonaSwitchByWhatsApp: typeof (updated as any).allowPersonaSwitchByWhatsApp === 'boolean' ? Boolean((updated as any).allowPersonaSwitchByWhatsApp) : true,
+      personaSwitchTtlMinutes: Number.isFinite((updated as any).personaSwitchTtlMinutes) ? Number((updated as any).personaSwitchTtlMinutes) : 360,
+      staffProgramMenuIds: (() => {
+        try {
+          const raw = String((updated as any).staffProgramMenuIdsJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      clientProgramMenuIds: (() => {
+        try {
+          const raw = String((updated as any).clientProgramMenuIdsJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      partnerProgramMenuIds: (() => {
+        try {
+          const raw = String((updated as any).partnerProgramMenuIdsJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      partnerPhoneE164s: (() => {
+        try {
+          const raw = String((updated as any).partnerPhoneE164sJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      updatedAt: new Date((updated as any).updatedAt).toISOString(),
     };
   });
 

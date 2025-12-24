@@ -70,6 +70,21 @@ export type ScenarioStep = {
     ssclinicalNotificationRequiresAvailability?: {
       workspaceId?: string;
     };
+    staffModeRouting?: {
+      workspaceId?: string;
+    };
+    staffMenuSwitchProgram?: {
+      workspaceId?: string;
+    };
+    roleSwitchModeClienteStaff?: {
+      workspaceId?: string;
+    };
+    notificationTemplateVarsRender?: {
+      workspaceId?: string;
+    };
+    availabilityConfirmedPreventsHallucination?: {
+      workspaceId?: string;
+    };
     stageAdminConfigurable?: {
       workspaceId?: string;
       slug?: string;
@@ -496,6 +511,51 @@ export const SCENARIOS: ScenarioDefinition[] = [
         inboundText: 'check staff reply-to updates case',
         expect: { staffReplyToNotificationUpdatesCase: { workspaceId: 'scenario-staff-replyto' } },
       },
+    ],
+  },
+  {
+    id: 'staff_mode_routing',
+    name: 'V2.3: routing STAFF por número',
+    description:
+      'Valida que un inbound desde un número configurado como staff enruta a conversación STAFF (y NO a admin/client).',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check staff mode routing', expect: { staffModeRouting: { workspaceId: 'scenario-persona-routing' } } },
+    ],
+  },
+  {
+    id: 'staff_menu_switch_program',
+    name: 'V2.3: staff usa “menu” para cambiar Program',
+    description:
+      'Valida que una conversación STAFF pueda ejecutar el comando “menu” y elegir un Program permitido (sin mostrar inactivos).',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check staff menu switch', expect: { staffMenuSwitchProgram: { workspaceId: 'scenario-staff-menu-switch' } } },
+    ],
+  },
+  {
+    id: 'role_switch_mode_cliente_staff',
+    name: 'V2.3: cambio de rol por WhatsApp (modo ...)',
+    description:
+      'Valida que el comando “modo cliente/staff/proveedor” persiste activePersonaKind con TTL y que “modo auto” limpia el override.',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check persona switch', expect: { roleSwitchModeClienteStaff: { workspaceId: 'scenario-persona-switch' } } },
+    ],
+  },
+  {
+    id: 'notification_template_vars_render',
+    name: 'V2.3: templates determinísticos (staff/partner) sin placeholders',
+    description:
+      'Valida que NOTIFY_STAFF_WHATSAPP y NOTIFY_PARTNER_WHATSAPP rendericen variables determinísticamente y registren NotificationLog snapshot.',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check notification template vars render', expect: { notificationTemplateVarsRender: { workspaceId: 'scenario-notification-vars' } } },
+    ],
+  },
+  {
+    id: 'availability_confirmed_prevents_hallucination',
+    name: 'V2.3: availabilityParsed solo si confirmado',
+    description:
+      'Valida que el resumen/notificación use availabilityParsed solo si availabilityConfirmedAt existe; si no, usa availabilityRaw.',
+    steps: [
+      { action: 'WORKSPACE_CHECK', inboundText: 'check availability confirm gating', expect: { availabilityConfirmedPreventsHallucination: { workspaceId: 'scenario-availability-confirm' } } },
     ],
   },
 ];

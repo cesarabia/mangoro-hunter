@@ -111,9 +111,15 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
   - `platformRole`: `SUPERADMIN|NONE` (gating de “Clientes/Plataforma” y endpoints `/api/platform/*`).  
 - **Workspace**: tenant (incluye `isSandbox`)  
   - Settings por workspace (ej: `ssclinicalNurseLeaderEmail` para asignación automática en SSClinical).  
+  - Defaults y menús por persona (V2.3):
+    - `staffDefaultProgramId`, `clientDefaultProgramId`, `partnerDefaultProgramId`
+    - `staffProgramMenuIds`, `clientProgramMenuIds`, `partnerProgramMenuIds`
+    - `allowPersonaSwitchByWhatsApp` + `personaSwitchTtlMinutes`
 - **Membership**: rol por workspace (OWNER|ADMIN|MEMBER|VIEWER), soft-archive (no delete)  
   - `assignedOnly`: si `true` y rol=MEMBER, el usuario solo ve/gestiona conversaciones asignadas (`Conversation.assignedToId`).  
   - `staffWhatsAppE164` (opcional): WhatsApp del usuario para **notificaciones staff** (ej: SSClinical Stage=INTERESADO).  
+  - `staffWhatsAppExtraE164s`: números extra (si el usuario opera más de 1 WhatsApp).  
+  - `allowedPersonaKinds`: qué personas puede usar ese usuario por WhatsApp (`CLIENT|STAFF|PARTNER|ADMIN`).  
 - **WorkspaceInvite** (archive-only): invitación expirable por email+rol para entrar a un workspace.  
   - Token **no** se loguea; solo se expone al OWNER vía “Copiar link”.  
   - Aceptación (sin fricción y sin reset de password):
@@ -133,11 +139,18 @@ Esto permite que reclutamiento/ventas/RRHH/agenda/soporte sean “apps” encima
   - Seed idempotente: set genérico + set SSClinical (incluye `INTERESADO`).  
 - **Conversation**: status (NEW/OPEN/CLOSED) + `conversationStage` (slug) + programId + phoneLineId + flags y metadata  
   - `assignedToId`: asignación (para `MEMBER assignedOnly`).  
-  - `conversationKind`: `CLIENT` | `STAFF`  
+  - `conversationKind`: `CLIENT` | `STAFF` | `PARTNER` | `ADMIN`  
     - `CLIENT`: conversación “caso/cliente” (paciente/candidato/venta/etc.).  
     - `STAFF`: conversación por WhatsApp con un miembro del equipo (nurse leader, coordinadora, etc.).  
+    - `PARTNER`: conversación por WhatsApp con un proveedor/partner (multi‑rubro).  
+    - `ADMIN`: conversación interna/admin (si aplica).  
+  - `activePersonaKind` + `activePersonaUntilAt`: override temporal de rol por comandos (`modo ...`) con TTL.  
+  - `availabilityRaw` / `availabilityParsed` / `availabilityConfirmedAt`:
+    - Regla: el resumen usa `availabilityParsed` **solo si** está confirmada; si no, usa `availabilityRaw`; si falta, “(pendiente)”.  
 - **Message**: inbound/outbound + waMessageId idempotente + media/transcriptText + timestamp  
 - **InAppNotification** (archive-only): notificaciones visibles en UI (campana) para asignaciones/handoffs (ej: Stage=INTERESADO).  
+ - **NotificationLog** (archive-only): auditoría determinística de notificaciones WhatsApp (STAFF/PARTNER):
+   - snapshot de `templateText`, `vars`, `renderedText`, `recipients`, `relatedConversationId`, resultado/envío/bloqueo.
 
 #### 5.2.1 Staff Mode (WhatsApp, multi‑rubro)
 Objetivo: permitir que el staff coordine casos por WhatsApp sin “hablar en código” ni copiar IDs.
@@ -148,6 +161,22 @@ Objetivo: permitir que el staff coordine casos por WhatsApp sin “hablar en có
   - Si el staff responde como reply (`context.id`), el runtime resuelve `relatedConversationId` y entrega contexto del caso al agente.
 - **Herramientas deterministas (RUN_TOOL)**: el agente usa tools para operar casos sin alucinaciones:
   - `LIST_CASES`, `GET_CASE_SUMMARY`, `ADD_NOTE`, `SET_STAGE`, `SEND_CUSTOMER_MESSAGE` (respeta SAFE MODE + 24h + NO_CONTACTAR).
+
+#### 5.2.2 Multi‑persona Router (CLIENT/STAFF/PARTNER)
+Objetivo: un mismo número WhatsApp puede operar múltiples “personas” sin hardcode y sin mezclar roles.
+- **Determinismo (orden de decisión)**:
+  1) Reply‑to mapping (si es reply a una notificación con `relatedConversationId`)
+  2) Override temporal `activePersonaKind` (si está permitido y no expiró)
+  3) Match STAFF (membresía)
+  4) Match PARTNER (lista workspace)
+  5) Default CLIENT
+- **Comandos por WhatsApp**:
+  - `roles` / `modo`: muestra rol actual y opciones (si permitido).
+  - `modo cliente|staff|proveedor|admin`: fija override con TTL.
+  - `modo auto`: limpia override.
+- **Menús por persona**:
+  - `menu`: cambia Program dentro de la persona actual (solo Programs activos; filtra inactivos).
+  - Menús/allowed Programs se configuran por workspace (no hardcode).
 
 ### 5.3 Agent OS runtime & auditoría
 - **AgentRunLog**: inputContextJson + outputCommandsJson + executionResultsJson + error  

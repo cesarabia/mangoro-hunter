@@ -25,6 +25,11 @@
   - `MENU`: muestra menú de Programs y asigna por opción (1/2/3), con allowlist opcional por línea.
   - Comando WhatsApp **“menu”**: muestra el menú aunque ya exista Program (cambio de flujo) y deja log `PROGRAM_SELECTION`.
 
+### Multi-persona WhatsApp (V2.3)
+- Router determinista por conversación: `CLIENT | STAFF | PARTNER | ADMIN`.
+- Override por comando (si está habilitado): `roles` / `modo cliente|staff|proveedor|auto` con TTL.
+- Menús por “persona” (workspace): programas permitidos para staff/partner (solo activos) y default program por persona.
+
 ### Programs como flows
 - Programs CRUD por workspace.
 - Si una conversación no tiene `programId` y hay >1 Program activo: menú corto 1/2/3 y asignación.

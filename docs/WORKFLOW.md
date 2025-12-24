@@ -16,10 +16,14 @@ Iterar rápido **sin romper DEV/PROD/pilotos**, con evidencia reproducible (**lo
 5) WhatsApp:
    - Respetar ventana 24h (fuera → template; dentro → texto permitido).
    - Idempotencia inbound (por `Message.waMessageId`) y outbound (dedupeKey + anti‑loop).
-   - **Staff Mode (WhatsApp, multi‑rubro)**:
-     - Un mensaje inbound se considera **STAFF** si `fromE164` coincide con `Membership.staffWhatsAppE164` del workspace.
-     - Se crea/usa una conversación `conversationKind=STAFF` (no es “admin chat”), con Program definido por `Workspace.staffDefaultProgramId`.
-     - El staff opera casos usando **RUN_TOOL** (determinista) y, si responde a una notificación, no necesita copiar IDs (reply‑to mapping).
+   - **Multi‑persona (CLIENT/STAFF/PARTNER) + Staff Mode (WhatsApp, multi‑rubro)**:
+     - El inbound se clasifica de forma determinista en `conversationKind`:
+       - `STAFF`: `fromE164` coincide con `Membership.staffWhatsAppE164` (o extras) del workspace.
+       - `PARTNER`: `fromE164` coincide con la lista de proveedores del workspace.
+       - Default: `CLIENT`.
+     - Override por comando (si está permitido en el workspace): `modo`, `modo cliente`, `modo staff`, `modo proveedor`, `modo auto` (TTL configurable).
+     - Se crea/usa una conversación por kind (ej: `conversationKind=STAFF`) con Program definido por defaults del workspace (`staffDefaultProgramId`, `clientDefaultProgramId`, `partnerDefaultProgramId`) y/o menús por kind.
+     - Staff opera casos usando **RUN_TOOL** (determinista) y, si responde a una notificación como reply, no necesita copiar IDs (reply‑to mapping).
    - **Notificaciones a staff (SSClinical)**:
      - Se configuran por usuario (workspace) en `Usuarios → WhatsApp de notificaciones` (E.164).
      - Se disparan por automation (ej: `STAGE_CHANGED` a `INTERESADO`) y respetan SAFE MODE + 24h.

@@ -411,11 +411,33 @@ export async function runAgent(event: AgentEvent): Promise<{
     if (!waId) return null;
     const memberships = await prisma.membership
       .findMany({
-        where: { workspaceId: event.workspaceId, archivedAt: null, staffWhatsAppE164: { not: null } },
+        where: {
+          workspaceId: event.workspaceId,
+          archivedAt: null,
+          OR: [{ staffWhatsAppE164: { not: null } }, { staffWhatsAppExtraE164sJson: { not: null } as any }],
+        } as any,
         include: { user: { select: { id: true, email: true, name: true } } },
       })
       .catch(() => []);
-    const match = memberships.find((m) => normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || '')) === waId);
+    const match = memberships.find((m) => {
+      const primary = normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || '')) === waId;
+      if (primary) return true;
+      const extraRaw = String((m as any).staffWhatsAppExtraE164sJson || '').trim();
+      if (!extraRaw) return false;
+      try {
+        const parsed = JSON.parse(extraRaw);
+        if (Array.isArray(parsed)) {
+          return parsed.some((v) => normalizeWhatsAppId(String(v || '')) === waId);
+        }
+      } catch {
+        // ignore
+      }
+      return extraRaw
+        .split(/[,\n]/g)
+        .map((v) => normalizeWhatsAppId(String(v || '')) || '')
+        .filter(Boolean)
+        .includes(waId);
+    });
     if (!match?.user?.id) return null;
     return {
       userId: match.user.id,
@@ -687,7 +709,9 @@ export async function runAgent(event: AgentEvent): Promise<{
     );
   })();
 
-  const isStaffConversation = String((conversation as any).conversationKind || '').toUpperCase() === 'STAFF';
+  const kind = String((conversation as any).conversationKind || '').toUpperCase();
+  const isStaffConversation = kind === 'STAFF';
+  const isPartnerConversation = kind === 'PARTNER';
   const programPrompt = isStaffConversation
     ? [
         `STAFF MODE (WhatsApp)`,
@@ -706,7 +730,19 @@ export async function runAgent(event: AgentEvent): Promise<{
         .filter(Boolean)
         .join('\n')
         .trim()
-    : programPromptBase;
+    : isPartnerConversation
+      ? [
+          `PARTNER MODE (WhatsApp)`,
+          `- Estás conversando con un proveedor/partner por WhatsApp.`,
+          `- Si event.relatedConversationId existe, este mensaje es respuesta a una notificación sobre un caso.`,
+          `- No uses RUN_TOOL (no está disponible para partners). Si falta información, pregunta 1 cosa clara o pide que el staff te confirme.`,
+          '',
+          programPromptBase,
+        ]
+          .filter(Boolean)
+          .join('\n')
+          .trim()
+      : programPromptBase;
 
   const runLog = await prisma.agentRunLog.create({
     data: {

@@ -104,7 +104,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   onDraftChange
 }) => {
   const isAdmin = Boolean(conversation?.isAdmin);
-  const isStaff = String(conversation?.conversationKind || 'CLIENT').toUpperCase() === 'STAFF';
+  const conversationKind = String(conversation?.conversationKind || 'CLIENT').toUpperCase();
+  const isStaff = conversationKind === 'STAFF';
+  const isPartner = conversationKind === 'PARTNER';
+  const isClientConversation = !isAdmin && !isStaff && !isPartner;
   const [loadingSend, setLoadingSend] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
@@ -818,7 +821,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 <span style={{ fontSize: 12, color: '#555' }}>
                   Estado: <strong>{conversation?.status || 'NEW'}</strong>
                 </span>
-                {canAssignConversation && !isAdmin && !isStaff && activeStageOptions.length > 0 ? (
+                {canAssignConversation && isClientConversation && activeStageOptions.length > 0 ? (
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
                     Stage:
                     <select
@@ -842,12 +845,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   </span>
                 )}
                 <span style={{ fontSize: 12, color: '#555' }}>
-                  Tipo: <strong>{isAdmin ? 'ADMIN' : isStaff ? 'STAFF' : 'CLIENTE'}</strong>
+                  Tipo: <strong>{isAdmin ? 'ADMIN' : isStaff ? 'STAFF' : isPartner ? 'PROVEEDOR' : 'CLIENTE'}</strong>
                 </span>
                 <span style={{ fontSize: 12, color: '#555' }}>
                   PhoneLine: <strong>{conversation?.phoneLine?.alias || conversation?.phoneLineId || '—'}</strong>
                 </span>
-                {canAssignConversation && !isAdmin && !isStaff ? (
+                {canAssignConversation && isClientConversation ? (
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
                     Asignado a:
                     <select
@@ -899,7 +902,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 {assignmentError ? <span style={{ fontSize: 12, color: '#b93800' }}>{assignmentError}</span> : null}
               </div>
             )}
-            {detailsOpen && !isAdmin && !isStaff && namePanelOpen && (
+            {detailsOpen && isClientConversation && namePanelOpen && (
               <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa', maxWidth: 520 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Nombre visible (manual)</div>
                 <input
@@ -946,7 +949,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 {nameError && <div style={{ marginTop: 6, fontSize: 12, color: '#b93800' }}>{nameError}</div>}
               </div>
             )}
-            {detailsOpen && !isAdmin && !isStaff ? (
+            {detailsOpen && isClientConversation ? (
               noContact ? (
                 <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div style={{ fontSize: 11, color: '#a8071a', background: '#fff1f0', border: '1px solid #ff7875', borderRadius: 8, padding: '6px 8px', display: 'inline-block', maxWidth: 520, ...textWrapStyle }}>

@@ -130,6 +130,23 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [staffDefaultProgramSaving, setStaffDefaultProgramSaving] = useState(false);
   const [staffDefaultProgramStatus, setStaffDefaultProgramStatus] = useState<string | null>(null);
   const [staffDefaultProgramError, setStaffDefaultProgramError] = useState<string | null>(null);
+  const [clientDefaultProgramIdDraft, setClientDefaultProgramIdDraft] = useState<string>('');
+  const [clientDefaultProgramSaving, setClientDefaultProgramSaving] = useState(false);
+  const [clientDefaultProgramStatus, setClientDefaultProgramStatus] = useState<string | null>(null);
+  const [clientDefaultProgramError, setClientDefaultProgramError] = useState<string | null>(null);
+  const [partnerDefaultProgramIdDraft, setPartnerDefaultProgramIdDraft] = useState<string>('');
+  const [partnerDefaultProgramSaving, setPartnerDefaultProgramSaving] = useState(false);
+  const [partnerDefaultProgramStatus, setPartnerDefaultProgramStatus] = useState<string | null>(null);
+  const [partnerDefaultProgramError, setPartnerDefaultProgramError] = useState<string | null>(null);
+  const [allowPersonaSwitchDraft, setAllowPersonaSwitchDraft] = useState<boolean>(true);
+  const [personaSwitchTtlMinutesDraft, setPersonaSwitchTtlMinutesDraft] = useState<string>('360');
+  const [staffProgramMenuIdsDraft, setStaffProgramMenuIdsDraft] = useState<string[]>([]);
+  const [clientProgramMenuIdsDraft, setClientProgramMenuIdsDraft] = useState<string[]>([]);
+  const [partnerProgramMenuIdsDraft, setPartnerProgramMenuIdsDraft] = useState<string[]>([]);
+  const [partnerPhoneE164sDraftText, setPartnerPhoneE164sDraftText] = useState<string>('');
+  const [personaRoutingSaving, setPersonaRoutingSaving] = useState(false);
+  const [personaRoutingStatus, setPersonaRoutingStatus] = useState<string | null>(null);
+  const [personaRoutingError, setPersonaRoutingError] = useState<string | null>(null);
 
   const [workspaceStages, setWorkspaceStages] = useState<any[]>([]);
   const [workspaceStagesLoading, setWorkspaceStagesLoading] = useState(false);
@@ -201,6 +218,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [userStaffWhatsAppDraft, setUserStaffWhatsAppDraft] = useState<Record<string, string>>({});
   const [userStaffWhatsAppSavingId, setUserStaffWhatsAppSavingId] = useState<string | null>(null);
   const [userStaffWhatsAppErrorById, setUserStaffWhatsAppErrorById] = useState<Record<string, string>>({});
+  const [userStaffWhatsAppExtrasDraft, setUserStaffWhatsAppExtrasDraft] = useState<Record<string, string>>({});
+  const [userStaffWhatsAppExtrasSavingId, setUserStaffWhatsAppExtrasSavingId] = useState<string | null>(null);
+  const [userStaffWhatsAppExtrasErrorById, setUserStaffWhatsAppExtrasErrorById] = useState<Record<string, string>>({});
+  const [userAllowedPersonaKindsDraft, setUserAllowedPersonaKindsDraft] = useState<Record<string, string[]>>({});
+  const [userAllowedPersonaKindsSavingId, setUserAllowedPersonaKindsSavingId] = useState<string | null>(null);
+  const [userAllowedPersonaKindsErrorById, setUserAllowedPersonaKindsErrorById] = useState<Record<string, string>>({});
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('MEMBER');
@@ -308,6 +331,28 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setSsclinicalNurseLeaderEmailDraft(email || '');
       const staffProgramId = typeof data?.staffDefaultProgramId === 'string' ? data.staffDefaultProgramId : '';
       setStaffDefaultProgramIdDraft(staffProgramId || '');
+      const clientProgramId = typeof data?.clientDefaultProgramId === 'string' ? data.clientDefaultProgramId : '';
+      setClientDefaultProgramIdDraft(clientProgramId || '');
+      const partnerProgramId = typeof data?.partnerDefaultProgramId === 'string' ? data.partnerDefaultProgramId : '';
+      setPartnerDefaultProgramIdDraft(partnerProgramId || '');
+      setAllowPersonaSwitchDraft(
+        typeof data?.allowPersonaSwitchByWhatsApp === 'boolean' ? Boolean(data.allowPersonaSwitchByWhatsApp) : true
+      );
+      setPersonaSwitchTtlMinutesDraft(
+        Number.isFinite(data?.personaSwitchTtlMinutes) ? String(Math.floor(Number(data.personaSwitchTtlMinutes))) : '360'
+      );
+      setStaffProgramMenuIdsDraft(
+        Array.isArray(data?.staffProgramMenuIds) ? data.staffProgramMenuIds.map((v: any) => String(v)).filter(Boolean) : []
+      );
+      setClientProgramMenuIdsDraft(
+        Array.isArray(data?.clientProgramMenuIds) ? data.clientProgramMenuIds.map((v: any) => String(v)).filter(Boolean) : []
+      );
+      setPartnerProgramMenuIdsDraft(
+        Array.isArray(data?.partnerProgramMenuIds) ? data.partnerProgramMenuIds.map((v: any) => String(v)).filter(Boolean) : []
+      );
+      setPartnerPhoneE164sDraftText(
+        Array.isArray(data?.partnerPhoneE164s) ? data.partnerPhoneE164s.map((v: any) => String(v)).filter(Boolean).join('\n') : ''
+      );
     } catch (err: any) {
       setWorkspaceDetails(null);
       setWorkspaceDetailsError(err.message || 'No se pudo cargar configuración del workspace');
@@ -369,6 +414,90 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setStaffDefaultProgramError(err.message || 'No se pudo guardar');
     } finally {
       setStaffDefaultProgramSaving(false);
+    }
+  };
+
+  const saveClientDefaultProgram = async () => {
+    if (clientDefaultProgramSaving) return;
+    setClientDefaultProgramSaving(true);
+    setClientDefaultProgramStatus(null);
+    setClientDefaultProgramError(null);
+    try {
+      const nextId = clientDefaultProgramIdDraft.trim();
+      const res: any = await apiClient.patch('/api/workspaces/current', {
+        clientDefaultProgramId: nextId.length > 0 ? nextId : null,
+      });
+      const stored = typeof res?.clientDefaultProgramId === 'string' ? res.clientDefaultProgramId : '';
+      setClientDefaultProgramIdDraft(stored || '');
+      setClientDefaultProgramStatus('Guardado.');
+      await loadWorkspaceDetails();
+    } catch (err: any) {
+      setClientDefaultProgramError(err.message || 'No se pudo guardar');
+    } finally {
+      setClientDefaultProgramSaving(false);
+    }
+  };
+
+  const savePartnerDefaultProgram = async () => {
+    if (partnerDefaultProgramSaving) return;
+    setPartnerDefaultProgramSaving(true);
+    setPartnerDefaultProgramStatus(null);
+    setPartnerDefaultProgramError(null);
+    try {
+      const nextId = partnerDefaultProgramIdDraft.trim();
+      const res: any = await apiClient.patch('/api/workspaces/current', {
+        partnerDefaultProgramId: nextId.length > 0 ? nextId : null,
+      });
+      const stored = typeof res?.partnerDefaultProgramId === 'string' ? res.partnerDefaultProgramId : '';
+      setPartnerDefaultProgramIdDraft(stored || '');
+      setPartnerDefaultProgramStatus('Guardado.');
+      await loadWorkspaceDetails();
+    } catch (err: any) {
+      setPartnerDefaultProgramError(err.message || 'No se pudo guardar');
+    } finally {
+      setPartnerDefaultProgramSaving(false);
+    }
+  };
+
+  const parseChileE164ListFromText = (value: string): string[] => {
+    const lines = String(value || '')
+      .split(/[,\n]/g)
+      .map((v) => v.trim())
+      .filter(Boolean);
+    const out: string[] = [];
+    for (const item of lines) {
+      const e164 = normalizeChilePhoneE164(item);
+      if (e164 && !out.includes(e164)) out.push(e164);
+    }
+    return out;
+  };
+
+  const savePersonaRouting = async () => {
+    if (personaRoutingSaving) return;
+    setPersonaRoutingSaving(true);
+    setPersonaRoutingStatus(null);
+    setPersonaRoutingError(null);
+    try {
+      const ttlRaw = personaSwitchTtlMinutesDraft.trim();
+      const ttl = ttlRaw ? Number(ttlRaw) : 360;
+      if (!Number.isFinite(ttl)) throw new Error('TTL inválido (minutos).');
+      const ttlMinutes = Math.min(10_080, Math.max(5, Math.floor(ttl)));
+      const partnerPhones = partnerPhoneE164sDraftText.trim() ? parseChileE164ListFromText(partnerPhoneE164sDraftText) : [];
+
+      await apiClient.patch('/api/workspaces/current', {
+        allowPersonaSwitchByWhatsApp: Boolean(allowPersonaSwitchDraft),
+        personaSwitchTtlMinutes: ttlMinutes,
+        staffProgramMenuIds: Array.isArray(staffProgramMenuIdsDraft) ? staffProgramMenuIdsDraft : [],
+        clientProgramMenuIds: Array.isArray(clientProgramMenuIdsDraft) ? clientProgramMenuIdsDraft : [],
+        partnerProgramMenuIds: Array.isArray(partnerProgramMenuIdsDraft) ? partnerProgramMenuIdsDraft : [],
+        partnerPhoneE164s: partnerPhones,
+      });
+      setPersonaRoutingStatus('Guardado.');
+      await loadWorkspaceDetails();
+    } catch (err: any) {
+      setPersonaRoutingError(err.message || 'No se pudo guardar');
+    } finally {
+      setPersonaRoutingSaving(false);
     }
   };
 
@@ -446,6 +575,30 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         if (!id) continue;
         if (typeof next[id] !== 'string') {
           next[id] = String(u?.staffWhatsAppE164 || '');
+        }
+      }
+      return next;
+    });
+    setUserStaffWhatsAppExtrasDraft((prev) => {
+      const next = { ...prev };
+      for (const u of users) {
+        const id = String(u?.membershipId || '').trim();
+        if (!id) continue;
+        if (typeof next[id] !== 'string') {
+          const extras = Array.isArray(u?.staffWhatsAppExtraE164s) ? u.staffWhatsAppExtraE164s : [];
+          next[id] = extras.map((v: any) => String(v)).filter(Boolean).join('\n');
+        }
+      }
+      return next;
+    });
+    setUserAllowedPersonaKindsDraft((prev) => {
+      const next = { ...prev };
+      for (const u of users) {
+        const id = String(u?.membershipId || '').trim();
+        if (!id) continue;
+        if (!Array.isArray(next[id])) {
+          const kinds = Array.isArray(u?.allowedPersonaKinds) ? u.allowedPersonaKinds : [];
+          next[id] = kinds.map((v: any) => String(v).trim().toUpperCase()).filter(Boolean);
         }
       }
       return next;
@@ -1112,6 +1265,52 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setUserStaffWhatsAppErrorById((prev) => ({ ...prev, [membershipId]: err.message || 'No se pudo guardar' }));
     } finally {
       setUserStaffWhatsAppSavingId((prev) => (prev === membershipId ? null : prev));
+    }
+  };
+
+  const saveUserStaffWhatsAppExtras = async (membershipId: string, extrasText: string) => {
+    setUserStaffWhatsAppExtrasSavingId(membershipId);
+    setUserStaffWhatsAppExtrasErrorById((prev) => ({ ...prev, [membershipId]: '' }));
+    try {
+      const extras = extrasText
+        .split(/[,\n]/g)
+        .map((v) => v.trim())
+        .filter(Boolean);
+      const normalized: string[] = [];
+      for (const item of extras) {
+        const e164 = normalizeChilePhoneE164(item);
+        if (e164 && !normalized.includes(e164)) normalized.push(e164);
+      }
+      await apiClient.patch(`/api/users/${membershipId}`, {
+        staffWhatsAppExtraE164s: normalized,
+      });
+      await loadUsers();
+    } catch (err: any) {
+      setUserStaffWhatsAppExtrasErrorById((prev) => ({ ...prev, [membershipId]: err.message || 'No se pudo guardar' }));
+    } finally {
+      setUserStaffWhatsAppExtrasSavingId((prev) => (prev === membershipId ? null : prev));
+    }
+  };
+
+  const saveUserAllowedPersonaKinds = async (membershipId: string, kinds: string[]) => {
+    setUserAllowedPersonaKindsSavingId(membershipId);
+    setUserAllowedPersonaKindsErrorById((prev) => ({ ...prev, [membershipId]: '' }));
+    try {
+      const normalized = Array.from(
+        new Set(
+          (Array.isArray(kinds) ? kinds : [])
+            .map((v) => String(v).trim().toUpperCase())
+            .filter(Boolean)
+        )
+      );
+      await apiClient.patch(`/api/users/${membershipId}`, {
+        allowedPersonaKinds: normalized,
+      });
+      await loadUsers();
+    } catch (err: any) {
+      setUserAllowedPersonaKindsErrorById((prev) => ({ ...prev, [membershipId]: err.message || 'No se pudo guardar' }));
+    } finally {
+      setUserAllowedPersonaKindsSavingId((prev) => (prev === membershipId ? null : prev));
     }
   };
 
@@ -1839,8 +2038,205 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             </div>
           ) : null}
 
-	          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
-	            <div style={{ fontWeight: 900, marginBottom: 6 }}>Estados (Stages)</div>
+          {isWorkspaceAdmin ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Multi‑Persona (Cliente / Staff / Proveedor)</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Configura el routing determinístico por tipo de conversación (<b>CLIENT</b>, <b>STAFF</b>, <b>PARTNER</b>) y el menú de Programs por rol.
+              </div>
+
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#555' }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(allowPersonaSwitchDraft)}
+                    onChange={(e) => setAllowPersonaSwitchDraft(e.target.checked)}
+                  />
+                  Permitir cambio de rol por WhatsApp (“modo/roles”, “modo cliente/staff/proveedor”, “modo auto”)
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#555' }}>
+                  TTL override (min)
+                  <input
+                    type="number"
+                    min={5}
+                    max={10080}
+                    value={personaSwitchTtlMinutesDraft}
+                    onChange={(e) => setPersonaSwitchTtlMinutesDraft(e.target.value)}
+                    style={{ width: 110, padding: '6px 8px', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                </label>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr', gap: 10 }}>
+                <div style={{ border: '1px solid #f2f2f2', borderRadius: 10, padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Default Program — Cliente</div>
+                  <select
+                    value={clientDefaultProgramIdDraft}
+                    onChange={(e) => setClientDefaultProgramIdDraft(e.target.value)}
+                    style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                  >
+                    <option value="">(sin default)</option>
+                    {programs
+                      .filter((p: any) => p && p.isActive && !p.archivedAt && String(p.slug || '').toLowerCase() !== 'admin')
+                      .map((p: any) => (
+                        <option key={String(p.id)} value={String(p.id)}>
+                          {p.name}
+                        </option>
+                      ))}
+                  </select>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => saveClientDefaultProgram().catch(() => {})}
+                      disabled={clientDefaultProgramSaving}
+                      style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 900, fontSize: 12 }}
+                    >
+                      {clientDefaultProgramSaving ? 'Guardando…' : 'Guardar'}
+                    </button>
+                    {workspaceDetails?.clientDefaultProgramId ? (
+                      <div style={{ fontSize: 12, color: '#666' }}>
+                        Actual:{' '}
+                        <b>
+                          {String(
+                            (programs || []).find((p: any) => String(p.id) === String(workspaceDetails.clientDefaultProgramId))?.name ||
+                              workspaceDetails.clientDefaultProgramId
+                          )}
+                        </b>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#666' }}>Actual: —</div>
+                    )}
+                  </div>
+                  {clientDefaultProgramStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{clientDefaultProgramStatus}</div> : null}
+                  {clientDefaultProgramError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{clientDefaultProgramError}</div> : null}
+                </div>
+
+                <div style={{ border: '1px solid #f2f2f2', borderRadius: 10, padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Default Program — Proveedor (Partner)</div>
+                  <select
+                    value={partnerDefaultProgramIdDraft}
+                    onChange={(e) => setPartnerDefaultProgramIdDraft(e.target.value)}
+                    style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                  >
+                    <option value="">(sin default)</option>
+                    {programs
+                      .filter((p: any) => p && p.isActive && !p.archivedAt && String(p.slug || '').toLowerCase() !== 'admin')
+                      .map((p: any) => (
+                        <option key={String(p.id)} value={String(p.id)}>
+                          {p.name}
+                        </option>
+                      ))}
+                  </select>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => savePartnerDefaultProgram().catch(() => {})}
+                      disabled={partnerDefaultProgramSaving}
+                      style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 900, fontSize: 12 }}
+                    >
+                      {partnerDefaultProgramSaving ? 'Guardando…' : 'Guardar'}
+                    </button>
+                    {workspaceDetails?.partnerDefaultProgramId ? (
+                      <div style={{ fontSize: 12, color: '#666' }}>
+                        Actual:{' '}
+                        <b>
+                          {String(
+                            (programs || []).find((p: any) => String(p.id) === String(workspaceDetails.partnerDefaultProgramId))?.name ||
+                              workspaceDetails.partnerDefaultProgramId
+                          )}
+                        </b>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#666' }}>Actual: —</div>
+                    )}
+                  </div>
+                  {partnerDefaultProgramStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{partnerDefaultProgramStatus}</div> : null}
+                  {partnerDefaultProgramError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{partnerDefaultProgramError}</div> : null}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 12, borderTop: '1px solid #f2f2f2', paddingTop: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Partners (números WhatsApp)</div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+                  Si un inbound viene desde alguno de estos números, se enruta a conversación <b>PARTNER</b>. Formato: +569XXXXXXXX (1 por línea).
+                </div>
+                <textarea
+                  value={partnerPhoneE164sDraftText}
+                  onChange={(e) => setPartnerPhoneE164sDraftText(e.target.value)}
+                  rows={3}
+                  placeholder="+56911222333\n+56999888777"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+              </div>
+
+              <div style={{ marginTop: 12, borderTop: '1px solid #f2f2f2', paddingTop: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Menú de Programs por rol (comando “menu”)</div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                  Si dejas vacío un menú, el sistema mostrará todos los Programs activos del workspace (excepto “admin”).
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr 1fr', gap: 10 }}>
+                  {[
+                    { key: 'CLIENT', label: `Cliente (${clientProgramMenuIdsDraft.length})`, value: clientProgramMenuIdsDraft, setValue: setClientProgramMenuIdsDraft },
+                    { key: 'STAFF', label: `Staff (${staffProgramMenuIdsDraft.length})`, value: staffProgramMenuIdsDraft, setValue: setStaffProgramMenuIdsDraft },
+                    { key: 'PARTNER', label: `Proveedor (${partnerProgramMenuIdsDraft.length})`, value: partnerProgramMenuIdsDraft, setValue: setPartnerProgramMenuIdsDraft },
+                  ].map((cfg) => {
+                    const list = programs.filter((p: any) => p && p.isActive && !p.archivedAt && String(p.slug || '').toLowerCase() !== 'admin');
+                    return (
+                      <div key={cfg.key} style={{ border: '1px solid #f2f2f2', borderRadius: 10, padding: 10 }}>
+                        <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>{cfg.label}</div>
+                        <div style={{ maxHeight: 160, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {list.map((p: any) => {
+                            const checked = cfg.value.includes(String(p.id));
+                            return (
+                              <label key={String(p.id)} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#555' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    const id = String(p.id);
+                                    const next = checked ? cfg.value.filter((x) => x !== id) : [...cfg.value, id];
+                                    cfg.setValue(next);
+                                  }}
+                                />
+                                {p.name}
+                              </label>
+                            );
+                          })}
+                          {list.length === 0 ? <div style={{ fontSize: 12, color: '#666' }}>— No hay Programs activos.</div> : null}
+                        </div>
+                        <div style={{ marginTop: 8 }}>
+                          <button
+                            type="button"
+                            onClick={() => cfg.setValue([])}
+                            style={{ padding: '5px 9px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+                          >
+                            Limpiar
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => savePersonaRouting().catch(() => {})}
+                  disabled={personaRoutingSaving}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 900, fontSize: 12 }}
+                >
+                  {personaRoutingSaving ? 'Guardando…' : 'Guardar routing'}
+                </button>
+                {personaRoutingStatus ? <div style={{ fontSize: 12, color: '#1a7f37' }}>{personaRoutingStatus}</div> : null}
+                {personaRoutingError ? <div style={{ fontSize: 12, color: '#b93800' }}>{personaRoutingError}</div> : null}
+              </div>
+            </div>
+          ) : null}
+
+		          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+		            <div style={{ fontWeight: 900, marginBottom: 6 }}>Estados (Stages)</div>
 	            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
 	              Define las <b>etapas</b> disponibles para conversaciones y Automations con trigger <b>STAGE_CHANGED</b>. El valor guardado es el <b>slug</b>.
 	            </div>
@@ -2737,7 +3133,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             Todas las acciones aquí aplican <strong>solo a este workspace</strong>. No se borra ninguna cuenta global ni historial.
           </div>
 
-          <div style={{ border: '1px solid #eee', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ border: '1px solid #eee', borderRadius: 10, overflowX: 'auto', overflowY: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#fafafa', textAlign: 'left' }}>
@@ -2748,6 +3144,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>
                     WhatsApp notificaciones{' '}
                     <span title="Se usa para avisos automáticos (ej: cuando un caso pasa a INTERESADO). Formato: +56994830202">ⓘ</span>
+                  </th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                    Extras (Staff){' '}
+                    <span title="Números adicionales que deben rutear como STAFF (1 por línea, formato +569...).">ⓘ</span>
+                  </th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>
+                    Personas permitidas{' '}
+                    <span title="Permite cambiar de rol por WhatsApp con “modo ...” (si el workspace lo permite).">ⓘ</span>
                   </th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>AddedAt</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Acciones</th>
@@ -2813,6 +3217,82 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                           {userStaffWhatsAppErrorById[String(u.membershipId)]}
                         </div>
                       ) : null}
+                    </td>
+                    <td style={{ padding: 10, fontSize: 13, minWidth: 240 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <textarea
+                          value={
+                            userStaffWhatsAppExtrasDraft[String(u.membershipId)] ??
+                            (Array.isArray(u.staffWhatsAppExtraE164s) ? u.staffWhatsAppExtraE164s.join('\n') : '')
+                          }
+                          onChange={(e) =>
+                            setUserStaffWhatsAppExtrasDraft((prev) => ({ ...prev, [String(u.membershipId)]: e.target.value }))
+                          }
+                          rows={2}
+                          placeholder="+56982345846"
+                          style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #ddd', fontSize: 12, width: '100%' }}
+                        />
+                        <button
+                          onClick={() =>
+                            saveUserStaffWhatsAppExtras(
+                              String(u.membershipId),
+                              userStaffWhatsAppExtrasDraft[String(u.membershipId)] ??
+                                (Array.isArray(u.staffWhatsAppExtraE164s) ? u.staffWhatsAppExtraE164s.join('\n') : '')
+                            ).catch(() => {})
+                          }
+                          disabled={userStaffWhatsAppExtrasSavingId === String(u.membershipId)}
+                          style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12, width: 'fit-content' }}
+                        >
+                          {userStaffWhatsAppExtrasSavingId === String(u.membershipId) ? 'Guardando…' : 'Guardar'}
+                        </button>
+                        {userStaffWhatsAppExtrasErrorById[String(u.membershipId)] ? (
+                          <div style={{ fontSize: 12, color: '#b93800' }}>{userStaffWhatsAppExtrasErrorById[String(u.membershipId)]}</div>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td style={{ padding: 10, fontSize: 13, minWidth: 220 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          {['CLIENT', 'STAFF', 'PARTNER', 'ADMIN'].map((kind) => {
+                            const current = Array.isArray(userAllowedPersonaKindsDraft[String(u.membershipId)])
+                              ? userAllowedPersonaKindsDraft[String(u.membershipId)]
+                              : Array.isArray(u.allowedPersonaKinds)
+                              ? u.allowedPersonaKinds
+                              : [];
+                            const checked = current.map((v: any) => String(v).toUpperCase()).includes(kind);
+                            return (
+                              <label key={kind} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    const normalized = current.map((v: any) => String(v).toUpperCase());
+                                    const next = checked ? normalized.filter((k) => k !== kind) : Array.from(new Set([...normalized, kind]));
+                                    setUserAllowedPersonaKindsDraft((prev) => ({ ...prev, [String(u.membershipId)]: next }));
+                                  }}
+                                />
+                                {kind}
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <button
+                          onClick={() =>
+                            saveUserAllowedPersonaKinds(
+                              String(u.membershipId),
+                              userAllowedPersonaKindsDraft[String(u.membershipId)] ??
+                                (Array.isArray(u.allowedPersonaKinds) ? u.allowedPersonaKinds : [])
+                            ).catch(() => {})
+                          }
+                          disabled={userAllowedPersonaKindsSavingId === String(u.membershipId)}
+                          style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12, width: 'fit-content' }}
+                        >
+                          {userAllowedPersonaKindsSavingId === String(u.membershipId) ? 'Guardando…' : 'Guardar'}
+                        </button>
+                        {userAllowedPersonaKindsErrorById[String(u.membershipId)] ? (
+                          <div style={{ fontSize: 12, color: '#b93800' }}>{userAllowedPersonaKindsErrorById[String(u.membershipId)]}</div>
+                        ) : null}
+                      </div>
                     </td>
                     <td style={{ padding: 10, fontSize: 13 }}>{u.addedAt}</td>
                     <td style={{ padding: 10, fontSize: 13 }}>

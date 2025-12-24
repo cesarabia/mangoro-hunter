@@ -144,14 +144,34 @@ async function resolveStaffActorForConversation(params: {
 
   const memberships = await prisma.membership
     .findMany({
-      where: { workspaceId: params.workspaceId, archivedAt: null, staffWhatsAppE164: { not: null } },
+      where: {
+        workspaceId: params.workspaceId,
+        archivedAt: null,
+        OR: [{ staffWhatsAppE164: { not: null } }, { staffWhatsAppExtraE164sJson: { not: null } as any }],
+      } as any,
       include: { user: { select: { id: true, email: true, name: true } } },
       take: 50,
     })
     .catch(() => []);
-  const match = memberships.find(
-    (m) => normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || '')) === waId,
-  );
+  const match = memberships.find((m) => {
+    const primary = normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || '')) === waId;
+    if (primary) return true;
+    const extraRaw = String((m as any).staffWhatsAppExtraE164sJson || '').trim();
+    if (!extraRaw) return false;
+    try {
+      const parsed = JSON.parse(extraRaw);
+      if (Array.isArray(parsed)) {
+        return parsed.some((v) => normalizeWhatsAppId(String(v || '')) === waId);
+      }
+    } catch {
+      // ignore
+    }
+    return extraRaw
+      .split(/[,\n]/g)
+      .map((v) => normalizeWhatsAppId(String(v || '')) || '')
+      .filter(Boolean)
+      .includes(waId);
+  });
   if (!match?.id || !match.user?.id) return null;
   return {
     membershipId: match.id,
@@ -523,6 +543,7 @@ export async function executeAgentResponse(params: {
       }
 
       const contact = baseConversation.contact;
+      const baseKind = String((baseConversation as any).conversationKind || 'CLIENT').toUpperCase();
       if (contact.noContact) {
         const textHash = stableHash(`NO_CONTACT:${cmd.type}:${cmd.text || ''}:${cmd.templateName || ''}`);
         await logOutbound({
@@ -534,7 +555,7 @@ export async function executeAgentResponse(params: {
           dedupeKey: cmd.dedupeKey,
           textHash,
           blockedReason: 'NO_CONTACTAR',
-          relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
+          relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
         });
         results.push({ ok: true, blocked: true, blockedReason: 'NO_CONTACTAR' });
         continue;
@@ -551,7 +572,7 @@ export async function executeAgentResponse(params: {
           dedupeKey: cmd.dedupeKey,
           textHash,
           blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
-          relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
+          relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
         });
         results.push({ ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
         continue;
@@ -589,7 +610,7 @@ export async function executeAgentResponse(params: {
           dedupeKey: cmd.dedupeKey,
           textHash: payloadHash,
           blockedReason: blockReason,
-          relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
+          relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
         });
         results.push({ ok: true, blocked: true, blockedReason: blockReason });
         continue;
@@ -613,7 +634,7 @@ export async function executeAgentResponse(params: {
           dedupeKey: cmd.dedupeKey,
           textHash: payloadHash,
           blockedReason: safetyBlock,
-          relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
+          relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
         });
         results.push({ ok: true, blocked: true, blockedReason: safetyBlock });
         continue;
@@ -669,7 +690,7 @@ export async function executeAgentResponse(params: {
         textHash: payloadHash,
         blockedReason: sendResult.success ? null : `SEND_FAILED:${sendResult.error || 'unknown'}`,
         waMessageId: sendResult.messageId || null,
-        relatedConversationId: baseConversation.conversationKind === 'STAFF' ? relatedConversationIdFromRun : null,
+        relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
       });
 
       if (params.transportMode === 'REAL' && baseConversation.phoneLineId) {

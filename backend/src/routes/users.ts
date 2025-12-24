@@ -28,6 +28,32 @@ export async function registerUserRoutes(app: FastifyInstance) {
       role: m.role,
       assignedOnly: Boolean((m as any).assignedOnly),
       staffWhatsAppE164: (m as any).staffWhatsAppE164 || null,
+      staffWhatsAppExtraE164s: (() => {
+        const raw = String((m as any).staffWhatsAppExtraE164sJson || '').trim();
+        if (!raw) return [];
+        try {
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return raw
+            .split(/[,\n]/g)
+            .map((v) => String(v).trim())
+            .filter(Boolean);
+        }
+      })(),
+      allowedPersonaKinds: (() => {
+        const raw = String((m as any).allowedPersonaKindsJson || '').trim();
+        if (!raw) return [];
+        try {
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return raw
+            .split(/[,\n]/g)
+            .map((v) => String(v).trim())
+            .filter(Boolean);
+        }
+      })(),
       addedAt: m.createdAt.toISOString(),
       archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null
     }));
@@ -88,7 +114,14 @@ export async function registerUserRoutes(app: FastifyInstance) {
     if (!isWorkspaceOwner(request, access)) return reply.code(403).send({ error: 'Forbidden' });
 
     const { membershipId } = request.params as { membershipId: string };
-    const body = request.body as { role?: string; archived?: boolean; assignedOnly?: boolean; staffWhatsAppE164?: string | null };
+    const body = request.body as {
+      role?: string;
+      archived?: boolean;
+      assignedOnly?: boolean;
+      staffWhatsAppE164?: string | null;
+      staffWhatsAppExtraE164s?: string[] | null;
+      allowedPersonaKinds?: string[] | null;
+    };
 
     const membership = await prisma.membership.findFirst({
       where: { id: membershipId, workspaceId: access.workspaceId }
@@ -118,6 +151,33 @@ export async function registerUserRoutes(app: FastifyInstance) {
         data.staffWhatsAppE164 = normalizeChilePhoneE164(trimmed);
       }
     }
+    if (typeof body.staffWhatsAppExtraE164s !== 'undefined') {
+      if (body.staffWhatsAppExtraE164s === null) {
+        data.staffWhatsAppExtraE164sJson = null;
+      } else if (Array.isArray(body.staffWhatsAppExtraE164s)) {
+        const normalized: string[] = [];
+        for (const item of body.staffWhatsAppExtraE164s) {
+          const trimmed = String(item || '').trim();
+          if (!trimmed) continue;
+          const e164 = normalizeChilePhoneE164(trimmed);
+          if (e164 && !normalized.includes(e164)) normalized.push(e164);
+        }
+        data.staffWhatsAppExtraE164sJson = normalized.length > 0 ? JSON.stringify(normalized) : null;
+      }
+    }
+    if (typeof body.allowedPersonaKinds !== 'undefined') {
+      if (body.allowedPersonaKinds === null) {
+        data.allowedPersonaKindsJson = null;
+      } else if (Array.isArray(body.allowedPersonaKinds)) {
+        const normalized: string[] = [];
+        for (const item of body.allowedPersonaKinds) {
+          const kind = String(item || '').trim().toUpperCase();
+          if (!kind) continue;
+          if (!normalized.includes(kind)) normalized.push(kind);
+        }
+        data.allowedPersonaKindsJson = normalized.length > 0 ? JSON.stringify(normalized) : null;
+      }
+    }
 
     const updated = await prisma.membership.update({ where: { id: membershipId }, data });
     return {
@@ -126,6 +186,32 @@ export async function registerUserRoutes(app: FastifyInstance) {
       role: updated.role,
       assignedOnly: Boolean((updated as any).assignedOnly),
       staffWhatsAppE164: (updated as any).staffWhatsAppE164 || null,
+      staffWhatsAppExtraE164s: (() => {
+        const raw = String((updated as any).staffWhatsAppExtraE164sJson || '').trim();
+        if (!raw) return [];
+        try {
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return raw
+            .split(/[,\n]/g)
+            .map((v) => String(v).trim())
+            .filter(Boolean);
+        }
+      })(),
+      allowedPersonaKinds: (() => {
+        const raw = String((updated as any).allowedPersonaKindsJson || '').trim();
+        if (!raw) return [];
+        try {
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
+        } catch {
+          return raw
+            .split(/[,\n]/g)
+            .map((v) => String(v).trim())
+            .filter(Boolean);
+        }
+      })(),
       archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null
     };
   });
