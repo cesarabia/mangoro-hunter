@@ -177,6 +177,17 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'stage_definitions_crud_basic',
       'ssclinical_handoff_interesado_notification',
       'ssclinical_staff_whatsapp_notification',
+      // V2.2: Staff WhatsApp (tools + reply-to + templates + requireAvailability)
+      'staff_inbox_list_cases',
+      'staff_notification_template_variables',
+      'staff_reply_to_notification_updates_case',
+      'ssclinical_notification_requires_availability',
+      // V2.3: Multi-persona (staff/partner) + templates determinísticos + availability gating
+      'staff_mode_routing',
+      'staff_menu_switch_program',
+      'role_switch_mode_cliente_staff',
+      'notification_template_vars_render',
+      'availability_confirmed_prevents_hallucination',
       'program_menu_command_menu',
       'copilot_context_followup',
       'ssclinical_onboarding',
