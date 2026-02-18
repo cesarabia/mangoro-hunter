@@ -19,6 +19,16 @@ import { createChatCompletionWithModelFallback, getUniqueModelFallbackChain } fr
 
 const ViewSchema = z.enum(['inbox', 'inactive', 'simulator', 'agenda', 'config', 'review']);
 const ConfigTabSchema = z.enum(['workspace', 'integrations', 'users', 'phoneLines', 'programs', 'automations', 'logs', 'usage']);
+const SetupWizardGateSchema = z.enum([
+  'phoneLine',
+  'programs',
+  'routing',
+  'users',
+  'automations',
+  'notifications',
+  'smoke',
+  'goLive',
+]);
 
 const GuideStepSchema = z.object({
   guideId: z.string().min(1).max(80),
@@ -119,6 +129,12 @@ const CopilotCommandSchema = z.discriminatedUnion('type', [
     role: z.enum(['OWNER', 'ADMIN', 'MEMBER', 'VIEWER']),
     expiresDays: z.number().int().min(1).max(30).optional(),
   }),
+  z.object({
+    type: z.literal('WORKSPACE_BOOTSTRAP_BUNDLE'),
+    gateId: SetupWizardGateSchema.optional(),
+    scope: z.enum(['FIX_GATE', 'GO_LIVE', 'FULL']).optional(),
+    workspaceName: z.string().min(1).max(140).optional().nullable(),
+  }),
 ]);
 
 const CopilotProposalSchema = z.object({
@@ -207,6 +223,33 @@ function buildInviteToken(): string {
 function buildInviteUrl(token: string): string {
   const base = process.env.PUBLIC_BASE_URL || 'https://hunter.mangoro.app';
   return `${base.replace(/\/+$/g, '')}/invite/${token}`;
+}
+
+function parseSetupWizardFixMarker(value: string): { cleanedText: string; gateId: z.infer<typeof SetupWizardGateSchema> | null } {
+  const text = String(value || '');
+  const match = text.match(/^\[SETUP_WIZARD_FIX(?:\s+gate=([a-zA-Z]+))?\]\s*/i);
+  if (!match) return { cleanedText: text, gateId: null };
+  const cleaned = text.replace(match[0], '').trim();
+  const rawGate = String(match[1] || '').trim();
+  const parsedGate = SetupWizardGateSchema.safeParse(rawGate);
+  return {
+    cleanedText: cleaned,
+    gateId: parsedGate.success ? parsedGate.data : null,
+  };
+}
+
+function inferSetupWizardGateFromText(value: string): z.infer<typeof SetupWizardGateSchema> | null {
+  const t = normalizeText(value);
+  if (!t) return null;
+  if (t.includes('phone line') || t.includes('phoneline') || t.includes('numero whatsapp')) return 'phoneLine';
+  if (t.includes('program') || t.includes('programa')) return 'programs';
+  if (t.includes('routing') || t.includes('default') || t.includes('persona')) return 'routing';
+  if (t.includes('usuario') || t.includes('staffwhatsapp')) return 'users';
+  if (t.includes('automation') || t.includes('run_agent') || t.includes('regla')) return 'automations';
+  if (t.includes('notificacion') || t.includes('notify') || t.includes('handoff')) return 'notifications';
+  if (t.includes('smoke') || t.includes('scenario')) return 'smoke';
+  if (t.includes('go-live') || t.includes('golive') || t.includes('setup wizard') || t.includes('completa los gates')) return 'goLive';
+  return null;
 }
 
 async function ensureUniqueProgramSlug(workspaceId: string, desired: string): Promise<string> {
@@ -558,7 +601,9 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
     const isAdmin = isWorkspaceAdmin(request, access);
     const isOwner = isWorkspaceOwner(request, access);
     const body = request.body as { text?: string; conversationId?: string | null; view?: string | null; threadId?: string | null };
-    const text = String(body?.text || '').trim();
+    const rawText = String(body?.text || '').trim();
+    const setupFixMarker = parseSetupWizardFixMarker(rawText);
+    const text = setupFixMarker.cleanedText;
     const conversationId = body?.conversationId ? String(body.conversationId) : null;
     const view = typeof body?.view === 'string' ? body.view : null;
     const userId = request.user?.userId || null;
@@ -679,6 +724,51 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
         });
       }
       return response;
+    }
+
+    const inferredSetupGate = setupFixMarker.gateId || inferSetupWizardGateFromText(text);
+    const wantsWorkspaceBootstrap =
+      Boolean(setupFixMarker.gateId) ||
+      /\b(setup wizard|bootstrap|go-live|go live)\b/i.test(text) ||
+      /\b(configura|configurar|deja|dejar)\b/i.test(text) &&
+        /\b(workspace|program|stage|automation|routing|staff mode|staff)\b/i.test(text);
+    if (wantsWorkspaceBootstrap && isAdmin) {
+      const proposal: z.infer<typeof CopilotProposalSchema> = {
+        id: `ws_bootstrap_${Date.now().toString(36)}`,
+        title: inferredSetupGate
+          ? `Setup Wizard: Fix gate ${inferredSetupGate}`
+          : 'Bootstrap de workspace (Programs + Stages + Routing + Automations)',
+        summary: `Workspace: ${access.workspaceId} · Ejecución en bundle con auditoría y rollback transaccional donde aplica.`,
+        commands: [
+          {
+            type: 'WORKSPACE_BOOTSTRAP_BUNDLE',
+            gateId: inferredSetupGate || undefined,
+            scope: inferredSetupGate === 'goLive' || !inferredSetupGate ? 'GO_LIVE' : 'FIX_GATE',
+          } as any,
+        ],
+      };
+      const replyText = inferredSetupGate
+        ? `Puedo corregir automáticamente el gate "${inferredSetupGate}" del Setup Wizard. ¿Confirmas?`
+        : 'Puedo aplicar un bootstrap completo del workspace (Programs, Stages, Routing, Automations y defaults) en un bundle auditable. ¿Confirmas?';
+      if (run?.id) {
+        await prisma.copilotRunLog.update({
+          where: { id: run.id },
+          data: {
+            status: 'PENDING_CONFIRMATION',
+            responseText: replyText,
+            actionsJson: serializeJson([nav('config', 'workspace', 'Ir a Workspace')]),
+            proposalsJson: serializeJson([proposal]),
+          } as any,
+        });
+      }
+      return {
+        reply: replyText,
+        actions: [nav('config', 'workspace', 'Ir a Workspace')],
+        proposals: [proposal],
+        threadId,
+        runId: run?.id || null,
+        autoNavigate: true,
+      };
     }
 
     const maybeUserMgmt =
@@ -1018,6 +1108,9 @@ CopilotCommand permitidos (usa solo estos):
    (Si el usuario NO existe, crea un invite en lugar de setear password.)
 9) INVITE_USER_BY_EMAIL (solo OWNER):
    { "type":"INVITE_USER_BY_EMAIL", "email": string, "role": "OWNER"|"ADMIN"|"MEMBER"|"VIEWER", "expiresDays"?: number }
+10) WORKSPACE_BOOTSTRAP_BUNDLE:
+   { "type":"WORKSPACE_BOOTSTRAP_BUNDLE", "gateId"?: "phoneLine"|"programs"|"routing"|"users"|"automations"|"notifications"|"smoke"|"goLive", "scope"?: "FIX_GATE"|"GO_LIVE"|"FULL" }
+   (Aplica un bundle real de configuración del workspace: Programs, Stages, Routing, Automations y defaults con auditoría.)
 
 Tu salida debe ser SOLO un JSON válido con el shape:
 {
@@ -1383,8 +1476,322 @@ Tu salida debe ser SOLO un JSON válido con el shape:
       return [];
     };
 
+    const parseIdListJson = (raw: unknown): string[] => {
+      if (!raw || typeof raw !== 'string') return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        const out: string[] = [];
+        for (const item of parsed) {
+          const id = String(item || '').trim();
+          if (!id) continue;
+          if (!out.includes(id)) out.push(id);
+        }
+        return out;
+      } catch {
+        return [];
+      }
+    };
+
+    const isStaffProgramLike = (program: { name?: string | null; slug?: string | null }) => {
+      const text = normalizeText(`${String(program.name || '')} ${String(program.slug || '')}`);
+      return /\bstaff\b/.test(text) || /\boperaci/.test(text) || /\benfermera\b/.test(text);
+    };
+
+    const buildGenericClientPrompt = (workspaceName: string) =>
+      [
+        `Eres el Asistente Virtual de ${workspaceName}.`,
+        `Objetivo: informar, calificar y recolectar datos mínimos para derivar al equipo humano.`,
+        `Reglas:`,
+        `- Responde corto, humano y sin loops.`,
+        `- Si faltan datos, pide solo los faltantes en 1 mensaje.`,
+        `- Nunca inventes agenda/confirmaciones: si falta disponibilidad, dilo explícitamente.`,
+      ].join('\n');
+
+    const buildGenericStaffPrompt = (workspaceName: string) =>
+      [
+        `Programa STAFF — Operaciones (${workspaceName}).`,
+        `Reglas obligatorias:`,
+        `- Si piden casos ("casos nuevos", "mis casos", "pendientes"), usa RUN_TOOL LIST_CASES primero.`,
+        `- Para detalle: GET_CASE_SUMMARY.`,
+        `- Para operar: SET_STAGE, ADD_NOTE, SEND_CUSTOMER_MESSAGE.`,
+        `- Nunca alucines; si falla una tool, explica error y siguiente paso accionable.`,
+      ].join('\n');
+
     for (const cmd of proposal.commands) {
       try {
+        if (cmd.type === 'WORKSPACE_BOOTSTRAP_BUNDLE') {
+          const gateId = SetupWizardGateSchema.safeParse((cmd as any).gateId).success
+            ? (cmd as any).gateId
+            : null;
+          const scope = String((cmd as any).scope || '').toUpperCase();
+          const doFull = scope === 'FULL' || scope === 'GO_LIVE' || gateId === 'goLive' || !gateId;
+          const doPrograms = doFull || gateId === 'programs';
+          const doRouting = doFull || gateId === 'routing' || gateId === 'phoneLine';
+          const doAutomations = doFull || gateId === 'automations';
+          const doNotifications = doFull || gateId === 'notifications';
+          const doStages = doFull || /\bstage\b/i.test(String((proposal.summary || '') + ' ' + String(proposal.title || '')));
+
+          const workspace = await prisma.workspace.findUnique({
+            where: { id: access.workspaceId },
+            select: {
+              id: true,
+              name: true,
+              archivedAt: true,
+              staffDefaultProgramId: true as any,
+              clientDefaultProgramId: true as any,
+              staffProgramMenuIdsJson: true as any,
+              clientProgramMenuIdsJson: true as any,
+            } as any,
+          });
+          if (!workspace || (workspace as any).archivedAt) {
+            throw new Error('BLOCKED: Workspace no disponible o archivado. Issue para Codex: revisar estado del workspace.');
+          }
+
+          const txResult = await prisma.$transaction(async (tx) => {
+            const changes: string[] = [];
+            const warnings: string[] = [];
+
+            const programs = await tx.program.findMany({
+              where: { workspaceId: access.workspaceId, archivedAt: null },
+              orderBy: { createdAt: 'asc' },
+              select: { id: true, name: true, slug: true, isActive: true, agentSystemPrompt: true },
+            });
+            const activePrograms = programs.filter((p) => Boolean(p.isActive));
+            const phoneLines = await tx.phoneLine.findMany({
+              where: { workspaceId: access.workspaceId, archivedAt: null, isActive: true },
+              orderBy: { createdAt: 'asc' },
+              select: { id: true, alias: true, defaultProgramId: true },
+            });
+
+            let clientProgram = activePrograms.find((p) => !isStaffProgramLike(p) && normalizeText(p.slug || '') !== 'admin') || null;
+            let staffProgram = activePrograms.find((p) => isStaffProgramLike(p)) || null;
+
+            if (doPrograms && !clientProgram) {
+              const slug = await ensureUniqueProgramSlug(access.workspaceId, 'client-assistant');
+              clientProgram = await tx.program.create({
+                data: {
+                  workspaceId: access.workspaceId,
+                  name: `Asistente — Cliente (${String((workspace as any).name || access.workspaceId)})`,
+                  slug,
+                  description: 'Programa base CLIENT para conversación externa.',
+                  isActive: true,
+                  agentSystemPrompt: buildGenericClientPrompt(String((workspace as any).name || access.workspaceId)),
+                } as any,
+                select: { id: true, name: true, slug: true, isActive: true, agentSystemPrompt: true },
+              });
+              changes.push(`Program CLIENT creado (${clientProgram.slug}).`);
+            }
+
+            if (doPrograms && !staffProgram) {
+              const slug = await ensureUniqueProgramSlug(access.workspaceId, 'staff-operaciones');
+              staffProgram = await tx.program.create({
+                data: {
+                  workspaceId: access.workspaceId,
+                  name: `Staff — Operaciones (${String((workspace as any).name || access.workspaceId)})`,
+                  slug,
+                  description: 'Programa base STAFF para operación interna por WhatsApp.',
+                  isActive: true,
+                  agentSystemPrompt: buildGenericStaffPrompt(String((workspace as any).name || access.workspaceId)),
+                } as any,
+                select: { id: true, name: true, slug: true, isActive: true, agentSystemPrompt: true },
+              });
+              changes.push(`Program STAFF creado (${staffProgram.slug}).`);
+            }
+
+            if (doPrograms) {
+              const legacyNeedle = /(ejecutivo\(a\)\s+de\s+ventas\s+en\s+terreno|alarmas?\s+de\s+seguridad)/i;
+              if (clientProgram && legacyNeedle.test(String(clientProgram.agentSystemPrompt || ''))) {
+                await tx.program.update({
+                  where: { id: clientProgram.id },
+                  data: { agentSystemPrompt: buildGenericClientPrompt(String((workspace as any).name || access.workspaceId)), updatedAt: new Date() },
+                });
+                changes.push(`Program CLIENT saneado (se removió prompt heredado específico).`);
+              }
+            }
+
+            if ((doRouting || doPrograms) && (clientProgram || staffProgram)) {
+              const currentStaffDefault = String((workspace as any).staffDefaultProgramId || '').trim();
+              const currentClientDefault = String((workspace as any).clientDefaultProgramId || '').trim();
+              const nextStaffDefault = currentStaffDefault || String(staffProgram?.id || '');
+              const nextClientDefault = currentClientDefault || String(clientProgram?.id || '');
+              const patch: any = {};
+              if (!currentClientDefault && nextClientDefault) patch.clientDefaultProgramId = nextClientDefault;
+              if (!currentStaffDefault && nextStaffDefault) patch.staffDefaultProgramId = nextStaffDefault;
+              const staffMenu = parseIdListJson((workspace as any).staffProgramMenuIdsJson);
+              const clientMenu = parseIdListJson((workspace as any).clientProgramMenuIdsJson);
+              if (staffMenu.length === 0 && nextStaffDefault) patch.staffProgramMenuIdsJson = serializeJson([nextStaffDefault]);
+              if (clientMenu.length === 0 && nextClientDefault) patch.clientProgramMenuIdsJson = serializeJson([nextClientDefault]);
+              if (Object.keys(patch).length > 0) {
+                await tx.workspace.update({ where: { id: access.workspaceId }, data: patch as any });
+                changes.push('Defaults de routing CLIENT/STAFF configurados.');
+              }
+
+              if (doRouting) {
+                if (phoneLines.length === 0) {
+                  warnings.push('No hay PhoneLine activa: no pude configurar defaultProgram de línea. Paso UI: Configuración → Números WhatsApp.');
+                } else if (nextClientDefault) {
+                  const missingLine = phoneLines.filter((l) => !String(l.defaultProgramId || '').trim());
+                  for (const line of missingLine) {
+                    await tx.phoneLine.update({
+                      where: { id: line.id },
+                      data: { defaultProgramId: nextClientDefault, updatedAt: new Date() } as any,
+                    });
+                  }
+                  if (missingLine.length > 0) {
+                    changes.push(`Default Program aplicado a ${missingLine.length} PhoneLine(s) activa(s).`);
+                  }
+                }
+              }
+            }
+
+            if (doStages) {
+              const stageSeeds = [
+                { slug: 'NEW_INTAKE', labelEs: 'Nuevo ingreso', order: 10, isDefault: true, isTerminal: false },
+                { slug: 'SCREENING', labelEs: 'Screening', order: 20, isDefault: false, isTerminal: false },
+                { slug: 'QUALIFIED', labelEs: 'Calificado', order: 30, isDefault: false, isTerminal: false },
+                { slug: 'INTERVIEW_PENDING', labelEs: 'Entrevista pendiente', order: 40, isDefault: false, isTerminal: false },
+                { slug: 'INTERVIEW_SCHEDULED', labelEs: 'Entrevista agendada', order: 50, isDefault: false, isTerminal: false },
+                { slug: 'INTERVIEWED', labelEs: 'Entrevistado', order: 60, isDefault: false, isTerminal: false },
+                { slug: 'HIRED', labelEs: 'Contratado', order: 70, isDefault: false, isTerminal: true },
+                { slug: 'REJECTED', labelEs: 'Rechazado', order: 80, isDefault: false, isTerminal: true },
+                { slug: 'NO_CONTACTAR', labelEs: 'No contactar', order: 95, isDefault: false, isTerminal: true },
+                { slug: 'ARCHIVED', labelEs: 'Archivado', order: 99, isDefault: false, isTerminal: true },
+              ];
+              for (const stage of stageSeeds) {
+                await tx.workspaceStage.upsert({
+                  where: { workspaceId_slug: { workspaceId: access.workspaceId, slug: stage.slug } },
+                  create: {
+                    workspaceId: access.workspaceId,
+                    slug: stage.slug,
+                    labelEs: stage.labelEs,
+                    order: stage.order,
+                    isDefault: stage.isDefault,
+                    isActive: true,
+                    isTerminal: stage.isTerminal,
+                    archivedAt: null,
+                  } as any,
+                  update: {
+                    labelEs: stage.labelEs,
+                    order: stage.order,
+                    isTerminal: stage.isTerminal,
+                    ...(stage.isDefault ? { isDefault: true } : {}),
+                    isActive: true,
+                    archivedAt: null,
+                    updatedAt: new Date(),
+                  } as any,
+                });
+              }
+              await tx.workspaceStage.updateMany({
+                where: { workspaceId: access.workspaceId, archivedAt: null, slug: { not: 'NEW_INTAKE' } },
+                data: { isDefault: false } as any,
+              });
+              await tx.workspaceStage.updateMany({
+                where: { workspaceId: access.workspaceId, archivedAt: null, slug: 'NEW_INTAKE' },
+                data: { isDefault: true } as any,
+              });
+              changes.push('Stages base asegurados y ordenados.');
+            }
+
+            if (doAutomations) {
+              const allInbound = await tx.automationRule.findMany({
+                where: { workspaceId: access.workspaceId, trigger: 'INBOUND_MESSAGE', archivedAt: null },
+                select: { id: true, enabled: true, actionsJson: true },
+              });
+              const hasInboundRunAgent = allInbound.some((r) => {
+                try {
+                  const parsed = JSON.parse(String(r.actionsJson || '[]'));
+                  return r.enabled && Array.isArray(parsed) && parsed.some((a: any) => String(a?.type || '').toUpperCase() === 'RUN_AGENT');
+                } catch {
+                  return false;
+                }
+              });
+              if (!hasInboundRunAgent) {
+                await tx.automationRule.create({
+                  data: {
+                    workspaceId: access.workspaceId,
+                    name: 'Default inbound → RUN_AGENT',
+                    description: 'Regla base: ante inbound, ejecuta RUN_AGENT.',
+                    enabled: true,
+                    priority: 100,
+                    trigger: 'INBOUND_MESSAGE',
+                    scopePhoneLineId: null,
+                    scopeProgramId: null,
+                    conditionsJson: serializeJson([]),
+                    actionsJson: serializeJson([{ type: 'RUN_AGENT', agent: 'program_default' }]),
+                  } as any,
+                });
+                changes.push('Automation base INBOUND_MESSAGE → RUN_AGENT creada.');
+              } else {
+                changes.push('Automation base RUN_AGENT ya estaba activa.');
+              }
+            }
+
+            if (doNotifications) {
+              const stageRules = await tx.automationRule.findMany({
+                where: { workspaceId: access.workspaceId, trigger: 'STAGE_CHANGED', archivedAt: null },
+                select: { id: true, actionsJson: true, conditionsJson: true, enabled: true },
+              });
+              const hasNotify = stageRules.some((r) => {
+                try {
+                  const cond = JSON.parse(String(r.conditionsJson || '[]'));
+                  const acts = JSON.parse(String(r.actionsJson || '[]'));
+                  const condOk = Array.isArray(cond) && cond.some((c: any) => String(c?.field || '').toLowerCase() === 'conversation.stage' && String(c?.value || '').toUpperCase() === 'INTERESADO');
+                  const actOk = Array.isArray(acts) && acts.some((a: any) => String(a?.type || '').toUpperCase() === 'NOTIFY_STAFF_WHATSAPP');
+                  return Boolean(r.enabled) && condOk && actOk;
+                } catch {
+                  return false;
+                }
+              });
+              if (!hasNotify) {
+                await tx.automationRule.create({
+                  data: {
+                    workspaceId: access.workspaceId,
+                    name: 'Stage INTERESADO → notificar staff',
+                    description: 'Handoff: al pasar a INTERESADO, asigna y notifica al staff por WhatsApp.',
+                    enabled: true,
+                    priority: 110,
+                    trigger: 'STAGE_CHANGED',
+                    scopePhoneLineId: null,
+                    scopeProgramId: null,
+                    conditionsJson: serializeJson([{ field: 'conversation.stage', op: 'equals', value: 'INTERESADO' }]),
+                    actionsJson: serializeJson([
+                      { type: 'ASSIGN_TO_NURSE_LEADER', note: 'Caso listo para coordinación.' },
+                      { type: 'NOTIFY_STAFF_WHATSAPP', recipients: 'ASSIGNED_TO', dedupePolicy: 'DAILY' },
+                    ]),
+                  } as any,
+                });
+                changes.push('Automation de handoff INTERESADO creada.');
+              } else {
+                changes.push('Automation de handoff INTERESADO ya estaba activa.');
+              }
+            }
+
+            await tx.configChangeLog
+              .create({
+                data: {
+                  workspaceId: access.workspaceId,
+                  userId: userId ? String(userId) : null,
+                  type: 'COPILOT_WORKSPACE_BOOTSTRAP',
+                  beforeJson: null,
+                  afterJson: serializeJson({ gateId: gateId || null, scope: scope || null, changes, warnings }),
+                },
+              })
+              .catch(() => {});
+
+            return { changes, warnings };
+          });
+
+          results.push({ type: cmd.type, ok: true, gateId: gateId || null, details: txResult });
+          if (Array.isArray(txResult?.changes) && txResult.changes.length > 0) {
+            for (const line of txResult.changes) summaryLines.push(`✅ ${line}`);
+          }
+          if (Array.isArray(txResult?.warnings) && txResult.warnings.length > 0) {
+            for (const warn of txResult.warnings) summaryLines.push(`⚠️ ${warn}`);
+          }
+          continue;
+        }
+
         if (cmd.type === 'CREATE_PROGRAM') {
           const desiredSlug = cmd.slug ? String(cmd.slug) : cmd.name;
           const slug = await ensureUniqueProgramSlug(access.workspaceId, desiredSlug);

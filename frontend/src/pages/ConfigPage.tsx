@@ -1157,9 +1157,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     }
   };
 
-  const openCopilotFix = (text: string) => {
+  const openCopilotFix = (text: string, gateId?: string | null) => {
+    const marker =
+      gateId && String(gateId).trim()
+        ? `[SETUP_WIZARD_FIX gate=${String(gateId).trim()}] `
+        : '';
+    const payloadText = `${marker}${String(text || '').trim()}`.trim();
     try {
-      window.dispatchEvent(new CustomEvent('copilot:open', { detail: { text, autoSend: true } }));
+      window.dispatchEvent(new CustomEvent('copilot:open', { detail: { text: payloadText, autoSend: true } }));
     } catch {
       // ignore
     }
@@ -1190,6 +1195,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     if (tab === 'workspace') {
       loadWorkspaceDetails().catch(() => {});
       loadWorkspaceStages().catch(() => {});
+      loadPrograms().catch(() => {});
+      loadPhoneLines().catch(() => {});
+      loadAutomations().catch(() => {});
       if (isWorkspaceAdmin) loadUsers().catch(() => {});
     }
     if (tab === 'users') {
@@ -1273,6 +1281,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const setupWizardGates = useMemo(() => {
     const activePhoneLines = (phoneLines || []).filter((l: any) => !l?.archivedAt && Boolean(l?.isActive));
     const activePrograms = (programs || []).filter((p: any) => !p?.archivedAt && p?.isActive !== false);
+    const hasStaffProgramsActive = activePrograms.some((p: any) => {
+      const text = String(`${p?.name || ''} ${p?.slug || ''}`).toLowerCase();
+      return /staff|operaci|enfermera/.test(text);
+    });
+    const hasStaffDefault = Boolean(String(workspaceDetails?.staffDefaultProgramId || '').trim());
     const hasClientRouting =
       Boolean(String(workspaceDetails?.clientDefaultProgramId || '').trim()) ||
       activePhoneLines.some((l: any) => Boolean(String(l?.defaultProgramId || '').trim()));
@@ -1324,13 +1337,15 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       {
         id: 'routing',
         label: 'Routing (defaults cliente/staff)',
-        ok: hasClientRouting && Boolean(String(workspaceDetails?.staffDefaultProgramId || '').trim()),
+        ok: hasClientRouting && (!hasStaffProgramsActive || hasStaffDefault),
         detail:
-          hasClientRouting && Boolean(String(workspaceDetails?.staffDefaultProgramId || '').trim())
+          hasClientRouting && (!hasStaffProgramsActive || hasStaffDefault)
             ? 'Defaults configurados'
-            : 'Falta default CLIENT o STAFF',
+            : hasStaffProgramsActive && !hasStaffDefault
+              ? 'Falta default STAFF (hay Programs staff activos)'
+              : 'Falta default CLIENT o routing de línea',
         fixPrompt:
-          hasClientRouting && Boolean(String(workspaceDetails?.staffDefaultProgramId || '').trim())
+          hasClientRouting && (!hasStaffProgramsActive || hasStaffDefault)
             ? null
             : 'Configura clientDefaultProgramId y staffDefaultProgramId, además del menú de Programs por rol si aplica.',
       },
@@ -2186,7 +2201,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     {!gate.ok && gate.fixPrompt ? (
                       <button
                         type="button"
-                        onClick={() => openCopilotFix(gate.fixPrompt || '')}
+                        onClick={() => openCopilotFix(gate.fixPrompt || '', gate.id)}
                         style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
                       >
                         Fix with Copilot
@@ -2213,7 +2228,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 {!setupWizardGates.goLiveOk && setupWizardGates.goLivePrompt ? (
                   <button
                     type="button"
-                    onClick={() => openCopilotFix(setupWizardGates.goLivePrompt || '')}
+                    onClick={() => openCopilotFix(setupWizardGates.goLivePrompt || '', 'goLive')}
                     style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
                   >
                     Fix with Copilot (Go-live)
@@ -2802,7 +2817,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #ccc' }}
               >
                 <option value="ALLOWLIST_ONLY">ALLOWLIST_ONLY (Safe Mode)</option>
-                {outboundSafety?.defaultPolicy === 'ALLOW_ALL' ? <option value="ALLOW_ALL">ALLOW_ALL</option> : null}
+                <option value="ALLOW_ALL">ALLOW_ALL (habilita envíos)</option>
                 <option value="BLOCK_ALL">BLOCK_ALL</option>
               </select>
               {outboundSafety?.defaultPolicy ? (

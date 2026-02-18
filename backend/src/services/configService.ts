@@ -10,12 +10,12 @@ export const DEFAULT_TEMPLATE_INTERVIEW_INVITE = 'entrevista_confirmacion_1';
 export const DEFAULT_TEMPLATE_GENERAL_FOLLOWUP = 'postulacion_completar_1';
 export const DEFAULT_TEMPLATE_LANGUAGE_CODE = 'es_CL';
 export const DEFAULT_AI_MODEL = 'gpt-4.1-mini';
-export const DEFAULT_JOB_TITLE = 'Ejecutivo(a) de Ventas en Terreno';
+export const DEFAULT_JOB_TITLE = 'Cargo a definir';
 export const DEFAULT_RECRUIT_JOB_SHEET = `
-Cargo: Ejecutivo(a) de Ventas en Terreno
-- Rubro: alarmas de seguridad con monitoreo
-- Zona: RM (Santiago)
-- Proceso: revisamos tu postulación y te contactamos por WhatsApp
+Cargo: [Define el cargo]
+- Rubro: [Define rubro/servicio]
+- Zona: [Define ciudad/comuna/zona]
+- Proceso: [Define paso siguiente, p.ej. "el equipo revisa y contacta por WhatsApp"]
 `.trim();
 export const DEFAULT_RECRUIT_FAQ = null;
 export const DEFAULT_INTERVIEW_DAY = 'Lunes';
@@ -163,8 +163,6 @@ export function getOutboundPolicy(config: SystemConfig): OutboundPolicy {
   }
   const stored = normalizeOutboundPolicy((config as any).outboundPolicy);
   const defaultPolicy = getDefaultOutboundPolicy();
-  // Guardrail: non-prod must never default to ALLOW_ALL, even if someone stored it in DB.
-  if (defaultPolicy !== 'ALLOW_ALL' && stored === 'ALLOW_ALL') return 'ALLOWLIST_ONLY';
   return stored || defaultPolicy;
 }
 

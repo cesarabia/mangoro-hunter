@@ -396,9 +396,6 @@ export async function registerConfigRoutes(app: FastifyInstance) {
     if (typeof body?.outboundPolicy !== 'undefined' && typeof outboundPolicy === 'undefined') {
       return reply.code(400).send({ error: 'outboundPolicy inválido (ALLOW_ALL | ALLOWLIST_ONLY | BLOCK_ALL).' });
     }
-    if (outboundPolicy === 'ALLOW_ALL' && getDefaultOutboundPolicy() !== 'ALLOW_ALL') {
-      return reply.code(400).send({ error: 'En DEV no se permite ALLOW_ALL. Usa ALLOWLIST_ONLY.' });
-    }
 
     const allowlist = typeof body?.outboundAllowlist === 'undefined' ? undefined : body.outboundAllowlist;
 

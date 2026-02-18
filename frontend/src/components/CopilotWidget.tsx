@@ -28,7 +28,8 @@ type CopilotCommand =
   | { type: 'CREATE_PHONE_LINE'; alias: string; waPhoneNumberId: string }
   | { type: 'SET_PHONE_LINE_DEFAULT_PROGRAM'; phoneLineId?: string | null; waPhoneNumberId?: string | null; programId?: string | null; programSlug?: string | null }
   | { type: 'CREATE_OR_UPDATE_USER_MEMBERSHIP'; email: string; role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'; assignedOnly?: boolean }
-  | { type: 'INVITE_USER_BY_EMAIL'; email: string; role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'; expiresDays?: number };
+  | { type: 'INVITE_USER_BY_EMAIL'; email: string; role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER'; expiresDays?: number }
+  | { type: 'WORKSPACE_BOOTSTRAP_BUNDLE'; gateId?: string; scope?: 'FIX_GATE' | 'GO_LIVE' | 'FULL'; workspaceName?: string | null };
 
 type CopilotProposal = {
   id: string;

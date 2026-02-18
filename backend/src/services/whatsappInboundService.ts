@@ -54,6 +54,7 @@ import {
 import { runAutomations } from "./automationRunnerService";
 import { ensurePartnerConversation, ensureStaffConversation } from "./staffConversationService";
 import { stableHash } from "./agent/tools";
+import { resolveWorkspaceProgramForKind } from "./programRoutingService";
 
 interface InboundMedia {
   type: string;
@@ -691,10 +692,29 @@ export async function handleInboundWhatsAppMessage(
 
   let contact: any = null;
   let conversation: any = null;
-  const staffDefaultProgramId = (workspace as any)?.staffDefaultProgramId || null;
-  const partnerDefaultProgramId = (workspace as any)?.partnerDefaultProgramId || null;
+  const staffDefaultProgramId = (
+    await resolveWorkspaceProgramForKind({
+      workspaceId,
+      kind: "STAFF",
+      phoneLineId,
+    }).catch(() => ({ programId: null }))
+  ).programId;
+  const partnerDefaultProgramId = (
+    await resolveWorkspaceProgramForKind({
+      workspaceId,
+      kind: "PARTNER",
+      phoneLineId,
+    }).catch(() => ({ programId: null }))
+  ).programId;
   const clientDefaultProgramId = useDefaultProgram
-    ? phoneLine?.defaultProgramId || (workspace as any)?.clientDefaultProgramId || null
+    ? (
+        await resolveWorkspaceProgramForKind({
+          workspaceId,
+          kind: "CLIENT",
+          phoneLineId,
+          preferredProgramId: phoneLine?.defaultProgramId || null,
+        }).catch(() => ({ programId: null }))
+      ).programId
     : null;
   const isStaffConversation = effectiveKind === "STAFF";
   const isPartnerConversation = effectiveKind === "PARTNER";
@@ -2950,13 +2970,13 @@ function extractRecruitSafeFacts(jobSheet: string): string[] {
 
   const rubro =
     find(/\brubro\b/) ||
-    find(/\b(alarmas?|seguridad|monitoreo|monitoring)\b/) ||
-    "Rubro: alarmas de seguridad con monitoreo";
-  const zona = find(/\bzona\b/) || find(/\b(rm|santiago|metropolitana)\b/) || "Zona: RM (Santiago)";
+    find(/\b(servicio|industria|vertical|categoria)\b/) ||
+    "Rubro: (por definir)";
+  const zona = find(/\bzona\b/) || find(/\b(ciudad|comuna|region|región)\b/) || "Zona: (por definir)";
   const proceso =
     find(/\bproceso\b/) ||
     find(/\b(revisamos|revisar|contactamos|contactar|whatsapp)\b/) ||
-    "Proceso: el equipo revisa y contacta por WhatsApp";
+    "Proceso: el equipo revisa y contacta por WhatsApp.";
 
   return [rubro, zona, proceso];
 }

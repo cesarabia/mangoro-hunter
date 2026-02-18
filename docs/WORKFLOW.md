@@ -11,6 +11,7 @@ Iterar rápido **sin romper DEV/PROD/pilotos**, con evidencia reproducible (**lo
    - Actualizar **Release Notes (DEV)** dentro de la UI.
 3) **SAFE OUTBOUND MODE**:
    - DEV: `ALLOWLIST_ONLY` por defecto (bloquea todo fuera allowlist).
+   - Policies soportadas: `ALLOWLIST_ONLY`, `BLOCK_ALL`, `ALLOW_ALL` (esta última solo con confirmación explícita y auditoría).
    - Cualquier override debe ser explícito, auditado y preferir TEMP_OFF con auto‑revert.
 4) Si hay conflicto, priorizar: **seguridad > consistencia > UX > features**.
 5) WhatsApp:

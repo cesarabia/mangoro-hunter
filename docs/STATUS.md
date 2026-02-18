@@ -24,6 +24,10 @@
   - `DEFAULT`: aplica `defaultProgramId` si la conversación no tiene Program.
   - `MENU`: muestra menú de Programs y asigna por opción (1/2/3), con allowlist opcional por línea.
   - Comando WhatsApp **“menu”**: muestra el menú aunque ya exista Program (cambio de flujo) y deja log `PROGRAM_SELECTION`.
+- `SAFE OUTBOUND MODE` configurable en UI con políticas:
+  - `ALLOWLIST_ONLY` (default DEV),
+  - `BLOCK_ALL`,
+  - `ALLOW_ALL` (override explícito; auditado).
 
 ### Multi-persona WhatsApp (V2.3)
 - Router determinista por conversación: `CLIENT | STAFF | PARTNER | ADMIN`.
@@ -42,12 +46,19 @@
 - Copilot CRM:
   - Nivel 1: ayuda + diagnóstico + navegación + historial persistente por hilo.
   - Nivel 2 (MVP): propuestas con Confirmar/Cancelar + ejecución idempotente + auditoría (CopilotRunLog).
+  - Comando operativo `WORKSPACE_BOOTSTRAP_BUNDLE` (bundle auditable) para corregir gates de Setup Wizard en una sola ejecución (Programs/Stages/Routing/Automations/defaults).
+  - `Fix with Copilot` usa marcador de gate (`[SETUP_WIZARD_FIX gate=...]`) + auto-send para ejecutar cambios reales, no solo guía textual.
 - Fix de crash por “Rules of Hooks” (App ya no queda en blanco).
 - Download Review Pack (zip) desde Owner Review.
 - SSClinical (pilot): setting `Nurse Leader Email` + stage `INTERESADO` dispara auto-asignación vía Automation `STAGE_CHANGED`.
 - Estados/Stages configurables por workspace (UI + API) vía `WorkspaceStage` (archive-only) con `isDefault` (exactamente 1 default activo).
 - Notificaciones in-app (campana): asignación manual y handoff `INTERESADO` crean `InAppNotification` + log `NOTIFICATION_CREATED`.
 - Copilot follow-up: si Copilot ofrece listar Programs/Automations y el usuario responde “sí”, ejecuta sin repreguntar (estado en `CopilotThread.stateJson`).
+- Workspace operativo “Envio Rápido” (DEV bootstrap idempotente):
+  - Programs CLIENT/STAFF de reclutamiento de conductores,
+  - stages de pipeline de reclutamiento,
+  - automations base (`INBOUND_MESSAGE -> RUN_AGENT` + handoff `QUALIFIED/INTERVIEW_PENDING -> ASSIGN + NOTIFY_STAFF_WHATSAPP`),
+  - saneo archive-only de seeds heredados (“ventas en terreno/alarmas”).
 
 ## Qué falta (para “Agent OS v1 completo”)
 - (Opcional) Integraciones por workspace (OpenAI/WhatsApp) si se requiere multi‑cliente con credenciales separadas.

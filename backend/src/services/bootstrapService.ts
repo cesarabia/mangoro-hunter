@@ -203,10 +203,15 @@ export async function ensureAdminUser(): Promise<void> {
     const currentAdmin = getAdminWaIdAllowlist(config);
     const currentTest = getTestWaIdAllowlist(config);
     const currentExtraAllowlist = getOutboundAllowlist(config);
+    const storedPolicyRaw = String((config as any).outboundPolicy || '')
+      .trim()
+      .toUpperCase();
+    const storedPolicyValid = ['ALLOW_ALL', 'ALLOWLIST_ONLY', 'BLOCK_ALL'].includes(storedPolicyRaw);
 
     const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((v, idx) => v === b[idx]);
     const needsNumbers = !sameList(currentAdmin, desiredAdmin) || !sameList(currentTest, desiredTest);
-    const needsPolicy = getOutboundPolicy(config) !== 'ALLOWLIST_ONLY';
+    // Keep DEV default in ALLOWLIST_ONLY, but do not override an explicit policy chosen by OWNER.
+    const needsPolicy = !storedPolicyValid;
     const needsOutboundAllowlistClear = currentExtraAllowlist.length > 0;
 
     if (needsNumbers) {
@@ -224,11 +229,16 @@ export async function ensureAdminUser(): Promise<void> {
   await ensureWorkspace('sandbox', 'Platform Sandbox', true);
   if (!isProd) {
     await ensureWorkspace('ssclinical', 'SSClinical', false);
+    await ensureWorkspace('envio-rapido', 'Envio Rápido', false);
   }
   await ensureWorkspaceStages('default').catch(() => {});
   await ensureWorkspaceStages('sandbox').catch(() => {});
   await ensureMembership(admin.id, 'default', 'OWNER');
   await ensureMembership(admin.id, 'sandbox', 'OWNER');
+  if (!isProd) {
+    await ensureWorkspaceStages('envio-rapido').catch(() => {});
+    await ensureMembership(admin.id, 'envio-rapido', 'ADMIN').catch(() => {});
+  }
 
   // Platform SuperAdmin: only cesarabia@gmail.com.
   const superadminEmail = 'cesarabia@gmail.com';
@@ -670,5 +680,313 @@ Reglas:
     }
   } catch {
     // ignore; pilot workspace is optional
+  }
+
+  // Envio Rápido defaults (idempotent, archive-only, no hardcoded legacy copy).
+  try {
+    const envioRapido = await prisma.workspace.findFirst({
+      where: {
+        archivedAt: null,
+        OR: [
+          { id: 'envio-rapido' },
+          { name: 'Envio Rápido' as any },
+          { name: 'Envio Rapido' as any },
+        ],
+      } as any,
+      select: {
+        id: true,
+        name: true,
+        ssclinicalNurseLeaderEmail: true as any,
+        staffDefaultProgramId: true as any,
+        clientDefaultProgramId: true as any,
+      },
+    });
+    if (envioRapido?.id) {
+      const wsId = String(envioRapido.id);
+      const wsName = String(envioRapido.name || 'Envio Rápido');
+      await ensureWorkspaceStages(wsId).catch(() => {});
+
+      const stageSeeds = [
+        { slug: 'NEW_INTAKE', labelEs: 'Nuevo ingreso', order: 10, isDefault: true, isTerminal: false },
+        { slug: 'SCREENING', labelEs: 'Screening', order: 20, isDefault: false, isTerminal: false },
+        { slug: 'QUALIFIED', labelEs: 'Calificado', order: 30, isDefault: false, isTerminal: false },
+        { slug: 'INTERVIEW_PENDING', labelEs: 'Entrevista pendiente', order: 40, isDefault: false, isTerminal: false },
+        { slug: 'INTERVIEW_SCHEDULED', labelEs: 'Entrevista agendada', order: 50, isDefault: false, isTerminal: false },
+        { slug: 'INTERVIEWED', labelEs: 'Entrevistado', order: 60, isDefault: false, isTerminal: false },
+        { slug: 'HIRED', labelEs: 'Contratado', order: 70, isDefault: false, isTerminal: true },
+        { slug: 'REJECTED', labelEs: 'Rechazado', order: 80, isDefault: false, isTerminal: true },
+        { slug: 'NO_CONTACTAR', labelEs: 'No contactar', order: 95, isDefault: false, isTerminal: true },
+        { slug: 'ARCHIVED', labelEs: 'Archivado', order: 99, isDefault: false, isTerminal: true },
+      ];
+      for (const stage of stageSeeds) {
+        await prisma.workspaceStage
+          .upsert({
+            where: { workspaceId_slug: { workspaceId: wsId, slug: stage.slug } },
+            create: {
+              workspaceId: wsId,
+              slug: stage.slug,
+              labelEs: stage.labelEs,
+              order: stage.order,
+              isDefault: stage.isDefault,
+              isActive: true,
+              isTerminal: stage.isTerminal,
+              archivedAt: null,
+            } as any,
+            update: {
+              labelEs: stage.labelEs,
+              order: stage.order,
+              isActive: true,
+              isTerminal: stage.isTerminal,
+              ...(stage.isDefault ? { isDefault: true } : {}),
+              archivedAt: null,
+              updatedAt: new Date(),
+            } as any,
+          })
+          .catch(() => {});
+      }
+      await prisma.workspaceStage
+        .updateMany({
+          where: { workspaceId: wsId, archivedAt: null, slug: { not: 'NEW_INTAKE' } },
+          data: { isDefault: false } as any,
+        })
+        .catch(() => {});
+      await prisma.workspaceStage
+        .updateMany({
+          where: { workspaceId: wsId, archivedAt: null, slug: 'NEW_INTAKE' },
+          data: { isDefault: true } as any,
+        })
+        .catch(() => {});
+
+      const conductoresPrompt = `
+Eres el Asistente Virtual de postulación de ${wsName} para CONDUCTORES.
+
+Objetivo:
+- Informar el proceso.
+- Calificar rápidamente.
+- Recolectar datos mínimos.
+- Dejar el caso listo para staff (reclutamiento).
+
+Datos mínimos:
+- nombre y apellido
+- comuna/ciudad
+- licencia (clase)
+- experiencia conduciendo
+- disponibilidad para entrevista (día + rango horario)
+- email (opcional)
+- tipo de vehículo o preferencia de ruta (si aplica)
+
+Reglas:
+- Responde en español, corto y humano (máx 6 líneas).
+- Si falta información, pide solo faltantes en 1 mensaje.
+- Si no califica (sin licencia, fuera de zona o criterio excluyente), marca stage REJECTED y cierra amable.
+- No inventes entrevistas ni direcciones.
+`.trim();
+
+      const staffConductoresPrompt = `
+Programa STAFF — Reclutamiento (${wsName}).
+
+Para operar casos usa tools por defecto:
+- LIST_CASES
+- GET_CASE_SUMMARY
+- SET_STAGE
+- ADD_NOTE
+- SEND_CUSTOMER_MESSAGE
+
+Comandos humanos que debes entender:
+- "casos nuevos"
+- "resumen <id/nombre>"
+- "cambiar estado <id> <stage>"
+- "enviar <id> <mensaje>"
+- "nota <id> <texto>"
+
+Reglas:
+- Nunca responder "no tengo info" sin intentar LIST_CASES o GET_CASE_SUMMARY.
+- Si falla una tool, responde error claro y siguiente acción.
+- Saludo: muestra menú corto de acciones.
+`.trim();
+
+      const clientProgram = await prisma.program
+        .upsert({
+          where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-conductores-envio-rapido' } } as any,
+          create: {
+            workspaceId: wsId,
+            name: 'Reclutamiento — Conductores (Envio Rápido)',
+            slug: 'reclutamiento-conductores-envio-rapido',
+            description: 'Programa cliente para reclutamiento de conductores.',
+            isActive: true,
+            agentSystemPrompt: conductoresPrompt,
+            archivedAt: null,
+          } as any,
+          update: {
+            name: 'Reclutamiento — Conductores (Envio Rápido)',
+            description: 'Programa cliente para reclutamiento de conductores.',
+            isActive: true,
+            agentSystemPrompt: conductoresPrompt,
+            archivedAt: null,
+            updatedAt: new Date(),
+          } as any,
+          select: { id: true },
+        })
+        .catch(() => null);
+
+      const staffProgram = await prisma.program
+        .upsert({
+          where: { workspaceId_slug: { workspaceId: wsId, slug: 'staff-reclutamiento-envio-rapido' } } as any,
+          create: {
+            workspaceId: wsId,
+            name: 'Staff — Reclutamiento (Envio Rápido)',
+            slug: 'staff-reclutamiento-envio-rapido',
+            description: 'Programa staff para operar casos de reclutamiento de conductores.',
+            isActive: true,
+            agentSystemPrompt: staffConductoresPrompt,
+            archivedAt: null,
+          } as any,
+          update: {
+            name: 'Staff — Reclutamiento (Envio Rápido)',
+            description: 'Programa staff para operar casos de reclutamiento de conductores.',
+            isActive: true,
+            agentSystemPrompt: staffConductoresPrompt,
+            archivedAt: null,
+            updatedAt: new Date(),
+          } as any,
+          select: { id: true },
+        })
+        .catch(() => null);
+
+      if (clientProgram?.id || staffProgram?.id) {
+        await prisma.workspace
+          .update({
+            where: { id: wsId },
+            data: {
+              ...(clientProgram?.id ? { clientDefaultProgramId: clientProgram.id } : {}),
+              ...(staffProgram?.id ? { staffDefaultProgramId: staffProgram.id } : {}),
+              ...(clientProgram?.id ? { clientProgramMenuIdsJson: JSON.stringify([clientProgram.id]) } : {}),
+              ...(staffProgram?.id ? { staffProgramMenuIdsJson: JSON.stringify([staffProgram.id]) } : {}),
+            } as any,
+          })
+          .catch(() => {});
+      }
+
+      // Archive legacy seed programs that still contain inherited "ventas en terreno/alarmas" copy.
+      const now = new Date();
+      const legacyPrograms = await prisma.program.findMany({
+        where: {
+          workspaceId: wsId,
+          archivedAt: null,
+          OR: [
+            { name: { contains: 'Ejecutivo(a) de ventas en terreno' } },
+            { agentSystemPrompt: { contains: 'Ejecutivo(a) de ventas en terreno' } },
+            { agentSystemPrompt: { contains: 'alarmas de seguridad' } },
+          ],
+        } as any,
+        select: { id: true },
+      });
+      if (legacyPrograms.length > 0) {
+        await prisma.program
+          .updateMany({
+            where: { id: { in: legacyPrograms.map((p) => p.id) } },
+            data: { isActive: false, archivedAt: now, updatedAt: now } as any,
+          })
+          .catch(() => {});
+      }
+
+      // Ensure active lines use the conductores client program by default when missing or pointing to archived program.
+      if (clientProgram?.id) {
+        const lines = await prisma.phoneLine.findMany({
+          where: { workspaceId: wsId, archivedAt: null, isActive: true },
+          select: { id: true, defaultProgramId: true },
+        });
+        for (const line of lines) {
+          if (!line.defaultProgramId) {
+            await prisma.phoneLine.update({ where: { id: line.id }, data: { defaultProgramId: clientProgram.id } as any }).catch(() => {});
+            continue;
+          }
+          const current = await prisma.program.findUnique({
+            where: { id: line.defaultProgramId },
+            select: { id: true, archivedAt: true, isActive: true, agentSystemPrompt: true, name: true },
+          });
+          const looksLegacy = Boolean(
+            current &&
+              ((current as any).archivedAt ||
+                current.isActive === false ||
+                /ejecutivo\(a\)\s+de\s+ventas\s+en\s+terreno|alarmas?\s+de\s+seguridad/i.test(
+                  `${String((current as any).name || '')}\n${String((current as any).agentSystemPrompt || '')}`,
+                )),
+          );
+          if (looksLegacy) {
+            await prisma.phoneLine.update({ where: { id: line.id }, data: { defaultProgramId: clientProgram.id } as any }).catch(() => {});
+          }
+        }
+      }
+
+      // Ensure baseline automations.
+      await ensureDefaultAutomationRule({ workspaceId: wsId, enabled: hasKey }).catch(() => {});
+      const handoffRule = await prisma.automationRule.findFirst({
+        where: {
+          workspaceId: wsId,
+          trigger: 'STAGE_CHANGED',
+          archivedAt: null,
+          name: 'Envio Rápido: QUALIFIED/INTERVIEW_PENDING -> assign+notify',
+        } as any,
+        select: { id: true },
+      });
+      if (!handoffRule?.id) {
+        await prisma.automationRule
+          .create({
+            data: {
+              workspaceId: wsId,
+              name: 'Envio Rápido: QUALIFIED/INTERVIEW_PENDING -> assign+notify',
+              description: 'Cuando el caso pasa a QUALIFIED o INTERVIEW_PENDING, asigna al staff líder y notifica por WhatsApp con fallback in-app.',
+              enabled: true,
+              priority: 110,
+              trigger: 'STAGE_CHANGED',
+              scopePhoneLineId: null,
+              scopeProgramId: null,
+              conditionsJson: JSON.stringify([
+                { field: 'conversation.stage', op: 'in', value: ['QUALIFIED', 'INTERVIEW_PENDING'] },
+              ]),
+              actionsJson: JSON.stringify([
+                { type: 'ASSIGN_TO_NURSE_LEADER', note: 'Caso listo para coordinación de entrevista.' },
+                {
+                  type: 'NOTIFY_STAFF_WHATSAPP',
+                  recipients: 'ASSIGNED_TO',
+                  dedupePolicy: 'DAILY',
+                  requireAvailability: true,
+                  templateText:
+                    '🚚 Caso {{stage}} · {{clientName}} · {{service}} · {{location}} · {{availability}} · ID {{conversationIdShort}}. Responde a este mensaje para operar el caso.',
+                },
+              ]),
+              archivedAt: null,
+            } as any,
+          })
+          .catch(() => {});
+      }
+
+      // Reuse nurse leader email setting for assignment action (best effort).
+      const leaderEmailRaw = String((envioRapido as any).ssclinicalNurseLeaderEmail || '').trim();
+      if (!leaderEmailRaw) {
+        const leader = await prisma.membership.findFirst({
+          where: {
+            workspaceId: wsId,
+            archivedAt: null,
+            role: { in: ['OWNER', 'ADMIN'] },
+            user: { email: { contains: '@' } },
+          } as any,
+          include: { user: { select: { email: true } } },
+          orderBy: { createdAt: 'asc' },
+        });
+        const leaderEmail = String(leader?.user?.email || '').trim().toLowerCase();
+        if (leaderEmail) {
+          await prisma.workspace
+            .update({
+              where: { id: wsId },
+              data: { ssclinicalNurseLeaderEmail: leaderEmail } as any,
+            })
+            .catch(() => {});
+        }
+      }
+    }
+  } catch {
+    // ignore; optional per-workspace bootstrap
   }
 }

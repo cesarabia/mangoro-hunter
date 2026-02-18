@@ -10,6 +10,7 @@ import { repairAgentResponseBeforeValidation } from './agentResponseRepair';
 import { normalizeWhatsAppId } from '../../utils/whatsapp';
 import { createChatCompletionWithModelFallback } from '../openAiChatCompletionService';
 import { resolveModelChain } from '../modelResolutionService';
+import { resolveWorkspaceProgramForKind } from '../programRoutingService';
 
 type WhatsAppWindowStatus = 'IN_24H' | 'OUTSIDE_24H';
 
@@ -582,7 +583,7 @@ export async function runAgent(event: AgentEvent): Promise<{
     },
   };
 
-  const programPromptBase = await (async () => {
+  const programContext = await (async () => {
     const truncate = (text: string, maxChars: number) => {
       const value = String(text || '').trim();
       if (!value) return '';
@@ -608,16 +609,24 @@ export async function runAgent(event: AgentEvent): Promise<{
 
     let program = conversation.programId ? await loadProgram(conversation.programId) : null;
     if (!program && String((conversation as any).conversationKind || '').toUpperCase() === 'STAFF') {
-      const ws = await prisma.workspace
-        .findUnique({
-          where: { id: event.workspaceId },
-          select: { staffDefaultProgramId: true as any },
-        } as any)
+      const staffProgramId = await resolveWorkspaceProgramForKind({
+        workspaceId: event.workspaceId,
+        kind: 'STAFF',
+        phoneLineId: conversation.phoneLineId,
+      })
+        .then((r) => r.programId)
         .catch(() => null);
-      const staffProgramId = String((ws as any)?.staffDefaultProgramId || '').trim();
-      if (staffProgramId) {
-        program = await loadProgram(staffProgramId).catch(() => null);
-      }
+      if (staffProgramId) program = await loadProgram(staffProgramId).catch(() => null);
+    }
+    if (!program && String((conversation as any).conversationKind || '').toUpperCase() === 'PARTNER') {
+      const partnerProgramId = await resolveWorkspaceProgramForKind({
+        workspaceId: event.workspaceId,
+        kind: 'PARTNER',
+        phoneLineId: conversation.phoneLineId,
+      })
+        .then((r) => r.programId)
+        .catch(() => null);
+      if (partnerProgramId) program = await loadProgram(partnerProgramId).catch(() => null);
     }
     if (!program && conversation.phoneLineId) {
       const line = await prisma.phoneLine
@@ -702,13 +711,20 @@ export async function runAgent(event: AgentEvent): Promise<{
         `Instrucciones del agente:\n${program.agentSystemPrompt}`,
       ].filter(Boolean);
 
-      return blocks.join('\n\n').trim();
+      return {
+        promptBase: blocks.join('\n\n').trim(),
+        resolvedProgramId: String(program.id || '').trim() || null,
+        resolvedProgramSlug: String(program.slug || '').trim() || null,
+      };
     }
 
-    return (
-      config.aiPrompt?.trim() ||
-      'Programa default: coordina reclutamiento/entrevista/ventas según contexto. Responde corto y humano.'
-    );
+    return {
+      promptBase:
+        config.aiPrompt?.trim() ||
+        'Programa default: coordina reclutamiento/entrevista/ventas según contexto. Responde corto y humano.',
+      resolvedProgramId: null,
+      resolvedProgramSlug: null,
+    };
   })();
 
   const kind = String((conversation as any).conversationKind || '').toUpperCase();
@@ -729,7 +745,7 @@ export async function runAgent(event: AgentEvent): Promise<{
         `- Nunca respondas "no tengo info" sin intentar LIST_CASES o GET_CASE_SUMMARY.`,
         `- Regla: no alucines. Si falta información del caso, usa GET_CASE_SUMMARY o pide una aclaración breve.`,
         '',
-        programPromptBase,
+        programContext.promptBase,
       ]
         .filter(Boolean)
         .join('\n')
@@ -741,24 +757,25 @@ export async function runAgent(event: AgentEvent): Promise<{
           `- Si event.relatedConversationId existe, este mensaje es respuesta a una notificación sobre un caso.`,
           `- No uses RUN_TOOL (no está disponible para partners). Si falta información, pregunta 1 cosa clara o pide que el staff te confirme.`,
           '',
-          programPromptBase,
+          programContext.promptBase,
         ]
           .filter(Boolean)
           .join('\n')
           .trim()
-      : programPromptBase;
+      : programContext.promptBase;
 
   const runLog = await prisma.agentRunLog.create({
     data: {
       workspaceId: event.workspaceId,
       conversationId: conversation.id,
-      programId: conversation.programId,
+      programId: programContext.resolvedProgramId || conversation.programId,
       phoneLineId: conversation.phoneLineId,
       eventType: event.eventType,
       status: 'RUNNING',
       inputContextJson: serializeJson(contextJson),
     },
   });
+  const resolvedProgramIdForUsage = programContext.resolvedProgramId || conversation.programId || null;
 
   const client = new OpenAI({ apiKey });
   const resolvedModels = resolveModelChain({
@@ -1004,7 +1021,7 @@ export async function runAgent(event: AgentEvent): Promise<{
             totalTokens: usageTotalTokens,
             agentRunId: runLog.id,
             conversationId: conversation.id,
-            programId: conversation.programId,
+            programId: resolvedProgramIdForUsage,
           },
         })
         .catch(() => {});
@@ -1040,7 +1057,7 @@ export async function runAgent(event: AgentEvent): Promise<{
           totalTokens: usageTotalTokens,
           agentRunId: runLog.id,
           conversationId: conversation.id,
-          programId: conversation.programId,
+          programId: resolvedProgramIdForUsage,
         },
       })
       .catch(() => {});

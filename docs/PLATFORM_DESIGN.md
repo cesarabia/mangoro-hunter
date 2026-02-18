@@ -194,6 +194,8 @@ Objetivo: un mismo número WhatsApp puede operar múltiples “personas” sin h
 - **CopilotRunLog**: auditoría por corrida (diagnóstico/navegación) y fuente del historial (inputText/responseText)  
   - Estados: `RUNNING` → `SUCCESS` / `PENDING_CONFIRMATION` → (`EXECUTING` → `EXECUTED`) / `CANCELLED` / `ERROR`  
   - Confirmar/Cancelar es **idempotente** (doble click no duplica ejecución; devuelve “ya ejecutado”).  
+  - **Workspace bootstrap bundle**: comando `WORKSPACE_BOOTSTRAP_BUNDLE` para corregir gates del Setup Wizard en una ejecución auditable (Programs, Stages, Routing, Automations, defaults por línea).  
+  - **Fix with Copilot real**: el wizard envía marcador `[SETUP_WIZARD_FIX gate=...]` + auto-send; Copilot ejecuta cambios o responde `BLOCKED` con pasos UI concretos.  
   - **Guías visuales (coachmarks)**: Copilot puede emitir acciones `GUIDE` (steps con `guideId`) que resaltan elementos UI (`data-guide-id="..."`) y guían al usuario sin terminal.  
 
 ### 5.6 Uso & costos

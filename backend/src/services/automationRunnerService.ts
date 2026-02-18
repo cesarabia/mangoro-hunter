@@ -8,6 +8,7 @@ import { createInAppNotification } from './notificationService';
 import { getContactDisplayName } from '../utils/contactDisplay';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { ensurePartnerConversation, ensureStaffConversation } from './staffConversationService';
+import { resolveWorkspaceProgramForKind } from './programRoutingService';
 
 type ProgramSummary = { id: string; name: string; slug: string };
 
@@ -68,6 +69,16 @@ async function listActivePrograms(workspaceId: string): Promise<ProgramSummary[]
     select: { id: true, name: true, slug: true },
     orderBy: { name: 'asc' },
   });
+}
+
+function isStaffLikeProgram(program: ProgramSummary): boolean {
+  const text = normalizeLoose(`${program.name} ${program.slug}`);
+  return /\bstaff\b/.test(text) || /\boperaci/.test(text) || /\benfermer/.test(text) || /\bcoordinad/.test(text);
+}
+
+function isPartnerLikeProgram(program: ProgramSummary): boolean {
+  const text = normalizeLoose(`${program.name} ${program.slug}`);
+  return /\bpartner\b/.test(text) || /\bproveedor/.test(text) || /\baliad/.test(text);
 }
 
 function normalizeLoose(value: string): string {
@@ -154,6 +165,12 @@ async function listSelectablePrograms(params: { workspaceId: string; conversatio
   const allowedIdsFromWorkspace = parseProgramMenuIdsJson(menuIdsRaw);
   if (allowedIdsFromWorkspace.length > 0) {
     const filtered = programs.filter((p) => allowedIdsFromWorkspace.includes(p.id));
+    if (filtered.length > 0) programs = filtered;
+  } else if (kind === 'STAFF') {
+    const filtered = programs.filter((p) => isStaffLikeProgram(p));
+    if (filtered.length > 0) programs = filtered;
+  } else if (kind === 'PARTNER') {
+    const filtered = programs.filter((p) => isPartnerLikeProgram(p));
     if (filtered.length > 0) programs = filtered;
   }
 
@@ -1058,9 +1075,12 @@ export async function runAutomations(params: {
             continue;
           }
 
-          const staffDefaultProgramId = await prisma.workspace
-            .findUnique({ where: { id: params.workspaceId }, select: { staffDefaultProgramId: true as any } } as any)
-            .then((w) => String((w as any)?.staffDefaultProgramId || '').trim() || null)
+          const staffDefaultProgramId = await resolveWorkspaceProgramForKind({
+            workspaceId: params.workspaceId,
+            kind: 'STAFF',
+            phoneLineId: conversation.phoneLineId,
+          })
+            .then((r) => r.programId)
             .catch(() => null);
 
           const perRecipient: any[] = [];
