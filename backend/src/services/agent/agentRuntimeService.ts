@@ -726,6 +726,7 @@ export async function runAgent(event: AgentEvent): Promise<{
         `  - SET_STAGE (conversationId, stageSlug, reason?)`,
         `  - SEND_CUSTOMER_MESSAGE (conversationId, text) [respeta SAFE MODE + 24h + NO_CONTACTAR]`,
         `- Si el staff pide "clientes nuevos/casos nuevos/mis casos", primero ejecuta LIST_CASES y luego responde con un listado corto.`,
+        `- Nunca respondas "no tengo info" sin intentar LIST_CASES o GET_CASE_SUMMARY.`,
         `- Regla: no alucines. Si falta información del caso, usa GET_CASE_SUMMARY o pide una aclaración breve.`,
         '',
         programPromptBase,

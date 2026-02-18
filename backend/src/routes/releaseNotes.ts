@@ -177,6 +177,7 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'stage_definitions_crud_basic',
       'ssclinical_handoff_interesado_notification',
       'ssclinical_staff_whatsapp_notification',
+      'stage_notify_whatsapp_fallback_inapp',
       // V2.2: Staff WhatsApp (tools + reply-to + templates + requireAvailability)
       'staff_clients_new_uses_list_cases',
       'staff_inbox_list_cases',
@@ -198,6 +199,8 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'inbound_program_menu',
       'invite_existing_user_accept',
       'copilot_archive_restore',
+      'workspace_creation_wizard_gates',
+      'phone_line_transfer',
     ];
 
     const scenarioRuns = await prisma.scenarioRunLog

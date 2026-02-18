@@ -11,6 +11,12 @@ type WorkspaceRow = {
   membersCount?: number;
 };
 
+type WorkspaceTemplateOption = {
+  id: string;
+  label: string;
+  description?: string;
+};
+
 export const PlatformPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +30,8 @@ export const PlatformPage: React.FC = () => {
   const [createStatus, setCreateStatus] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<WorkspaceTemplateOption[]>([]);
+  const [template, setTemplate] = useState<string>('RECRUITING');
   const [seedStatusByWorkspace, setSeedStatusByWorkspace] = useState<Record<string, string>>({});
 
   const load = async () => {
@@ -42,6 +50,18 @@ export const PlatformPage: React.FC = () => {
 
   useEffect(() => {
     load().catch(() => {});
+    apiClient
+      .get('/api/platform/workspace-templates')
+      .then((res: any) => {
+        const list = Array.isArray(res) ? res : [];
+        setTemplates(list);
+        if (list.length > 0 && !list.some((t: any) => String(t?.id) === String(template))) {
+          setTemplate(String(list[0]?.id || 'RECRUITING'));
+        }
+      })
+      .catch(() => {
+        setTemplates([]);
+      });
   }, []);
 
   const archiveWorkspace = async (workspaceId: string, archived: boolean) => {
@@ -90,6 +110,7 @@ export const PlatformPage: React.FC = () => {
         name,
         slug,
         ownerEmail,
+        template,
       });
       const url = typeof res?.invite?.inviteUrl === 'string' ? res.invite.inviteUrl : null;
       setCreateStatus(`Workspace creado: ${res?.workspace?.id || slug}`);
@@ -106,6 +127,26 @@ export const PlatformPage: React.FC = () => {
       setSlug('');
       setOwnerEmail('');
       await load();
+
+      // Si el usuario actual tiene acceso al workspace recién creado, abrir Config->Workspace y mostrar Setup Wizard.
+      try {
+        const createdWorkspaceId = String(res?.workspace?.id || '').trim();
+        if (createdWorkspaceId) {
+          const available = await apiClient.get('/api/workspaces');
+          const canOpen = Array.isArray(available) && available.some((w: any) => String(w?.id) === createdWorkspaceId);
+          if (canOpen) {
+            localStorage.setItem('workspaceId', createdWorkspaceId);
+            localStorage.setItem('configSelectedTab', 'workspace');
+            localStorage.setItem('__openSetupWizardWorkspaceId', createdWorkspaceId);
+            setCreateStatus((prev) => `${prev || ''} · Abriendo Setup Wizard…`);
+            setTimeout(() => {
+              window.location.assign('/config/workspace');
+            }, 350);
+          }
+        }
+      } catch {
+        // ignore
+      }
     } catch (err: any) {
       setCreateError(err.message || 'No se pudo crear workspace');
     } finally {
@@ -161,6 +202,25 @@ export const PlatformPage: React.FC = () => {
             <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Owner email</div>
             <input value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }} placeholder="csarabia@ssclinical.cl" />
           </div>
+        </div>
+        <div style={{ marginTop: 10, maxWidth: 420 }}>
+          <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Template inicial</div>
+          <select
+            value={template}
+            onChange={(e) => setTemplate(e.target.value)}
+            style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+          >
+            {(templates.length > 0 ? templates : [{ id: 'RECRUITING', label: 'Recruiting' }]).map((t) => (
+              <option key={String(t.id)} value={String(t.id)}>
+                {String(t.label || t.id)}
+              </option>
+            ))}
+          </select>
+          {templates.length > 0 ? (
+            <div style={{ marginTop: 6, fontSize: 12, color: '#666', lineHeight: 1.35 }}>
+              {(templates.find((t) => String(t.id) === String(template))?.description || '').trim() || 'Seed mínimo: stages + programs CLIENT/STAFF + automations base.'}
+            </div>
+          ) : null}
         </div>
         <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <button

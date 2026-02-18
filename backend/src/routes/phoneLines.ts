@@ -111,6 +111,35 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
     return null;
   };
 
+  const findActivePhoneE164Conflict = async (params: {
+    workspaceId: string;
+    phoneLineId?: string;
+    phoneE164: string;
+  }): Promise<{
+    conflictWorkspaceId: string;
+    conflictWorkspaceName: string | null;
+    conflictPhoneLineId: string;
+  } | null> => {
+    const found = await prisma.phoneLine.findFirst({
+      where: {
+        workspaceId: { not: params.workspaceId },
+        phoneE164: params.phoneE164,
+        isActive: true,
+        archivedAt: null,
+        ...(params.phoneLineId ? { id: { not: params.phoneLineId } } : {}),
+      },
+      select: { id: true, workspaceId: true, workspace: { select: { name: true } } },
+    });
+    if (found?.id) {
+      return {
+        conflictWorkspaceId: found.workspaceId,
+        conflictWorkspaceName: found.workspace?.name || null,
+        conflictPhoneLineId: found.id,
+      };
+    }
+    return null;
+  };
+
   app.post('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     if (!isWorkspaceAdmin(request, access)) {
@@ -163,6 +192,19 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
           error: `waPhoneNumberId ya está activo en otro workspace (${name}).`,
           ...conflict,
         });
+      }
+      if (phoneE164) {
+        const phoneConflict = await findActivePhoneE164Conflict({
+          workspaceId: access.workspaceId,
+          phoneE164,
+        });
+        if (phoneConflict) {
+          const name = phoneConflict.conflictWorkspaceName || phoneConflict.conflictWorkspaceId;
+          return reply.code(409).send({
+            error: `phoneE164 ya está activo en otro workspace (${name}).`,
+            ...phoneConflict,
+          });
+        }
       }
     }
 
@@ -325,6 +367,26 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
           ...conflict,
         });
       }
+      const nextPhoneE164 =
+        typeof data.phoneE164 === 'string'
+          ? String(data.phoneE164).trim()
+          : typeof existing.phoneE164 === 'string'
+            ? String(existing.phoneE164).trim()
+            : '';
+      if (nextPhoneE164) {
+        const phoneConflict = await findActivePhoneE164Conflict({
+          workspaceId: access.workspaceId,
+          phoneLineId: existing.id,
+          phoneE164: nextPhoneE164,
+        });
+        if (phoneConflict) {
+          const name = phoneConflict.conflictWorkspaceName || phoneConflict.conflictWorkspaceId;
+          return reply.code(409).send({
+            error: `phoneE164 ya está activo en otro workspace (${name}).`,
+            ...phoneConflict,
+          });
+        }
+      }
     }
 
     const updated = await prisma.phoneLine.update({
@@ -341,6 +403,255 @@ export async function registerPhoneLineRoutes(app: FastifyInstance) {
       createdAt: updated.createdAt.toISOString(),
       updatedAt: updated.updatedAt.toISOString(),
     };
+  });
+
+  // Transfer an existing PhoneLine from current workspace to another workspace (archive-only, atomic).
+  app.post('/:id/transfer', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceOwner(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+    if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+    const { id } = request.params as { id: string };
+    const sourceId = String(id || '').trim();
+    if (!sourceId) return reply.code(400).send({ error: 'id requerido.' });
+
+    const body = request.body as {
+      targetWorkspaceId?: string;
+      alias?: string;
+      defaultProgramId?: string | null;
+      inboundMode?: string;
+      programMenuIds?: string[] | null;
+      isActive?: boolean;
+    };
+    const targetWorkspaceId = String(body?.targetWorkspaceId || '').trim();
+    if (!targetWorkspaceId) return reply.code(400).send({ error: 'targetWorkspaceId es requerido.' });
+    if (targetWorkspaceId === access.workspaceId) {
+      return reply.code(400).send({ error: 'El workspace destino debe ser distinto al actual.' });
+    }
+
+    const source = await prisma.phoneLine.findFirst({
+      where: { id: sourceId, workspaceId: access.workspaceId, archivedAt: null },
+      select: {
+        id: true,
+        workspaceId: true,
+        alias: true,
+        phoneE164: true,
+        waPhoneNumberId: true,
+        wabaId: true,
+        defaultProgramId: true,
+        inboundMode: true as any,
+        programMenuIdsJson: true as any,
+        isActive: true,
+        needsAttention: true,
+      },
+    });
+    if (!source?.id) return reply.code(404).send({ error: 'PhoneLine no encontrada en el workspace actual.' });
+
+    const targetWorkspace = await prisma.workspace.findUnique({
+      where: { id: targetWorkspaceId },
+      select: { id: true, archivedAt: true },
+    });
+    if (!targetWorkspace?.id || targetWorkspace.archivedAt) {
+      return reply.code(404).send({ error: 'Workspace destino no encontrado o archivado.' });
+    }
+
+    // Permission on target workspace: OWNER/ADMIN membership, unless global ADMIN.
+    if (String(request.user?.role || '').toUpperCase() !== 'ADMIN') {
+      const targetMembership = await prisma.membership.findFirst({
+        where: { userId, workspaceId: targetWorkspaceId, archivedAt: null },
+        select: { role: true },
+      });
+      const canTarget = targetMembership && ['OWNER', 'ADMIN'].includes(String(targetMembership.role || '').toUpperCase());
+      if (!canTarget) {
+        return reply
+          .code(403)
+          .send({ error: 'Forbidden (sin permisos en el workspace destino).' });
+      }
+    }
+
+    const inboundMode = normalizeInboundMode(body?.inboundMode || (source as any).inboundMode);
+    let programMenuIds: string[] = [];
+    if (inboundMode === 'MENU') {
+      const rawProgramIds = Array.isArray(body?.programMenuIds)
+        ? body.programMenuIds
+        : parseProgramMenuIdsJson((source as any).programMenuIdsJson);
+      for (const raw of rawProgramIds) {
+        const id = String(raw || '').trim();
+        if (!id) continue;
+        if (!programMenuIds.includes(id)) programMenuIds.push(id);
+      }
+      programMenuIds = programMenuIds.slice(0, 20);
+      if (programMenuIds.length > 0) {
+        const valid = await prisma.program.findMany({
+          where: { workspaceId: targetWorkspaceId, id: { in: programMenuIds }, archivedAt: null, isActive: true },
+          select: { id: true },
+        });
+        const set = new Set(valid.map((p) => p.id));
+        programMenuIds = programMenuIds.filter((pid) => set.has(pid));
+      }
+    }
+
+    const alias = String(body?.alias || source.alias || '').trim() || source.alias;
+    const targetDefaultProgramId =
+      typeof body?.defaultProgramId !== 'undefined' ? (body.defaultProgramId ? String(body.defaultProgramId).trim() : null) : source.defaultProgramId;
+    const targetIsActive = typeof body?.isActive === 'boolean' ? body.isActive : Boolean(source.isActive);
+    const now = new Date();
+
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const conflictGlobal = await tx.phoneLine.findFirst({
+          where: {
+            workspaceId: { notIn: [access.workspaceId, targetWorkspaceId] },
+            waPhoneNumberId: source.waPhoneNumberId,
+            isActive: true,
+            archivedAt: null,
+          },
+          select: { id: true, workspaceId: true, workspace: { select: { name: true } } },
+        });
+        if (conflictGlobal?.id) {
+          const wsName = conflictGlobal.workspace?.name || conflictGlobal.workspaceId;
+          throw new Error(`No se puede transferir: waPhoneNumberId ya está activo en otro workspace (${wsName}).`);
+        }
+
+        if (source.phoneE164) {
+          const conflictGlobalPhone = await tx.phoneLine.findFirst({
+            where: {
+              workspaceId: { notIn: [access.workspaceId, targetWorkspaceId] },
+              phoneE164: source.phoneE164,
+              isActive: true,
+              archivedAt: null,
+            },
+            select: { id: true, workspaceId: true, workspace: { select: { name: true } } },
+          });
+          if (conflictGlobalPhone?.id) {
+            const wsName = conflictGlobalPhone.workspace?.name || conflictGlobalPhone.workspaceId;
+            throw new Error(`No se puede transferir: phoneE164 ya está activo en otro workspace (${wsName}).`);
+          }
+        }
+
+        const conflictInTargetByWa = await tx.phoneLine.findFirst({
+          where: {
+            workspaceId: targetWorkspaceId,
+            waPhoneNumberId: source.waPhoneNumberId,
+            archivedAt: null,
+            isActive: true,
+          },
+          select: { id: true },
+        });
+
+        const conflictInTargetByPhone = source.phoneE164
+          ? await tx.phoneLine.findFirst({
+              where: {
+                workspaceId: targetWorkspaceId,
+                phoneE164: source.phoneE164,
+                archivedAt: null,
+                isActive: true,
+                ...(conflictInTargetByWa?.id ? { id: { not: conflictInTargetByWa.id } } : {}),
+              },
+              select: { id: true },
+            })
+          : null;
+
+        if (conflictInTargetByPhone?.id) {
+          throw new Error('No se puede transferir: phoneE164 ya está activo en el workspace destino.');
+        }
+
+        const targetExisting = await tx.phoneLine.findFirst({
+          where: {
+            workspaceId: targetWorkspaceId,
+            waPhoneNumberId: source.waPhoneNumberId,
+          },
+          select: { id: true },
+        });
+
+        const target = targetExisting?.id
+          ? await tx.phoneLine.update({
+              where: { id: targetExisting.id },
+              data: {
+                alias,
+                phoneE164: source.phoneE164,
+                waPhoneNumberId: source.waPhoneNumberId,
+                wabaId: source.wabaId,
+                defaultProgramId: targetDefaultProgramId,
+                inboundMode,
+                programMenuIdsJson: inboundMode === 'MENU' && programMenuIds.length > 0 ? serializeJson(programMenuIds) : null,
+                isActive: targetIsActive,
+                needsAttention: Boolean((source as any).needsAttention),
+                archivedAt: null,
+              },
+            })
+          : await tx.phoneLine.create({
+              data: {
+                workspaceId: targetWorkspaceId,
+                alias,
+                phoneE164: source.phoneE164,
+                waPhoneNumberId: source.waPhoneNumberId,
+                wabaId: source.wabaId,
+                defaultProgramId: targetDefaultProgramId,
+                inboundMode,
+                programMenuIdsJson: inboundMode === 'MENU' && programMenuIds.length > 0 ? serializeJson(programMenuIds) : null,
+                isActive: targetIsActive,
+                needsAttention: Boolean((source as any).needsAttention),
+              },
+            });
+
+        await tx.phoneLine.update({
+          where: { id: source.id },
+          data: { isActive: false, archivedAt: now },
+        });
+
+        await tx.configChangeLog
+          .create({
+            data: {
+              workspaceId: access.workspaceId,
+              userId,
+              type: 'PHONE_LINE_TRANSFERRED_OUT',
+              beforeJson: serializeJson({ phoneLineId: source.id, waPhoneNumberId: source.waPhoneNumberId }),
+              afterJson: serializeJson({ targetWorkspaceId, targetPhoneLineId: target.id }),
+            },
+          })
+          .catch(() => {});
+
+        await tx.configChangeLog
+          .create({
+            data: {
+              workspaceId: targetWorkspaceId,
+              userId,
+              type: 'PHONE_LINE_TRANSFERRED_IN',
+              beforeJson: serializeJson({ sourceWorkspaceId: access.workspaceId, sourcePhoneLineId: source.id }),
+              afterJson: serializeJson({ phoneLineId: target.id, waPhoneNumberId: target.waPhoneNumberId }),
+            },
+          })
+          .catch(() => {});
+
+        return target;
+      });
+
+      return {
+        ok: true,
+        phoneLine: {
+          ...result,
+          inboundMode: normalizeInboundMode((result as any).inboundMode),
+          programMenuIds: parseProgramMenuIdsJson((result as any).programMenuIdsJson),
+          lastInboundAt: result.lastInboundAt ? result.lastInboundAt.toISOString() : null,
+          lastOutboundAt: result.lastOutboundAt ? result.lastOutboundAt.toISOString() : null,
+          archivedAt: result.archivedAt ? result.archivedAt.toISOString() : null,
+          createdAt: result.createdAt.toISOString(),
+          updatedAt: result.updatedAt.toISOString(),
+        },
+        summary: {
+          sourceWorkspaceId: access.workspaceId,
+          targetWorkspaceId,
+          impact:
+            'Las conversaciones nuevas entrarán al workspace destino. El historial existente queda en el workspace anterior.',
+        },
+      };
+    } catch (err: any) {
+      return reply.code(400).send({ error: err?.message || 'No se pudo transferir la PhoneLine.' });
+    }
   });
 
   // Move a waPhoneNumberId from another workspace to the current one (archive-only).

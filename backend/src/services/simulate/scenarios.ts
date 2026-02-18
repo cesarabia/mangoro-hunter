@@ -96,6 +96,13 @@ export type ScenarioStep = {
       workspaceId?: string;
       slug?: string;
     };
+    workspaceCreationWizardGates?: {
+      workspaceId?: string;
+      template?: string;
+    };
+    phoneLineTransfer?: {
+      waPhoneNumberId?: string;
+    };
     inviteExistingUserAccept?: boolean;
     copilotArchiveRestore?: boolean;
     copilotContextFollowup?: boolean;
@@ -387,6 +394,32 @@ export const SCENARIOS: ScenarioDefinition[] = [
     ],
   },
   {
+    id: 'workspace_creation_wizard_gates',
+    name: 'Setup Wizard: creación workspace + gates',
+    description:
+      'Crea workspace de escenario con template y valida gates mínimos del Setup Wizard (phoneline/programs/routing/users/automations/notificaciones).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check wizard gates',
+        expect: { workspaceCreationWizardGates: { workspaceId: 'scenario-wizard-gates', template: 'SUPPORT' } },
+      },
+    ],
+  },
+  {
+    id: 'phone_line_transfer',
+    name: 'PhoneLine: transferencia atómica entre workspaces',
+    description:
+      'Valida transferencia de PhoneLine entre workspaces (archive-only) con unicidad activa de waPhoneNumberId.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check phone line transfer',
+        expect: { phoneLineTransfer: {} },
+      },
+    ],
+  },
+  {
     id: 'stage_definitions_crud_basic',
     name: 'Stages: CRUD básico (default + orden)',
     description:
@@ -421,6 +454,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
       {
         action: 'WORKSPACE_CHECK',
         inboundText: 'check ssclinical staff whatsapp',
+        expect: { ssclinicalStaffWhatsAppNotification: { workspaceId: 'ssclinical' } },
+      },
+    ],
+  },
+  {
+    id: 'stage_notify_whatsapp_fallback_inapp',
+    name: 'Stage notify: WhatsApp staff + fallback in-app',
+    description:
+      'Valida notificación al staff cuando stage pasa a INTERESADO y fallback in-app cuando el envío WhatsApp es bloqueado por guardrails.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check stage notify whatsapp fallback',
         expect: { ssclinicalStaffWhatsAppNotification: { workspaceId: 'ssclinical' } },
       },
     ],

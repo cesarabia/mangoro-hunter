@@ -251,6 +251,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [movingPhoneLine, setMovingPhoneLine] = useState(false);
   const [phoneLineMoveStatus, setPhoneLineMoveStatus] = useState<string | null>(null);
   const [phoneLineMoveError, setPhoneLineMoveError] = useState<string | null>(null);
+  const [phoneLineTransfer, setPhoneLineTransfer] = useState<{ line: any; targetWorkspaceId: string } | null>(null);
+  const [transferringPhoneLine, setTransferringPhoneLine] = useState(false);
+  const [phoneLineTransferStatus, setPhoneLineTransferStatus] = useState<string | null>(null);
+  const [phoneLineTransferError, setPhoneLineTransferError] = useState<string | null>(null);
+
+  const [setupWizardOpen, setSetupWizardOpen] = useState<boolean>(false);
+  const [setupWizardSmokeOk, setSetupWizardSmokeOk] = useState<boolean | null>(null);
+  const [setupWizardSmokeAt, setSetupWizardSmokeAt] = useState<string | null>(null);
 
   const [programs, setPrograms] = useState<any[]>([]);
   const [programEditor, setProgramEditor] = useState<any | null>(null);
@@ -1132,6 +1140,31 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     }
   };
 
+  const loadWizardSmokeStatus = async () => {
+    try {
+      const release: any = await apiClient.get('/api/release-notes');
+      const lastQa = release?.lastQa;
+      if (lastQa && typeof lastQa.ok === 'boolean') {
+        setSetupWizardSmokeOk(Boolean(lastQa.ok));
+        setSetupWizardSmokeAt(typeof lastQa.createdAt === 'string' ? lastQa.createdAt : null);
+      } else {
+        setSetupWizardSmokeOk(null);
+        setSetupWizardSmokeAt(null);
+      }
+    } catch {
+      setSetupWizardSmokeOk(null);
+      setSetupWizardSmokeAt(null);
+    }
+  };
+
+  const openCopilotFix = (text: string) => {
+    try {
+      window.dispatchEvent(new CustomEvent('copilot:open', { detail: { text, autoSend: true } }));
+    } catch {
+      // ignore
+    }
+  };
+
   useEffect(() => {
     loadWorkspaces().catch(() => {});
     loadWorkspaceDetails().catch(() => {});
@@ -1140,6 +1173,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     loadPhoneLines().catch(() => {});
     loadAutomations().catch(() => {});
     loadOutboundSafety().catch(() => {});
+    loadWizardSmokeStatus().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1171,7 +1205,22 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     if (tab === 'phoneLines') loadPhoneLines().catch(() => {});
     if (tab === 'integrations') loadIntegrations().catch(() => {});
     if (tab === 'usage') loadUsage().catch(() => {});
+    if (tab === 'workspace') loadWizardSmokeStatus().catch(() => {});
   }, [tab]);
+
+  useEffect(() => {
+    if (tab !== 'workspace') return;
+    const key = '__openSetupWizardWorkspaceId';
+    try {
+      const targetWs = localStorage.getItem(key);
+      if (targetWs && String(targetWs) === String(workspaceId)) {
+        setSetupWizardOpen(true);
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // ignore
+    }
+  }, [tab, workspaceId]);
 
   useEffect(() => {
     if (tab !== 'programs') return;
@@ -1220,6 +1269,118 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     }
     return map;
   }, [phoneLines]);
+
+  const setupWizardGates = useMemo(() => {
+    const activePhoneLines = (phoneLines || []).filter((l: any) => !l?.archivedAt && Boolean(l?.isActive));
+    const activePrograms = (programs || []).filter((p: any) => !p?.archivedAt && p?.isActive !== false);
+    const hasClientRouting =
+      Boolean(String(workspaceDetails?.clientDefaultProgramId || '').trim()) ||
+      activePhoneLines.some((l: any) => Boolean(String(l?.defaultProgramId || '').trim()));
+    const hasStaffNumbers = (users || []).some((u: any) => {
+      if (u?.archivedAt) return false;
+      const main = String(u?.staffWhatsAppE164 || '').trim();
+      const extras = Array.isArray(u?.staffWhatsAppExtraE164s) ? u.staffWhatsAppExtraE164s : [];
+      return Boolean(main) || extras.some((v: any) => String(v || '').trim().length > 0);
+    });
+    const hasInboundRunAgent = (automations || []).some((a: any) => {
+      if (!a?.enabled) return false;
+      if (String(a?.trigger || '').toUpperCase() !== 'INBOUND_MESSAGE') return false;
+      const actions = Array.isArray(a?.actions) ? a.actions : [];
+      return actions.some((x: any) => String(x?.type || '').toUpperCase() === 'RUN_AGENT');
+    });
+    const hasNotify = (automations || []).some((a: any) => {
+      if (!a?.enabled) return false;
+      if (String(a?.trigger || '').toUpperCase() !== 'STAGE_CHANGED') return false;
+      const actions = Array.isArray(a?.actions) ? a.actions : [];
+      return actions.some((x: any) =>
+        ['NOTIFY_STAFF_WHATSAPP', 'NOTIFY_PARTNER_WHATSAPP', 'ASSIGN_TO_NURSE_LEADER'].includes(
+          String(x?.type || '').toUpperCase(),
+        ),
+      );
+    });
+    const smokeOk = setupWizardSmokeOk === true;
+
+    const gates = [
+      {
+        id: 'phoneLine',
+        label: 'PhoneLine',
+        ok: activePhoneLines.length > 0,
+        detail: activePhoneLines.length > 0 ? `${activePhoneLines.length} activa(s)` : 'Sin PhoneLine activa',
+        fixPrompt:
+          activePhoneLines.length > 0
+            ? null
+            : 'Ayúdame a configurar una PhoneLine activa para este workspace (alias, waPhoneNumberId, default program y guardrails).',
+      },
+      {
+        id: 'programs',
+        label: 'Programs',
+        ok: activePrograms.length >= 2,
+        detail: activePrograms.length >= 2 ? `${activePrograms.length} activos` : 'Faltan Programs CLIENT/STAFF',
+        fixPrompt:
+          activePrograms.length >= 2
+            ? null
+            : 'Crea Programs base CLIENT y STAFF para este workspace y deja prompts mínimos operativos.',
+      },
+      {
+        id: 'routing',
+        label: 'Routing (defaults cliente/staff)',
+        ok: hasClientRouting && Boolean(String(workspaceDetails?.staffDefaultProgramId || '').trim()),
+        detail:
+          hasClientRouting && Boolean(String(workspaceDetails?.staffDefaultProgramId || '').trim())
+            ? 'Defaults configurados'
+            : 'Falta default CLIENT o STAFF',
+        fixPrompt:
+          hasClientRouting && Boolean(String(workspaceDetails?.staffDefaultProgramId || '').trim())
+            ? null
+            : 'Configura clientDefaultProgramId y staffDefaultProgramId, además del menú de Programs por rol si aplica.',
+      },
+      {
+        id: 'users',
+        label: 'Usuarios (staffWhatsApp)',
+        ok: hasStaffNumbers,
+        detail: hasStaffNumbers ? 'Hay destinos staff configurados' : 'Ningún usuario con WhatsApp staff',
+        fixPrompt: hasStaffNumbers ? null : 'Configura WhatsApp de notificaciones en usuarios STAFF (E164).',
+      },
+      {
+        id: 'automations',
+        label: 'Automations',
+        ok: hasInboundRunAgent,
+        detail: hasInboundRunAgent ? 'INBOUND_MESSAGE -> RUN_AGENT activo' : 'Falta regla base RUN_AGENT',
+        fixPrompt: hasInboundRunAgent ? null : 'Crea o habilita automation INBOUND_MESSAGE -> RUN_AGENT.',
+      },
+      {
+        id: 'notifications',
+        label: 'Notificaciones',
+        ok: hasNotify,
+        detail: hasNotify ? 'Handoff stage -> notify activo' : 'Falta notificación stage->staff',
+        fixPrompt:
+          hasNotify
+            ? null
+            : 'Crea automation STAGE_CHANGED (INTERESADO) con ASSIGN/NOTIFY_STAFF_WHATSAPP y fallback in-app.',
+      },
+      {
+        id: 'smoke',
+        label: 'Smoke',
+        ok: smokeOk,
+        detail:
+          setupWizardSmokeOk === null
+            ? 'Sin ejecución reciente de smoke scenarios'
+            : setupWizardSmokeOk
+              ? `PASS (${setupWizardSmokeAt ? String(setupWizardSmokeAt).slice(0, 19).replace('T', ' ') : 'reciente'})`
+              : 'FAIL: revisar QA',
+        fixPrompt: smokeOk ? null : 'Ejecuta Run Smoke Scenarios y explícame qué falló y cómo corregirlo.',
+      },
+    ];
+
+    const goLiveOk = gates.every((g) => g.ok);
+    return {
+      gates,
+      goLiveOk,
+      goLivePrompt: goLiveOk
+        ? null
+        : 'Completa los gates del Setup Wizard para dejar este workspace listo para go-live sin riesgos.',
+    };
+  }, [automations, phoneLines, programs, setupWizardSmokeAt, setupWizardSmokeOk, users, workspaceDetails]);
 
   const exportConfig = async () => {
     const [lines, progs, autos] = await Promise.all([
@@ -1561,6 +1722,49 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setPhoneLineMoveError(err.message || 'No se pudo mover');
     } finally {
       setMovingPhoneLine(false);
+    }
+  };
+
+  const transferPhoneLine = async () => {
+    if (!phoneLineTransfer?.line?.id) return;
+    const targetWorkspaceId = String(phoneLineTransfer.targetWorkspaceId || '').trim();
+    if (!targetWorkspaceId) {
+      setPhoneLineTransferError('Selecciona un workspace destino.');
+      return;
+    }
+    const sourceWorkspaceId = String(localStorage.getItem('workspaceId') || 'default');
+    if (targetWorkspaceId === sourceWorkspaceId) {
+      setPhoneLineTransferError('El destino debe ser distinto al workspace actual.');
+      return;
+    }
+    const sourceLabel =
+      String(currentWorkspace?.name || sourceWorkspaceId) || sourceWorkspaceId;
+    const targetLabel =
+      (workspaces || []).find((w: any) => String(w?.id) === targetWorkspaceId)?.name || targetWorkspaceId;
+    const ok = window.confirm(
+      `¿Transferir esta PhoneLine a "${targetLabel}"?\n\nImpacto:\n- Las conversaciones NUEVAS entrarán al workspace destino.\n- El historial queda en "${sourceLabel}".\n- No se borra data (archive-only).`,
+    );
+    if (!ok) return;
+
+    setPhoneLineTransferError(null);
+    setPhoneLineTransferStatus(null);
+    setTransferringPhoneLine(true);
+    try {
+      const res: any = await apiClient.post(`/api/phone-lines/${phoneLineTransfer.line.id}/transfer`, {
+        targetWorkspaceId,
+      });
+      setPhoneLineTransferStatus(
+        `Transferido a ${targetLabel}. Nuevas conversaciones entrarán al destino y el historial queda en el origen.`,
+      );
+      setPhoneLineTransfer(null);
+      await Promise.all([loadPhoneLines(), loadWorkspaces()]);
+      if (res?.summary?.impact) {
+        setPhoneLinesStatus(String(res.summary.impact));
+      }
+    } catch (err: any) {
+      setPhoneLineTransferError(err.message || 'No se pudo transferir la PhoneLine');
+    } finally {
+      setTransferringPhoneLine(false);
     }
   };
 
@@ -1932,7 +2136,93 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
       {tab === 'workspace' ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 720 }}>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>Workspace</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>Workspace</div>
+            <button
+              type="button"
+              onClick={() => setSetupWizardOpen((v) => !v)}
+              style={{
+                padding: '8px 12px',
+                borderRadius: 10,
+                border: setupWizardOpen ? '1px solid #111' : '1px solid #ccc',
+                background: setupWizardOpen ? '#111' : '#fff',
+                color: setupWizardOpen ? '#fff' : '#111',
+                fontSize: 12,
+                fontWeight: 800,
+              }}
+            >
+              {setupWizardOpen ? 'Ocultar Setup Wizard' : 'Setup Wizard'}
+            </button>
+          </div>
+
+          {setupWizardOpen ? (
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Setup Wizard (self‑serve)</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Completa estos gates para dejar el workspace listo sin adivinar configuración.
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {setupWizardGates.gates.map((gate) => (
+                  <div
+                    key={gate.id}
+                    style={{
+                      border: '1px solid #eee',
+                      borderRadius: 10,
+                      padding: 10,
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 10,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 800 }}>
+                        {gate.ok ? '✅' : '⚠️'} {gate.label}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#666' }}>{gate.detail}</div>
+                    </div>
+                    {!gate.ok && gate.fixPrompt ? (
+                      <button
+                        type="button"
+                        onClick={() => openCopilotFix(gate.fixPrompt || '')}
+                        style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+                      >
+                        Fix with Copilot
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginTop: 10, borderTop: '1px solid #eee', paddingTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={{ fontSize: 12, color: '#555' }}>
+                  Go-live:{' '}
+                  <b style={{ color: setupWizardGates.goLiveOk ? '#1a7f37' : '#b93800' }}>
+                    {setupWizardGates.goLiveOk ? 'PASS' : 'PENDING'}
+                  </b>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => loadWizardSmokeStatus().catch(() => {})}
+                  style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+                >
+                  Refresh Smoke
+                </button>
+                {!setupWizardGates.goLiveOk && setupWizardGates.goLivePrompt ? (
+                  <button
+                    type="button"
+                    onClick={() => openCopilotFix(setupWizardGates.goLivePrompt || '')}
+                    style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+                  >
+                    Fix with Copilot (Go-live)
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12 }}>
             <div style={{ fontSize: 12, color: '#666' }}>Nombre del workspace</div>
             <div style={{ fontWeight: 600 }}>{currentWorkspace?.name || '—'}</div>
@@ -3670,6 +3960,21 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                       >
                         {isArchived ? 'Restaurar' : 'Archivar'}
                       </button>
+                      {!isArchived && isOwner ? (
+                        <button
+                          onClick={() => {
+                            setPhoneLineTransferStatus(null);
+                            setPhoneLineTransferError(null);
+                            setPhoneLineTransfer({
+                              line: l,
+                              targetWorkspaceId: '',
+                            });
+                          }}
+                          style={{ marginLeft: 8, padding: '4px 8px', borderRadius: 6, border: '1px solid #1d4ed8', background: '#eff6ff', color: '#1d4ed8' }}
+                        >
+                          Transferir…
+                        </button>
+                      ) : null}
                     </td>
                         </>
                       );
@@ -3824,6 +4129,60 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   {phoneLineMoveError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{phoneLineMoveError}</div> : null}
                 </div>
               ) : null}
+            </div>
+          ) : null}
+
+          {phoneLineTransfer ? (
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, maxWidth: 720, background: '#fff' }}>
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>Transferir PhoneLine a otro workspace</div>
+              <div style={{ fontSize: 12, color: '#555', marginBottom: 8, lineHeight: 1.4 }}>
+                Esta acción mueve la línea de forma <b>atómica</b> (archive-only): se archiva en el workspace origen y
+                se activa en el destino. <br />
+                <b>Impacto:</b> las conversaciones nuevas entrarán al nuevo workspace; el historial queda en el anterior.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr', gap: 10 }}>
+                <div style={{ padding: 10, borderRadius: 8, border: '1px solid #eee', fontSize: 12 }}>
+                  <div style={{ color: '#666' }}>Origen</div>
+                  <div style={{ fontWeight: 700 }}>{currentWorkspace?.name || workspaceId}</div>
+                  <div style={{ marginTop: 6 }}>
+                    Línea: <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{phoneLineTransfer.line?.waPhoneNumberId || '—'}</span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Workspace destino</div>
+                  <select
+                    value={phoneLineTransfer.targetWorkspaceId}
+                    onChange={(e) => setPhoneLineTransfer({ ...phoneLineTransfer, targetWorkspaceId: e.target.value })}
+                    style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                  >
+                    <option value="">Selecciona destino…</option>
+                    {(workspaces || [])
+                      .filter((w: any) => String(w?.id) !== String(workspaceId))
+                      .map((w: any) => (
+                        <option key={String(w.id)} value={String(w.id)}>
+                          {String(w.name || w.id)}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  onClick={() => transferPhoneLine().catch(() => {})}
+                  disabled={transferringPhoneLine}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 800 }}
+                >
+                  {transferringPhoneLine ? 'Transfiriendo…' : 'Transferir a workspace…'}
+                </button>
+                <button
+                  onClick={() => setPhoneLineTransfer(null)}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+                >
+                  Cancelar
+                </button>
+              </div>
+              {phoneLineTransferStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{phoneLineTransferStatus}</div> : null}
+              {phoneLineTransferError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{phoneLineTransferError}</div> : null}
             </div>
           ) : null}
         </div>

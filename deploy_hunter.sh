@@ -38,6 +38,8 @@ npm install
 npm run build
 
 echo "Restarting pm2..."
-pm2 restart hunter-backend || pm2 start dist/server.js --name hunter-backend
+cd ..
+pm2 startOrReload ecosystem.config.cjs --only hunter-backend || pm2 start ecosystem.config.cjs --only hunter-backend
+pm2 save
 
 echo "Deploy finalizado."

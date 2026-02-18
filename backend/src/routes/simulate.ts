@@ -10,6 +10,7 @@ import { SCENARIOS, getScenario, ScenarioDefinition, ScenarioStep } from '../ser
 import { resolveReplyContextForInboundMessage, runAgent } from '../services/agent/agentRuntimeService';
 import { executeAgentResponse } from '../services/agent/commandExecutorService';
 import { resolveInboundPhoneLineRouting } from '../services/phoneLineRoutingService';
+import { normalizeWorkspaceTemplateId, seedWorkspaceTemplate } from '../services/workspaceTemplateService';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
   const normalizeForContains = (value: string): string =>
@@ -625,6 +626,251 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           });
 
           // Cleanup: archive-only.
+          await prisma.phoneLine
+            .updateMany({
+              where: { workspaceId: { in: [wsA, wsB] }, waPhoneNumberId },
+              data: { isActive: false, archivedAt: now } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .updateMany({ where: { userId, workspaceId: { in: [wsA, wsB] } }, data: { archivedAt: now } as any })
+            .catch(() => {});
+          await prisma.workspace
+            .updateMany({ where: { id: { in: [wsA, wsB] } }, data: { archivedAt: now } as any })
+            .catch(() => {});
+        }
+      }
+
+      const wizardGates = (step.expect as any)?.workspaceCreationWizardGates;
+      if (wizardGates && typeof wizardGates === 'object') {
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const wsId = String((wizardGates as any)?.workspaceId || 'scenario-wizard-gates').trim() || 'scenario-wizard-gates';
+        const template = normalizeWorkspaceTemplateId((wizardGates as any)?.template || 'SUPPORT');
+        const now = new Date();
+        const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'workspaceCreationWizardGates: userId missing' });
+        } else {
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Setup Wizard', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Setup Wizard', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          await seedWorkspaceTemplate({ workspaceId: wsId, template, userId }).catch(() => {});
+
+          const ws = await prisma.workspace.findUnique({
+            where: { id: wsId },
+            select: { id: true, clientDefaultProgramId: true as any, staffDefaultProgramId: true as any },
+          });
+
+          const activePrograms = await prisma.program.findMany({
+            where: { workspaceId: wsId, archivedAt: null, isActive: true },
+            select: { id: true },
+          });
+
+          const hasLine = await prisma.phoneLine.findFirst({
+            where: { workspaceId: wsId, archivedAt: null, isActive: true },
+            select: { id: true },
+          });
+          if (!hasLine?.id) {
+            await prisma.phoneLine
+              .create({
+                data: {
+                  workspaceId: wsId,
+                  alias: 'Scenario Setup Line',
+                  waPhoneNumberId,
+                  phoneE164: null,
+                  defaultProgramId: (ws as any)?.clientDefaultProgramId || null,
+                  isActive: true,
+                } as any,
+              })
+              .catch(() => {});
+          }
+
+          const me = await prisma.membership.findUnique({
+            where: { userId_workspaceId: { userId, workspaceId: wsId } },
+            select: { id: true, staffWhatsAppE164: true as any },
+          });
+          if (me?.id && !String((me as any).staffWhatsAppE164 || '').trim()) {
+            await prisma.membership
+              .update({
+                where: { id: me.id },
+                data: { staffWhatsAppE164: '+56982345846' } as any,
+              })
+              .catch(() => {});
+          }
+
+          const phoneLineOk = await prisma.phoneLine.findFirst({
+            where: { workspaceId: wsId, archivedAt: null, isActive: true },
+            select: { id: true },
+          });
+          const usersOk = await prisma.membership.findFirst({
+            where: { workspaceId: wsId, archivedAt: null, staffWhatsAppE164: { not: null } } as any,
+            select: { id: true },
+          });
+          const automations = await prisma.automationRule.findMany({
+            where: { workspaceId: wsId, archivedAt: null },
+            select: { trigger: true, enabled: true, actionsJson: true },
+          });
+          const hasInboundRunAgent = automations.some((a) => {
+            if (!a.enabled || String(a.trigger || '').toUpperCase() !== 'INBOUND_MESSAGE') return false;
+            try {
+              const parsed = JSON.parse(String(a.actionsJson || '[]'));
+              return Array.isArray(parsed) && parsed.some((x: any) => String(x?.type || '').toUpperCase() === 'RUN_AGENT');
+            } catch {
+              return false;
+            }
+          });
+          const hasStageNotify = automations.some((a) => {
+            if (!a.enabled || String(a.trigger || '').toUpperCase() !== 'STAGE_CHANGED') return false;
+            try {
+              const parsed = JSON.parse(String(a.actionsJson || '[]'));
+              return (
+                Array.isArray(parsed) &&
+                parsed.some((x: any) =>
+                  ['NOTIFY_STAFF_WHATSAPP', 'ASSIGN_TO_NURSE_LEADER'].includes(String(x?.type || '').toUpperCase()),
+                )
+              );
+            } catch {
+              return false;
+            }
+          });
+
+          assertions.push({ ok: Boolean(phoneLineOk?.id), message: phoneLineOk?.id ? 'workspaceCreationWizardGates: PhoneLine OK' : 'workspaceCreationWizardGates: PhoneLine missing' });
+          assertions.push({
+            ok: activePrograms.length >= 2,
+            message:
+              activePrograms.length >= 2
+                ? `workspaceCreationWizardGates: Programs OK (${activePrograms.length})`
+                : `workspaceCreationWizardGates: Programs insuficientes (${activePrograms.length})`,
+          });
+          assertions.push({
+            ok: Boolean((ws as any)?.clientDefaultProgramId) && Boolean((ws as any)?.staffDefaultProgramId),
+            message:
+              Boolean((ws as any)?.clientDefaultProgramId) && Boolean((ws as any)?.staffDefaultProgramId)
+                ? 'workspaceCreationWizardGates: Routing defaults OK'
+                : 'workspaceCreationWizardGates: faltan defaults CLIENT/STAFF',
+          });
+          assertions.push({ ok: Boolean(usersOk?.id), message: usersOk?.id ? 'workspaceCreationWizardGates: Usuarios staffWhatsApp OK' : 'workspaceCreationWizardGates: falta staffWhatsApp' });
+          assertions.push({ ok: hasInboundRunAgent, message: hasInboundRunAgent ? 'workspaceCreationWizardGates: Automation RUN_AGENT OK' : 'workspaceCreationWizardGates: falta RUN_AGENT' });
+          assertions.push({ ok: hasStageNotify, message: hasStageNotify ? 'workspaceCreationWizardGates: Notificaciones stage OK' : 'workspaceCreationWizardGates: falta stage->notify' });
+
+          await prisma.phoneLine.updateMany({ where: { workspaceId: wsId }, data: { isActive: false, archivedAt: now } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      const phoneLineTransfer = (step.expect as any)?.phoneLineTransfer;
+      if (phoneLineTransfer && typeof phoneLineTransfer === 'object') {
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const waPhoneNumberId =
+          String((phoneLineTransfer as any)?.waPhoneNumberId || '').trim() ||
+          `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+        const wsA = 'scenario-transfer-a';
+        const wsB = 'scenario-transfer-b';
+        const now = new Date();
+
+        if (!userId) {
+          assertions.push({ ok: false, message: 'phoneLineTransfer: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'phoneLineTransfer: auth header missing' });
+        } else {
+          await prisma.workspace
+            .upsert({
+              where: { id: wsA },
+              create: { id: wsA, name: 'Scenario Transfer A', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Transfer A', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.workspace
+            .upsert({
+              where: { id: wsB },
+              create: { id: wsB, name: 'Scenario Transfer B', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Transfer B', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsA } },
+              create: { userId, workspaceId: wsA, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsB } },
+              create: { userId, workspaceId: wsB, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const line = await prisma.phoneLine
+            .create({
+              data: {
+                workspaceId: wsA,
+                alias: 'Scenario Transfer Line',
+                waPhoneNumberId,
+                phoneE164: null,
+                isActive: true,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          if (!line?.id) {
+            assertions.push({ ok: false, message: 'phoneLineTransfer: failed to create source line' });
+          } else {
+            const transferRes = await app.inject({
+              method: 'POST',
+              url: `/api/phone-lines/${line.id}/transfer`,
+              headers: {
+                authorization: authHeader,
+                'x-workspace-id': wsA,
+                'content-type': 'application/json',
+              },
+              payload: JSON.stringify({ targetWorkspaceId: wsB }),
+            });
+
+            const ok = transferRes.statusCode === 200;
+            assertions.push({
+              ok,
+              message: ok ? 'phoneLineTransfer: transfer endpoint OK' : `phoneLineTransfer: expected 200, got ${transferRes.statusCode}`,
+            });
+
+            const sourceArchived = await prisma.phoneLine.findUnique({
+              where: { id: line.id },
+              select: { archivedAt: true, isActive: true },
+            });
+            const targetExists = await prisma.phoneLine.findFirst({
+              where: { workspaceId: wsB, waPhoneNumberId, archivedAt: null, isActive: true },
+              select: { id: true },
+            });
+
+            assertions.push({
+              ok: Boolean(sourceArchived?.archivedAt) && sourceArchived?.isActive === false,
+              message:
+                Boolean(sourceArchived?.archivedAt) && sourceArchived?.isActive === false
+                  ? 'phoneLineTransfer: source archived OK'
+                  : 'phoneLineTransfer: source not archived',
+            });
+            assertions.push({
+              ok: Boolean(targetExists?.id),
+              message: targetExists?.id ? 'phoneLineTransfer: target active line OK' : 'phoneLineTransfer: target line missing',
+            });
+          }
+
           await prisma.phoneLine
             .updateMany({
               where: { workspaceId: { in: [wsA, wsB] }, waPhoneNumberId },

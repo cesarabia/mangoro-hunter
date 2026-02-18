@@ -3,6 +3,11 @@ import crypto from 'node:crypto';
 import { prisma } from '../db/client';
 import { serializeJson } from '../utils/json';
 import { ensureWorkspaceStages } from '../services/workspaceStageService';
+import {
+  listWorkspaceTemplates,
+  normalizeWorkspaceTemplateId,
+  seedWorkspaceTemplate,
+} from '../services/workspaceTemplateService';
 
 function slugifyWorkspaceId(value: string): string {
   return String(value || '')
@@ -53,6 +58,11 @@ async function isPlatformAdmin(request: any): Promise<boolean> {
 }
 
 export async function registerPlatformRoutes(app: FastifyInstance) {
+  app.get('/workspace-templates', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!(await isPlatformAdmin(request))) return reply.code(403).send({ error: 'Forbidden' });
+    return listWorkspaceTemplates();
+  });
+
   app.get('/me', { preValidation: [app.authenticate] }, async (request, reply) => {
     const platformAdmin = await isPlatformAdmin(request);
     // Backwards-compatible key.
@@ -109,7 +119,13 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
     if (!(await isPlatformAdmin(request))) return reply.code(403).send({ error: 'Forbidden' });
     const userId = request.user?.userId ? String(request.user.userId) : null;
 
-    const body = request.body as { name?: string; slug?: string; ownerEmail?: string; isSandbox?: boolean };
+    const body = request.body as {
+      name?: string;
+      slug?: string;
+      ownerEmail?: string;
+      isSandbox?: boolean;
+      template?: string;
+    };
     const name = String(body?.name || '').trim();
     if (!name) return reply.code(400).send({ error: '"name" es requerido.' });
     const slug = slugifyWorkspaceId(String(body?.slug || ''));
@@ -122,11 +138,18 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
     const exists = await prisma.workspace.findUnique({ where: { id: slug } });
     if (exists) return reply.code(409).send({ error: `Workspace "${slug}" ya existe.` });
 
+    const template = normalizeWorkspaceTemplateId(body?.template);
+
     const created = await prisma.workspace.create({
       data: { id: slug, name, isSandbox: Boolean(body?.isSandbox) },
       select: { id: true, name: true, isSandbox: true, createdAt: true, archivedAt: true },
     });
     await ensureWorkspaceStages(created.id).catch(() => {});
+    const templateSeed = await seedWorkspaceTemplate({
+      workspaceId: created.id,
+      template,
+      userId,
+    }).catch(() => null);
 
     const ownerUser = await prisma.user.findUnique({ where: { email: ownerEmail }, select: { id: true } }).catch(() => null);
     if (ownerUser?.id) {
@@ -161,7 +184,13 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
           userId,
           type: 'WORKSPACE_CREATED',
           beforeJson: null,
-          afterJson: serializeJson({ workspaceId: created.id, name: created.name, ownerEmail }),
+          afterJson: serializeJson({
+            workspaceId: created.id,
+            name: created.name,
+            ownerEmail,
+            template,
+            templateSeeded: Boolean(templateSeed),
+          }),
         },
       })
       .catch(() => {});
@@ -175,6 +204,8 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
         createdAt: created.createdAt.toISOString(),
         archivedAt: created.archivedAt ? created.archivedAt.toISOString() : null,
       },
+      template,
+      templateSeed,
       owner: { email: ownerEmail },
       invite: { id: invite.id, expiresAt: invite.expiresAt.toISOString(), inviteUrl: buildInviteUrl(invite.token) },
     };
@@ -224,6 +255,38 @@ export async function registerPlatformRoutes(app: FastifyInstance) {
         archivedAt: updated.archivedAt ? updated.archivedAt.toISOString() : null,
       },
     };
+  });
+
+  app.post('/workspaces/:workspaceId/seed-template', { preValidation: [app.authenticate] }, async (request, reply) => {
+    if (!(await isPlatformAdmin(request))) return reply.code(403).send({ error: 'Forbidden' });
+    const userId = request.user?.userId ? String(request.user.userId) : null;
+    const { workspaceId } = request.params as { workspaceId: string };
+    const wsId = String(workspaceId || '').trim();
+    if (!wsId) return reply.code(400).send({ error: 'workspaceId requerido.' });
+
+    const body = request.body as { template?: string };
+    const template = normalizeWorkspaceTemplateId(body?.template);
+
+    const ws = await prisma.workspace.findUnique({ where: { id: wsId }, select: { id: true, archivedAt: true } });
+    if (!ws?.id || ws.archivedAt) return reply.code(404).send({ error: 'Workspace no encontrado.' });
+
+    const seeded = await seedWorkspaceTemplate({ workspaceId: wsId, template, userId }).catch((err: any) => {
+      throw new Error(err?.message || 'No se pudo seedear template.');
+    });
+
+    await prisma.configChangeLog
+      .create({
+        data: {
+          workspaceId: 'default',
+          userId,
+          type: 'WORKSPACE_TEMPLATE_RESEEDED',
+          beforeJson: null,
+          afterJson: serializeJson({ workspaceId: wsId, template }),
+        },
+      })
+      .catch(() => {});
+
+    return { ok: true, workspaceId: wsId, template, seeded };
   });
 
   // Seed SSClinical pilot pack (Programs + default inbound automation + Medilink connector scaffold).

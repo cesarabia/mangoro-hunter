@@ -30,7 +30,20 @@ Este repo incluye `deploy_hunter.sh` (wrapper local → ejecuta en el server).
    - `git pull`
    - `npx prisma migrate deploy`
    - build backend + build frontend
-   - restart de `pm2`
+   - restart de `pm2` usando `ecosystem.config.cjs` (`hunter-backend`)
+   - persistencia del proceso con `pm2 save`
+
+### Resiliencia anti-502 (backend)
+1) El proceso backend debe ejecutarse como `hunter-backend` en `pm2` con:
+   - `autorestart=true`
+   - `max_restarts` y `restart_delay` configurados
+2) Verificaciones rápidas:
+   - `pm2 status` (debe existir `hunter-backend` en `online`)
+   - `curl -i http://127.0.0.1:4101/api/health` (upstream local)
+   - `curl -i https://hunter.mangoro.app/api/health` (pasando por nginx)
+3) Si `/api/health` da 502:
+   - revisar `/var/log/nginx/error.log` y confirmar upstream `127.0.0.1:4101`
+   - reiniciar `hunter-backend` y luego nginx.
 
 ### Post‑deploy (smoke en 10 min)
 1) `https://hunter.mangoro.app/api/health` → OK.
@@ -78,4 +91,3 @@ Separar DEV/PROD para evitar mezclar conversaciones reales con pruebas.
 ## 3) Nota sobre migraciones y “no data loss”
 - No se eliminan tablas ni registros.
 - “Cleanup/reset” debe archivar (`archivedAt`, tags, system notes), nunca borrar.
-
