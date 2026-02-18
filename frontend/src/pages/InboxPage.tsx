@@ -19,6 +19,7 @@ export const InboxPage: React.FC<Props> = ({
   canAssignConversation,
   onReplayInSimulator
 }) => {
+  const MOBILE_BREAKPOINT = 768;
   const POLLING_INTERVAL = 7000;
   const STATUS_LABELS: Record<string, string> = {
     NEW: 'Nuevo',
@@ -46,11 +47,11 @@ export const InboxPage: React.FC<Props> = ({
   const lastBackendLogAtRef = useRef(0);
   const [isNarrow, setIsNarrow] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
-    return window.innerWidth < 900;
+    return window.innerWidth < MOBILE_BREAKPOINT;
   });
   const [mobilePane, setMobilePane] = useState<'LIST' | 'CHAT'>(() => {
     if (typeof window === 'undefined') return 'CHAT';
-    return window.innerWidth < 900 ? 'LIST' : 'CHAT';
+    return window.innerWidth < MOBILE_BREAKPOINT ? 'LIST' : 'CHAT';
   });
 
   const selectionStorageKey = `selectedConversationId:${workspaceId}:${mode}`;
@@ -73,11 +74,11 @@ export const InboxPage: React.FC<Props> = ({
   });
 
   useEffect(() => {
-    const onResize = () => setIsNarrow(window.innerWidth < 900);
+    const onResize = () => setIsNarrow(window.innerWidth < MOBILE_BREAKPOINT);
     onResize();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, []);
+  }, [MOBILE_BREAKPOINT]);
 
   useEffect(() => {
     setMobilePane((prev) => {
@@ -315,8 +316,8 @@ export const InboxPage: React.FC<Props> = ({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <div style={{ padding: '8px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflowX: 'hidden' }}>
+      <div style={{ padding: isNarrow ? '8px 12px' : '8px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: isNarrow ? 'wrap' : 'nowrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <strong>{mode === 'INACTIVE' ? 'Inactivos' : 'Inbox'}</strong>
           {backendError && <span style={{ fontSize: 12, color: '#b93800' }}>{backendError}</span>}
@@ -327,10 +328,10 @@ export const InboxPage: React.FC<Props> = ({
           </button>
         </div>
       </div>
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflowX: 'hidden' }}>
         {isNarrow ? (
           mobilePane === 'CHAT' ? (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflowX: 'hidden' }}>
               <div style={{ padding: '10px 12px', borderBottom: '1px solid #eee', display: 'flex', alignItems: 'center', gap: 10 }}>
                 <button
                   onClick={() => {

@@ -103,6 +103,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   draftText,
   onDraftChange
 }) => {
+  const MOBILE_BREAKPOINT = 768;
   const isAdmin = Boolean(conversation?.isAdmin);
   const conversationKind = String(conversation?.conversationKind || 'CLIENT').toUpperCase();
   const isStaff = conversationKind === 'STAFF';
@@ -120,7 +121,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const previousCountRef = useRef(0);
   const [isNarrow, setIsNarrow] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
-    return window.innerWidth < 900;
+    return window.innerWidth < MOBILE_BREAKPOINT;
   });
   const [detailsOpen, setDetailsOpen] = useState<boolean>(() => false);
   const [aiPausedSaving, setAiPausedSaving] = useState(false);
@@ -163,11 +164,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    const handleResize = () => setIsNarrow(window.innerWidth < 900);
+    const handleResize = () => setIsNarrow(window.innerWidth < MOBILE_BREAKPOINT);
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [MOBILE_BREAKPOINT]);
 
   useEffect(() => {
     if (!conversation) {
@@ -775,8 +776,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   } as const;
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflowX: 'hidden' }}>
+      <div style={{ padding: isNarrow ? '10px 12px' : '12px 16px', borderBottom: '1px solid #eee', display: 'flex', flexDirection: 'column', gap: 8, overflowX: 'hidden' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1113,7 +1114,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       <div
         ref={messagesRef}
         onScroll={handleScroll}
-        style={{ flex: 1, padding: 16, overflowY: 'auto', overflowX: 'hidden', background: '#fafafa', minHeight: 0 }}
+        style={{ flex: 1, padding: isNarrow ? 10 : 16, overflowY: 'auto', overflowX: 'hidden', background: '#fafafa', minHeight: 0 }}
       >
         {hasConversation ? (
           (() => {
@@ -1166,7 +1167,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 >
                   <div
                     style={{
-                      maxWidth: '70%',
+                      maxWidth: isNarrow ? '86%' : '70%',
                       padding: '8px 10px',
                       borderRadius: 12,
                       background: m.direction === 'OUTBOUND' ? '#d1e7dd' : '#fff',
@@ -1223,13 +1224,16 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       </div>
       <div
         style={{
+          position: 'sticky',
+          bottom: 0,
           padding: 12,
           borderTop: '1px solid #eee',
           display: 'flex',
           flexDirection: 'column',
           gap: 8,
           flexShrink: 0,
-          background: '#fff'
+          background: '#fff',
+          zIndex: 3
         }}
       >
         {hasConversation && !within24h && !isAdmin && (
@@ -1282,7 +1286,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         <div style={{ display: 'flex', gap: 8 }}>
           <textarea
             ref={composerRef}
-            style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc', minHeight: 40 }}
+            style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc', minHeight: isNarrow ? 44 : 40 }}
             value={draftText}
             onChange={e => onDraftChange(e.target.value)}
             placeholder="Escribe una respuesta..."

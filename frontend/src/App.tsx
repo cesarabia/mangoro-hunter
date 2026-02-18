@@ -577,7 +577,7 @@ const Layout: React.FC<{
   }, [userEmail, workspaceRole]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', minHeight: '100vh', overflowX: 'hidden' }}>
       <header
         style={{
           padding: '8px 16px',

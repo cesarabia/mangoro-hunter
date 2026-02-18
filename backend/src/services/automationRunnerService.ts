@@ -681,15 +681,153 @@ function evaluateCondition(params: {
   return false;
 }
 
-export async function runAutomations(params: {
+type RunAutomationsParams = {
   app: FastifyInstance;
   workspaceId: string;
   eventType: string;
   conversationId: string;
   inboundMessageId?: string | null;
   inboundText?: string | null;
+  inboundBatchCount?: number;
+  inboundDebounceMs?: number;
+  lastInboundAt?: string | null;
   transportMode: ExecutorTransportMode;
-}): Promise<void> {
+};
+
+type InboundDebounceState = {
+  timer: NodeJS.Timeout | null;
+  running: boolean;
+  queue: Array<{ inboundMessageId: string | null; inboundText: string | null; at: Date }>;
+  waiters: Array<() => void>;
+  latestParams: RunAutomationsParams;
+  debounceMs: number;
+  lastInboundAt: Date;
+};
+
+const inboundDebounceByConversation = new Map<string, InboundDebounceState>();
+const DEFAULT_INBOUND_DEBOUNCE_MS = 1800;
+const MIN_INBOUND_DEBOUNCE_MS = 1500;
+const MAX_INBOUND_DEBOUNCE_MS = 3000;
+
+function clampInboundDebounceMs(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_INBOUND_DEBOUNCE_MS;
+  return Math.max(MIN_INBOUND_DEBOUNCE_MS, Math.min(MAX_INBOUND_DEBOUNCE_MS, Math.floor(value)));
+}
+
+function mergeInboundBatchText(batch: Array<{ inboundText: string | null }>): string | null {
+  const chunks: string[] = [];
+  for (const item of batch) {
+    const text = String(item.inboundText || '').trim();
+    if (!text) continue;
+    chunks.push(text);
+  }
+  if (chunks.length === 0) return null;
+  const unique: string[] = [];
+  for (const chunk of chunks) {
+    if (!unique.includes(chunk)) unique.push(chunk);
+  }
+  return unique.join('\n');
+}
+
+async function flushInboundDebounce(key: string): Promise<void> {
+  const state = inboundDebounceByConversation.get(key);
+  if (!state) return;
+  if (state.running) return;
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+  if (state.queue.length === 0) {
+    if (state.waiters.length === 0) inboundDebounceByConversation.delete(key);
+    return;
+  }
+
+  state.running = true;
+  const batch = state.queue.splice(0);
+  const waiters = state.waiters.splice(0);
+  const latest = state.latestParams;
+  const mergedText = mergeInboundBatchText(batch);
+  const latestInboundMessageId = [...batch]
+    .reverse()
+    .map((i) => String(i.inboundMessageId || '').trim())
+    .find(Boolean) || null;
+  const batchLastInboundAt = [...batch].reverse().find((i) => i.at)?.at || state.lastInboundAt;
+
+  latest.app.log.info(
+    {
+      workspaceId: latest.workspaceId,
+      conversationId: latest.conversationId,
+      inboundBatchCount: batch.length,
+      debounceMs: state.debounceMs,
+      lastInboundAt: batchLastInboundAt.toISOString(),
+    },
+    'Inbound batch debounce flush (single RUN_AGENT execution)',
+  );
+
+  try {
+    await runAutomationsImmediate({
+      ...latest,
+      inboundMessageId: latestInboundMessageId,
+      inboundText: mergedText,
+      inboundBatchCount: batch.length,
+      inboundDebounceMs: state.debounceMs,
+      lastInboundAt: batchLastInboundAt.toISOString(),
+    });
+  } finally {
+    state.running = false;
+    for (const done of waiters) done();
+    if (state.queue.length > 0) {
+      state.timer = setTimeout(() => {
+        flushInboundDebounce(key).catch((err) => {
+          latest.app.log.error({ err, key }, 'Inbound debounce flush failed');
+        });
+      }, state.debounceMs);
+    } else if (state.waiters.length === 0) {
+      inboundDebounceByConversation.delete(key);
+    }
+  }
+}
+
+async function runAutomationsWithInboundDebounce(params: RunAutomationsParams): Promise<void> {
+  const key = `${params.workspaceId}:${params.conversationId}`;
+  const now = new Date();
+  const debounceMs = clampInboundDebounceMs(DEFAULT_INBOUND_DEBOUNCE_MS);
+
+  const state =
+    inboundDebounceByConversation.get(key) ||
+    ({
+      timer: null,
+      running: false,
+      queue: [],
+      waiters: [],
+      latestParams: params,
+      debounceMs,
+      lastInboundAt: now,
+    } as InboundDebounceState);
+  if (!inboundDebounceByConversation.has(key)) inboundDebounceByConversation.set(key, state);
+
+  state.latestParams = params;
+  state.debounceMs = debounceMs;
+  state.lastInboundAt = now;
+  state.queue.push({
+    inboundMessageId: params.inboundMessageId ? String(params.inboundMessageId) : null,
+    inboundText: params.inboundText ? String(params.inboundText) : null,
+    at: now,
+  });
+
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = setTimeout(() => {
+    flushInboundDebounce(key).catch((err) => {
+      params.app.log.error({ err, key }, 'Inbound debounce flush failed');
+    });
+  }, debounceMs);
+
+  await new Promise<void>((resolve) => {
+    state.waiters.push(resolve);
+  });
+}
+
+async function runAutomationsImmediate(params: RunAutomationsParams): Promise<void> {
   const conversation = await prisma.conversation.findUnique({
     where: { id: params.conversationId },
     include: { contact: true, program: { select: { id: true, name: true, slug: true } } },
@@ -801,6 +939,15 @@ export async function runAutomations(params: {
           conversationId: conversation.id,
           inboundMessageId: params.inboundMessageId || null,
           inboundText: params.inboundText || null,
+          inboundBatchCount:
+            typeof params.inboundBatchCount === 'number' && Number.isFinite(params.inboundBatchCount)
+              ? params.inboundBatchCount
+              : null,
+          inboundDebounceMs:
+            typeof params.inboundDebounceMs === 'number' && Number.isFinite(params.inboundDebounceMs)
+              ? params.inboundDebounceMs
+              : null,
+          lastInboundAt: params.lastInboundAt || null,
         }),
       },
     });
@@ -1667,4 +1814,12 @@ export async function runAutomations(params: {
       });
     }
   }
+}
+
+export async function runAutomations(params: RunAutomationsParams): Promise<void> {
+  if (params.eventType === 'INBOUND_MESSAGE' && params.transportMode === 'REAL') {
+    await runAutomationsWithInboundDebounce(params);
+    return;
+  }
+  await runAutomationsImmediate(params);
 }

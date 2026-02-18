@@ -171,6 +171,7 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'admin_hola_responde',
       'test_hola_responde',
       'location_loop_rm',
+      'inbound_burst_no_silence',
       'safe_mode_block',
       'program_switch_suggest_and_inbound',
       // V2: stages / notificaciones / menú / copilot follow-up

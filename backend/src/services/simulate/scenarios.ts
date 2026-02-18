@@ -18,6 +18,7 @@ export type ScenarioStep = {
       sentDelta?: number;
       blockedDelta?: number;
       lastBlockedReasonContains?: string;
+      lastBlockedReasonNotContains?: string;
       lastTextContains?: string[];
       lastTextNotContains?: string[];
     };
@@ -170,6 +171,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
           },
         },
       },
+    ],
+  },
+  {
+    id: 'inbound_burst_no_silence',
+    name: 'Inbound burst: debounce/coalescing sin silencio',
+    description:
+      'Valida que 3 mensajes seguidos no dejen la conversación muda y evita bloqueos ANTI_LOOP_SAME_TEXT.',
+    programSlug: 'recruitment',
+    contactWaId: 'sandbox',
+    steps: [
+      { inboundText: 'Hola', expect: { outbound: { sentDelta: 1, blockedDelta: 0, lastBlockedReasonNotContains: 'ANTI_LOOP_SAME_TEXT' } } },
+      { inboundText: 'Quiero postular', expect: { outbound: { sentDelta: 1, blockedDelta: 0, lastBlockedReasonNotContains: 'ANTI_LOOP_SAME_TEXT' } } },
+      { inboundText: 'Tengo estacionamiento', expect: { outbound: { sentDelta: 1, blockedDelta: 0, lastBlockedReasonNotContains: 'ANTI_LOOP_SAME_TEXT' } } },
     ],
   },
   {

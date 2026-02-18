@@ -349,6 +349,12 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           const pass = hay.includes(needle);
           assertions.push({ ok: pass, message: pass ? `blockedReason contains ${needle}` : `blockedReason missing "${needle}" (got "${hay || '—'}")` });
         }
+        if (typeof (outboundExp as any).lastBlockedReasonNotContains === 'string') {
+          const needle = String((outboundExp as any).lastBlockedReasonNotContains || '');
+          const hay = String(lastOutbound?.blockedReason || '');
+          const pass = !hay.includes(needle);
+          assertions.push({ ok: pass, message: pass ? `blockedReason avoids ${needle}` : `blockedReason contains "${needle}" (got "${hay || '—'}")` });
+        }
         if (Array.isArray((outboundExp as any).lastTextContains)) {
           const needles = (outboundExp as any).lastTextContains as any[];
           for (const rawNeedle of needles) {
