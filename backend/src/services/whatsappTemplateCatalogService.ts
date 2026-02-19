@@ -38,6 +38,22 @@ function normalizeNullable(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+function inferConfiguredTemplateLanguage(templateName: string, globalLanguage: string | null): string | null {
+  const normalizedGlobal = normalizeNullable(globalLanguage);
+  const key = String(templateName || '').trim().toLowerCase();
+  if (!key) return normalizedGlobal;
+
+  // Legacy internal defaults were created in es_CL.
+  const isLegacyDefault =
+    key === String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase() ||
+    key === String(DEFAULT_TEMPLATE_INTERVIEW_INVITE || '').trim().toLowerCase();
+  if (isLegacyDefault) return normalizedGlobal || 'es_CL';
+
+  // For workspace-specific Meta templates, prefer generic Spanish unless explicitly configured otherwise.
+  if (normalizedGlobal && normalizedGlobal.toLowerCase() !== 'es_cl') return normalizedGlobal;
+  return 'es';
+}
+
 function upsertTemplate(entries: Map<string, TemplateCatalogEntry>, next: TemplateCatalogEntry): void {
   const key = next.name.toLowerCase();
   const existing = entries.get(key);
@@ -186,7 +202,7 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
     upsertTemplate(entries, {
       name,
       category: null,
-      language: normalizeNullable((config as any)?.templateLanguageCode),
+      language: inferConfiguredTemplateLanguage(name, normalizeNullable((config as any)?.templateLanguageCode)),
       status: 'CONFIGURADA',
       source: 'CONFIG',
     });

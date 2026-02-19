@@ -358,6 +358,7 @@ export const InboxPage: React.FC<Props> = ({
     setCreatingConversation(true);
     setCreateError(null);
     try {
+      const selectedTemplate = templateOptions.find((t) => String(t?.name || '').trim() === String(selectedTemplateName || '').trim());
       const res = await apiClient.post('/api/conversations/create-and-send', {
         phoneE164: newPhone.trim(),
         contactName: newContactName.trim() || null,
@@ -365,6 +366,10 @@ export const InboxPage: React.FC<Props> = ({
         status: newStatus,
         sendTemplateNow,
         templateName: sendTemplateNow && newMode !== 'OFF' ? String(selectedTemplateName || '').trim() : null,
+        templateLanguageCode:
+          sendTemplateNow && newMode !== 'OFF'
+            ? (selectedTemplate?.language ? String(selectedTemplate.language).trim() : null)
+            : null,
       });
       const convoId = res?.conversationId;
       await loadConversations();
@@ -651,7 +656,7 @@ export const InboxPage: React.FC<Props> = ({
                 </div>
                 {!templateOptionsLoading && templateSyncInfo.synced === false && templateSyncInfo.syncError ? (
                   <div style={{ fontSize: 12, color: '#7a3b00' }}>
-                    Catálogo Meta no sincronizado ahora: {templateSyncInfo.syncError}
+                    Catálogo Meta no sincronizado ahora (puedes usar plantillas configuradas): {templateSyncInfo.syncError}
                   </div>
                 ) : null}
                 {templateOptionsError ? (

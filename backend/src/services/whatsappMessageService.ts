@@ -16,6 +16,46 @@ export interface SendResult {
   error?: string;
 }
 
+function normalizeLanguageCode(value: unknown): string | null {
+  const code = String(value || '').trim();
+  return code ? code : null;
+}
+
+function isLegacyEsClTemplate(templateName: string): boolean {
+  const key = String(templateName || '').trim().toLowerCase();
+  if (!key) return false;
+  return (
+    key === String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase() ||
+    key === String(DEFAULT_TEMPLATE_INTERVIEW_INVITE || '').trim().toLowerCase()
+  );
+}
+
+function preferredLanguageForTemplate(templateName: string, baseLanguageCode: string): string {
+  const base = normalizeLanguageCode(baseLanguageCode) || DEFAULT_TEMPLATE_LANGUAGE_CODE;
+  if (isLegacyEsClTemplate(templateName)) return base;
+  if (base.toLowerCase() === 'es_cl') return 'es';
+  return base;
+}
+
+function shouldRetryTemplateLanguage(errorText: string): boolean {
+  const raw = String(errorText || '').trim();
+  if (!raw) return false;
+  const low = raw.toLowerCase();
+  if (low.includes('template name') && low.includes('does not exist in')) return true;
+  if (low.includes('does not exist in the translation')) return true;
+  if (low.includes('"code":132001')) return true;
+  try {
+    const parsed = JSON.parse(raw) as any;
+    const code = Number(parsed?.error?.code);
+    const details = String(parsed?.error?.error_data?.details || '');
+    if (code === 132001) return true;
+    if (details.toLowerCase().includes('does not exist in')) return true;
+  } catch {
+    // ignore parse errors
+  }
+  return false;
+}
+
 function checkSafeOutbound(toWaId: string, config: any): { allowed: boolean; reason?: string } {
   if (toWaId === 'sandbox') return { allowed: true };
   const policy = getOutboundPolicy(config);
@@ -132,16 +172,13 @@ export async function sendWhatsAppTemplate(
       : undefined;
 
   const baseLanguageCode =
-    options?.languageCode?.trim() ||
-    config.templateLanguageCode?.trim() ||
+    normalizeLanguageCode(options?.languageCode) ||
+    normalizeLanguageCode(config.templateLanguageCode) ||
     DEFAULT_TEMPLATE_LANGUAGE_CODE;
-  const forcedLanguageByTemplate: Record<string, string> = {
-    [DEFAULT_TEMPLATE_GENERAL_FOLLOWUP]: DEFAULT_TEMPLATE_LANGUAGE_CODE,
-    [DEFAULT_TEMPLATE_INTERVIEW_INVITE]: DEFAULT_TEMPLATE_LANGUAGE_CODE
-  };
+  const preferredLanguageCode = preferredLanguageForTemplate(templateName, baseLanguageCode);
 
   const requestedCodes = [
-    forcedLanguageByTemplate[templateName] || baseLanguageCode,
+    preferredLanguageCode,
     baseLanguageCode,
     'es',
     'es_419',
@@ -180,11 +217,7 @@ export async function sendWhatsAppTemplate(
       if (!res.ok) {
         const errorText = await res.text();
         lastError = errorText || `HTTP ${res.status}`;
-        // Retry with next language only when translation is missing for this locale.
-        const low = String(lastError || '').toLowerCase();
-        const shouldRetryLanguage =
-          low.includes('template name') && low.includes('does not exist in');
-        if (shouldRetryLanguage) {
+        if (shouldRetryTemplateLanguage(lastError)) {
           continue;
         }
         return { success: false, error: lastError };

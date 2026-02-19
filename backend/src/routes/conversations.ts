@@ -186,6 +186,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       sendTemplateNow?: boolean;
       variables?: string[];
       templateName?: string | null;
+      templateLanguageCode?: string | null;
     };
 
     if (!body.phoneE164) {
@@ -201,6 +202,10 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         sendTemplateNow: body.sendTemplateNow !== false,
         variables: body.variables,
         templateNameOverride: body.templateName ?? null,
+        templateLanguageCode:
+          typeof body.templateLanguageCode === 'string' && body.templateLanguageCode.trim()
+            ? body.templateLanguageCode.trim()
+            : null,
         workspaceId: access.workspaceId,
         phoneLineId: typeof body.phoneLineId === 'string' ? body.phoneLineId.trim() : body.phoneLineId ?? null,
         enforceSafeMode: false,

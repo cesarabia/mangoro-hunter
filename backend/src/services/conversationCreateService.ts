@@ -22,6 +22,7 @@ export interface CreateAndSendParams {
   sendTemplateNow?: boolean;
   variables?: string[];
   templateNameOverride?: string | null;
+  templateLanguageCode?: string | null;
   workspaceId?: string | null;
   phoneLineId?: string | null;
   enforceSafeMode?: boolean;
@@ -161,6 +162,7 @@ export async function createConversationAndMaybeSend(
     sendResult = await sendWhatsAppTemplate(waId, templateName, finalVariables, {
       phoneNumberId: phoneLine.waPhoneNumberId,
       enforceSafeMode: params.enforceSafeMode !== false,
+      languageCode: params.templateLanguageCode || null,
     });
     templateUsed = templateName;
     variablesUsed = finalVariables;
