@@ -2728,19 +2728,31 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         } else {
           const cfg = await getSystemConfig();
           const scenarioLocation = `Scenario Conflict ${Date.now()}`;
+          const probe = await attemptScheduleInterview({
+            conversationId: convA.id,
+            contactId: contactA.id,
+            day: null,
+            time: null,
+            location: scenarioLocation,
+            config: cfg,
+          }).catch(() => ({ ok: false, alternatives: [] } as any));
+          const firstAlt =
+            !(probe as any)?.ok && Array.isArray((probe as any)?.alternatives) ? (probe as any).alternatives[0] : null;
+          const day = typeof firstAlt?.day === 'string' ? String(firstAlt.day) : 'martes';
+          const time = typeof firstAlt?.time === 'string' ? String(firstAlt.time) : '10:00';
           const first = await attemptScheduleInterview({
             conversationId: convA.id,
             contactId: contactA.id,
-            day: 'martes',
-            time: '10:00',
+            day,
+            time,
             location: scenarioLocation,
             config: cfg,
           }).catch(() => ({ ok: false } as any));
           const second = await attemptScheduleInterview({
             conversationId: convB.id,
             contactId: contactB.id,
-            day: 'martes',
-            time: '10:00',
+            day,
+            time,
             location: scenarioLocation,
             config: cfg,
           }).catch(() => ({ ok: false } as any));
