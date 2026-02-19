@@ -71,8 +71,13 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
   if (!value) return true;
   const lower = normalizeForNameChecks(value);
   if (!lower) return true;
+  const words = lower.split(/\s+/).filter(Boolean);
+  if (words.length < 2) return true;
   const patterns = [
     'hola',
+    'holi',
+    'wena',
+    'wenas',
     'buenas',
     'postular',
     'mas informacion',
@@ -98,6 +103,8 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
     'docx',
   ];
   if (patterns.some((p) => lower.includes(normalizeForNameChecks(p)))) return true;
+  if (/^soy\s+de\b/.test(lower) || /^soy\s+del\b/.test(lower) || /^soy\s+de\s+la\b/.test(lower)) return true;
+  if (/^(vivo|resido)\s+en\b/.test(lower)) return true;
   if (/\b\d{1,2}:\d{2}\b/.test(lower)) return true;
   return false;
 }
