@@ -3394,6 +3394,7 @@ function extractNameFromText(text?: string): string | null {
     /\b(tengo|adjunt|env[ií]o|enviar|mando|mand[ée]|quiero|quisiera|necesito|busco|postul|cancel|reagen|reprogra|confirm|disponib)\b/.test(
       normalizedLower,
     ) ||
+    /\b(soy\s+de|vivo\s+en|resido\s+en|somos\s+de)\b/.test(normalizedLower) ||
     /\b(info|informacion)\b/.test(normalizedLower) ||
     /\b(cv|curric|curr[íi]cul|vitae|pdf|word|docx|documento|archivo|imagen|foto)\b/.test(
       normalizedLower,
@@ -3441,6 +3442,8 @@ function isValidName(value?: string | null): boolean {
   if (trimmed.length < 2) return false;
   if (/[^A-Za-zÁÉÍÓÚáéíóúÑñ\s]/.test(trimmed)) return false;
   const lower = trimmed.toLowerCase();
+  if (/^soy\s+de\b/.test(lower) || /^soy\s+del\b/.test(lower) || /^soy\s+de\s+la\b/.test(lower)) return false;
+  if (/^(vivo|resido)\s+en\b/.test(lower)) return false;
   if (stripAccents(lower).includes("informacion") || /\binfo\b/.test(stripAccents(lower))) return false;
   const blacklist = [
     "hola",
@@ -3519,6 +3522,8 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
   if (!value) return true;
   if (containsDataLabel(value)) return true;
   const lower = stripAccents(value).toLowerCase();
+  if (/^soy\s+de\b/.test(lower) || /^soy\s+del\b/.test(lower) || /^soy\s+de\s+la\b/.test(lower)) return true;
+  if (/^(vivo|resido)\s+en\b/.test(lower)) return true;
   // Never treat intent/commands as names (prevents candidateName degradation).
   if (/\b(cancelar|cancelacion|cancelación|reagend|reagendar|reprogram|reprogramar|cambiar|cambio|modificar|mover)\b/.test(lower)) {
     return true;
