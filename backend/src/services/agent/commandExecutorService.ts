@@ -180,7 +180,7 @@ async function buildOutside24hTemplateFallback(params: {
   conversation: any;
   preferredText?: string | null;
 }): Promise<{ templateName: string; templateVars: Record<string, string>; mode: 'RECRUIT' | 'INTERVIEW' }> {
-  const templates = await loadTemplateConfig();
+  const templates = await loadTemplateConfig(undefined, String((params.conversation as any)?.workspaceId || '').trim() || undefined);
   const preferred = String(params.preferredText || '').toLowerCase();
   const stage = String((params.conversation as any)?.conversationStage || '').toUpperCase();
   const shouldUseInterview =
@@ -206,7 +206,37 @@ async function resolveCaseConversationId(params: {
   relatedConversationId?: string | null;
 }): Promise<string | null> {
   const direct = String(params.ref || '').trim();
+  const normalizedDirect = stripAccents(direct).toLowerCase().replace(/\s+/g, ' ').trim();
+  const latestAliases = new Set([
+    '__latest__',
+    '__last__',
+    'latest',
+    'last',
+    'ultimo',
+    'último',
+    'ultimo postulante',
+    'último postulante',
+    'ultimo caso',
+    'último caso',
+    'ultimo cliente',
+    'último cliente',
+  ]);
   if (!direct) return params.relatedConversationId ? String(params.relatedConversationId) : null;
+  if (latestAliases.has(normalizedDirect)) {
+    const latest = await prisma.conversation
+      .findFirst({
+        where: {
+          workspaceId: params.workspaceId,
+          archivedAt: null,
+          isAdmin: false,
+          conversationKind: 'CLIENT',
+        } as any,
+        orderBy: { updatedAt: 'desc' },
+        select: { id: true },
+      })
+      .catch(() => null);
+    if (latest?.id) return latest.id;
+  }
 
   const exact = await prisma.conversation
     .findFirst({

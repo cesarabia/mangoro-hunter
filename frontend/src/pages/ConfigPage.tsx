@@ -126,6 +126,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [ssclinicalNurseLeaderSaving, setSsclinicalNurseLeaderSaving] = useState(false);
   const [ssclinicalNurseLeaderStatus, setSsclinicalNurseLeaderStatus] = useState<string | null>(null);
   const [ssclinicalNurseLeaderError, setSsclinicalNurseLeaderError] = useState<string | null>(null);
+  const [templateRecruitDefaultDraft, setTemplateRecruitDefaultDraft] = useState<string>('');
+  const [templateInterviewDefaultDraft, setTemplateInterviewDefaultDraft] = useState<string>('');
+  const [templateDefaultsSaving, setTemplateDefaultsSaving] = useState(false);
+  const [templateDefaultsStatus, setTemplateDefaultsStatus] = useState<string | null>(null);
+  const [templateDefaultsError, setTemplateDefaultsError] = useState<string | null>(null);
   const [staffDefaultProgramIdDraft, setStaffDefaultProgramIdDraft] = useState<string>('');
   const [staffDefaultProgramSaving, setStaffDefaultProgramSaving] = useState(false);
   const [staffDefaultProgramStatus, setStaffDefaultProgramStatus] = useState<string | null>(null);
@@ -338,6 +343,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setWorkspaceDetails(data || null);
       const email = typeof data?.ssclinicalNurseLeaderEmail === 'string' ? data.ssclinicalNurseLeaderEmail : '';
       setSsclinicalNurseLeaderEmailDraft(email || '');
+      setTemplateRecruitDefaultDraft(typeof data?.templateRecruitmentStartName === 'string' ? data.templateRecruitmentStartName : '');
+      setTemplateInterviewDefaultDraft(
+        typeof data?.templateInterviewConfirmationName === 'string' ? data.templateInterviewConfirmationName : '',
+      );
       const staffProgramId = typeof data?.staffDefaultProgramId === 'string' ? data.staffDefaultProgramId : '';
       setStaffDefaultProgramIdDraft(staffProgramId || '');
       const clientProgramId = typeof data?.clientDefaultProgramId === 'string' ? data.clientDefaultProgramId : '';
@@ -402,6 +411,33 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setSsclinicalNurseLeaderError(err.message || 'No se pudo guardar');
     } finally {
       setSsclinicalNurseLeaderSaving(false);
+    }
+  };
+
+  const saveWorkspaceTemplateDefaults = async () => {
+    if (templateDefaultsSaving) return;
+    setTemplateDefaultsSaving(true);
+    setTemplateDefaultsStatus(null);
+    setTemplateDefaultsError(null);
+    try {
+      const recruit = templateRecruitDefaultDraft.trim();
+      const interview = templateInterviewDefaultDraft.trim();
+      const res: any = await apiClient.patch('/api/workspaces/current', {
+        templateRecruitmentStartName: recruit.length > 0 ? recruit : null,
+        templateInterviewConfirmationName: interview.length > 0 ? interview : null,
+      });
+      setTemplateRecruitDefaultDraft(
+        typeof res?.templateRecruitmentStartName === 'string' ? res.templateRecruitmentStartName : '',
+      );
+      setTemplateInterviewDefaultDraft(
+        typeof res?.templateInterviewConfirmationName === 'string' ? res.templateInterviewConfirmationName : '',
+      );
+      setTemplateDefaultsStatus('Guardado.');
+      await loadWorkspaceDetails();
+    } catch (err: any) {
+      setTemplateDefaultsError(err?.message || 'No se pudo guardar');
+    } finally {
+      setTemplateDefaultsSaving(false);
     }
   };
 
@@ -2253,6 +2289,64 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>Creado</div>
             <div>{currentWorkspace?.createdAt || '—'}</div>
           </div>
+
+          {isWorkspaceAdmin ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Plantillas WhatsApp por defecto</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Define el <b>templateName real de Meta</b> para “inicio de reclutamiento” y “confirmación de entrevista”.
+                Estos defaults se usan en “Agregar número → Enviar plantilla ahora” si no eliges otro.
+              </div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Plantilla default para inicio (reclutamiento)
+                  <input
+                    value={templateRecruitDefaultDraft}
+                    onChange={(e) => setTemplateRecruitDefaultDraft(e.target.value)}
+                    placeholder="Ej: enviorapido_postulacion_inicio_v1"
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Plantilla default para confirmación de entrevista
+                  <input
+                    value={templateInterviewDefaultDraft}
+                    onChange={(e) => setTemplateInterviewDefaultDraft(e.target.value)}
+                    placeholder="Ej: enviorapido_confirma_entrevista_v1"
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                </label>
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => saveWorkspaceTemplateDefaults().catch(() => {})}
+                  disabled={templateDefaultsSaving}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 10,
+                    border: '1px solid #111',
+                    background: '#111',
+                    color: '#fff',
+                    fontWeight: 900,
+                    fontSize: 12,
+                  }}
+                >
+                  {templateDefaultsSaving ? 'Guardando…' : 'Guardar'}
+                </button>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  Actual inicio: <b>{String(workspaceDetails?.templateRecruitmentStartName || '—')}</b> · Actual entrevista:{' '}
+                  <b>{String(workspaceDetails?.templateInterviewConfirmationName || '—')}</b>
+                </div>
+              </div>
+              {templateDefaultsStatus ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{templateDefaultsStatus}</div>
+              ) : null}
+              {templateDefaultsError ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{templateDefaultsError}</div>
+              ) : null}
+            </div>
+          ) : null}
 
 	          {String(currentWorkspace?.id || workspaceId) === 'ssclinical' && isWorkspaceAdmin ? (
 	            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>

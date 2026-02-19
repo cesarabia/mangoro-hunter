@@ -23,6 +23,32 @@ function requiresMaxCompletionTokens(model: string): boolean {
   return normalized.startsWith('gpt-5');
 }
 
+export class OpenAiRequestTimeoutError extends Error {
+  model: string;
+  timeoutMs: number;
+  constructor(model: string, timeoutMs: number) {
+    super(`OpenAI request timeout for model ${model} after ${timeoutMs}ms`);
+    this.name = 'OpenAiRequestTimeoutError';
+    this.model = model;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, model: string, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new OpenAiRequestTimeoutError(model, timeoutMs)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 export function normalizeChatCreateArgsForModel(createArgs: any, model: string): any {
   const next = { ...(createArgs || {}) } as any;
   if (requiresMaxCompletionTokens(model)) {
@@ -40,16 +66,37 @@ export function normalizeChatCreateArgsForModel(createArgs: any, model: string):
 export async function createChatCompletionWithModelFallback(
   client: OpenAI,
   createArgs: any,
-  models: string[]
+  models: string[],
+  options?: {
+    perRequestTimeoutMs?: number;
+    totalTimeoutMs?: number;
+  }
 ): Promise<{ completion: any; modelRequested: string; modelResolved: string; fallbackUsed: boolean }> {
   const chain = getUniqueModelFallbackChain(models);
   const first = chain[0] || 'gpt-4.1-mini';
+  const perRequestTimeoutMs = Number.isFinite(options?.perRequestTimeoutMs as number)
+    ? Math.max(1_000, Math.floor(options?.perRequestTimeoutMs as number))
+    : 9_000;
+  const totalTimeoutMs = Number.isFinite(options?.totalTimeoutMs as number)
+    ? Math.max(2_000, Math.floor(options?.totalTimeoutMs as number))
+    : 12_000;
+  const startedAt = Date.now();
   let lastError: any = null;
   for (let idx = 0; idx < chain.length; idx += 1) {
     const candidate = chain[idx];
     try {
+      const elapsed = Date.now() - startedAt;
+      const remainingBudget = totalTimeoutMs - elapsed;
+      if (remainingBudget <= 0) {
+        throw new OpenAiRequestTimeoutError(candidate, totalTimeoutMs);
+      }
+      const timeoutForThisAttempt = Math.max(1_000, Math.min(perRequestTimeoutMs, remainingBudget));
       const normalizedArgs = normalizeChatCreateArgsForModel(createArgs, candidate);
-      const completion = await client.chat.completions.create({ ...normalizedArgs, model: candidate });
+      const completion = await withTimeout(
+        client.chat.completions.create({ ...normalizedArgs, model: candidate }),
+        candidate,
+        timeoutForThisAttempt
+      );
       return {
         completion,
         modelRequested: first,
@@ -58,7 +105,8 @@ export async function createChatCompletionWithModelFallback(
       };
     } catch (err: any) {
       lastError = err;
-      if (isOpenAiModelError(err) && idx < chain.length - 1) {
+      const timedOut = err instanceof OpenAiRequestTimeoutError;
+      if ((isOpenAiModelError(err) || timedOut) && idx < chain.length - 1) {
         continue;
       }
       throw err;

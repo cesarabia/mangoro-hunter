@@ -499,7 +499,13 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
     normalized === 'nuevos' ||
     normalized === 'mis casos'
   ) {
-    return { type: 'LIST_CASES', args: { assignedToMe: false, limit: 10 } };
+    return { type: 'LIST_CASES', args: { stageSlug: 'NEW_INTAKE', assignedToMe: false, limit: 10 } };
+  }
+  if (
+    /\b(resumen|detalle)\b.*\b(ultimo|último)\b.*\b(postulante|caso|cliente)\b/.test(normalized) ||
+    /\b(ultimo|último)\b.*\b(postulante|caso|cliente)\b.*\b(resumen|detalle)\b/.test(normalized)
+  ) {
+    return { type: 'GET_CASE_SUMMARY', args: { conversationId: '__latest__' } };
   }
   if (/\b(dame|darme|muestrame|muéstrame)\s+resumen(\s+de\s+(los\s+)?(casos?|postulantes?))?/.test(normalized)) {
     return { type: 'LIST_CASES', args: { assignedToMe: false, limit: 5, includeSummary: true } };
@@ -543,7 +549,9 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
   if (command.type === 'LIST_CASES') {
     const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
     if (cases.length === 0) {
-      return 'Por ahora no veo casos nuevos. Si quieres, te busco uno por nombre/comuna/id.';
+      return command.args.stageSlug
+        ? 'No veo casos nuevos en etapas iniciales ahora. Si quieres, reviso los últimos 5 sin filtro o busco por nombre/comuna/id.'
+        : 'No veo casos para ese filtro ahora. Si quieres, te busco por nombre/comuna/id o te muestro los últimos 5.';
     }
     if (command.args.includeSummary) {
       const lines = cases.slice(0, 5).map((c: any) => {
@@ -570,13 +578,31 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
     const stage = String(c?.stage || '—');
     const location = [c?.contact?.comuna, c?.contact?.ciudad, c?.contact?.region].filter(Boolean).join(' · ');
     const availability = String(c?.contact?.availabilityText || '').trim();
+    const lastInbound = Array.isArray(c?.lastMessages)
+      ? [...c.lastMessages]
+          .reverse()
+          .find((m: any) => String(m?.direction || '').toUpperCase() === 'INBOUND' && String(m?.text || '').trim())
+      : null;
+    const lastInboundText = String(lastInbound?.text || '').trim();
+    const nextStep = (() => {
+      const normalizedStage = String(stage || '').toUpperCase();
+      if (['NEW_INTAKE', 'SCREENING', 'INFO', 'NUEVO'].includes(normalizedStage)) return 'seguir levantando datos mínimos';
+      if (['QUALIFIED', 'INTERVIEW_PENDING', 'EN_COORDINACION', 'INTERESADO'].includes(normalizedStage))
+        return 'coordinar entrevista con horario exacto';
+      if (['INTERVIEW_SCHEDULED', 'AGENDADO', 'CONFIRMED'].includes(normalizedStage))
+        return 'confirmar asistencia y enviar recordatorio';
+      if (['NO_CONTACTAR', 'REJECTED', 'CERRADO'].includes(normalizedStage)) return 'no contactar (caso cerrado)';
+      return 'revisar y definir siguiente acción';
+    })();
     const idShort = String(c?.id || '').slice(0, 8);
     return [
-      `Aquí va el resumen (${idShort}):`,
+      `Resumen del último postulante (${idShort}):`,
       `• Nombre: ${name}`,
       `• Estado: ${stage}`,
       location ? `• Ubicación: ${location}` : null,
       availability ? `• Disponibilidad: ${availability}` : null,
+      lastInboundText ? `• Último mensaje candidato: ${lastInboundText}` : null,
+      `• Siguiente paso sugerido: ${nextStep}`,
     ]
       .filter(Boolean)
       .join('\n');
@@ -1602,7 +1628,7 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
             let notifyTemplateName: string | null = null;
             let notifyTemplateVars: Record<string, string> | null = null;
             if (strictWindow === 'OUTSIDE_24H') {
-              const templates = await loadTemplateConfig().catch(() => null);
+              const templates = await loadTemplateConfig(undefined, params.workspaceId).catch(() => null);
               const mode = stage.includes('INTERVIEW') ? 'INTERVIEW' : 'RECRUIT';
               const templateName = templates ? selectTemplateForMode(mode as any, templates) : '';
               const templateVarsArr =

@@ -3,6 +3,7 @@ import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { sendWhatsAppTemplate, SendResult } from './whatsappMessageService';
 import { serializeJson } from '../utils/json';
 import { loadTemplateConfig, resolveTemplateVariables } from './templateService';
+import { stableHash } from './agent/tools';
 import {
   DEFAULT_TEMPLATE_GENERAL_FOLLOWUP,
   DEFAULT_TEMPLATE_INTERVIEW_INVITE,
@@ -123,7 +124,7 @@ export async function createConversationAndMaybeSend(
   let variablesUsed: string[] | undefined;
 
   if (params.sendTemplateNow !== false) {
-    const templates = await loadTemplateConfig();
+    const templates = await loadTemplateConfig(undefined, workspaceId);
     const templateName =
       params.templateNameOverride ||
       (mode === 'INTERVIEW'
@@ -155,6 +156,22 @@ export async function createConversationAndMaybeSend(
         read: true
       }
     });
+
+    await prisma.outboundMessageLog
+      .create({
+        data: {
+          workspaceId,
+          conversationId: conversation.id,
+          channel: 'WHATSAPP',
+          type: 'TEMPLATE',
+          templateName,
+          dedupeKey: `create_and_send:${conversation.id}:${Date.now()}`,
+          textHash: stableHash(`TEMPLATE:${templateName}:${serializeJson(finalVariables || [])}`),
+          blockedReason: sendResult.success ? null : String(sendResult.error || 'SEND_FAILED'),
+          waMessageId: sendResult.messageId || null,
+        } as any,
+      })
+      .catch(() => {});
 
     await prisma.conversation.update({
       where: { id: conversation.id },

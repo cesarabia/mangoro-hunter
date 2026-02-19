@@ -38,6 +38,14 @@ export const InboxPage: React.FC<Props> = ({
   const [newMode, setNewMode] = useState<'RECRUIT' | 'INTERVIEW' | 'OFF'>('RECRUIT');
   const [newStatus, setNewStatus] = useState<'NEW' | 'OPEN' | 'CLOSED'>('NEW');
   const [sendTemplateNow, setSendTemplateNow] = useState(true);
+  const [templateOptions, setTemplateOptions] = useState<
+    Array<{ name: string; category?: string | null; language?: string | null; status?: string | null; source?: string | null }>
+  >([]);
+  const [templateOptionsLoading, setTemplateOptionsLoading] = useState(false);
+  const [templateOptionsError, setTemplateOptionsError] = useState<string | null>(null);
+  const [selectedTemplateName, setSelectedTemplateName] = useState('');
+  const [templateDefaults, setTemplateDefaults] = useState<{ recruit?: string; interview?: string }>({});
+  const [templateSyncInfo, setTemplateSyncInfo] = useState<{ synced?: boolean; syncError?: string | null }>({});
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [programs, setPrograms] = useState<any[]>([]);
@@ -268,13 +276,82 @@ export const InboxPage: React.FC<Props> = ({
     setNewMode('RECRUIT');
     setNewStatus('NEW');
     setSendTemplateNow(true);
+    setTemplateOptions([]);
+    setTemplateOptionsError(null);
+    setTemplateOptionsLoading(false);
+    setSelectedTemplateName('');
+    setTemplateDefaults({});
+    setTemplateSyncInfo({});
     setCreateError(null);
   };
+
+  const loadTemplateOptions = useCallback(async (mode: 'RECRUIT' | 'INTERVIEW' | 'OFF') => {
+    if (mode === 'OFF') {
+      setTemplateOptions([]);
+      setSelectedTemplateName('');
+      setTemplateDefaults({});
+      setTemplateSyncInfo({});
+      setTemplateOptionsError(null);
+      return;
+    }
+    setTemplateOptionsLoading(true);
+    setTemplateOptionsError(null);
+    try {
+      const data: any = await apiClient.get(`/api/conversations/template-options?mode=${encodeURIComponent(mode)}`);
+      const list = Array.isArray(data?.templates) ? data.templates : [];
+      setTemplateOptions(list);
+      setTemplateDefaults({
+        recruit: typeof data?.defaults?.recruit === 'string' ? data.defaults.recruit : '',
+        interview: typeof data?.defaults?.interview === 'string' ? data.defaults.interview : '',
+      });
+      setTemplateSyncInfo({
+        synced: Boolean(data?.sync?.synced),
+        syncError: typeof data?.sync?.syncError === 'string' ? data.sync.syncError : null,
+      });
+      const preferred =
+        typeof data?.selectedDefault === 'string' && data.selectedDefault.trim()
+          ? data.selectedDefault.trim()
+          : '';
+      setSelectedTemplateName(() => {
+        if (preferred && list.some((t: any) => String(t?.name || '').trim() === preferred)) {
+          return preferred;
+        }
+        return list.length > 0 ? String(list[0]?.name || '').trim() : '';
+      });
+      if (list.length === 0) {
+        setTemplateOptionsError('No hay plantillas disponibles/sincronizadas para este workspace.');
+      }
+    } catch (err: any) {
+      setTemplateOptions([]);
+      setSelectedTemplateName('');
+      setTemplateDefaults({});
+      setTemplateSyncInfo({});
+      setTemplateOptionsError(err?.message || 'No se pudieron cargar las plantillas.');
+    } finally {
+      setTemplateOptionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showAddModal || !sendTemplateNow) return;
+    loadTemplateOptions(newMode).catch(() => {});
+  }, [showAddModal, sendTemplateNow, newMode, loadTemplateOptions]);
 
   const handleCreateConversation = async () => {
     if (!newPhone.trim()) {
       setCreateError('Ingresa un número en formato E.164');
       return;
+    }
+    if (sendTemplateNow && newMode !== 'OFF') {
+      const selected = String(selectedTemplateName || '').trim();
+      if (!selected) {
+        setCreateError('Selecciona una plantilla real para enviar ahora.');
+        return;
+      }
+      if (!templateOptions.some((t) => String(t?.name || '').trim() === selected)) {
+        setCreateError('La plantilla seleccionada no está disponible/sincronizada.');
+        return;
+      }
     }
     setCreatingConversation(true);
     setCreateError(null);
@@ -283,7 +360,8 @@ export const InboxPage: React.FC<Props> = ({
         phoneE164: newPhone.trim(),
         mode: newMode,
         status: newStatus,
-        sendTemplateNow
+        sendTemplateNow,
+        templateName: sendTemplateNow && newMode !== 'OFF' ? String(selectedTemplateName || '').trim() : null,
       });
       const convoId = res?.conversationId;
       await loadConversations();
@@ -521,13 +599,53 @@ export const InboxPage: React.FC<Props> = ({
               <input
                 type="checkbox"
                 checked={sendTemplateNow}
-                onChange={e => setSendTemplateNow(e.target.checked)}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setSendTemplateNow(checked);
+                  if (checked) {
+                    loadTemplateOptions(newMode).catch(() => {});
+                  }
+                }}
               />
               Enviar plantilla ahora
             </label>
-            <div style={{ fontSize: 12, color: '#555' }}>
-              Reclutamiento envía <strong>postulacion_completar_1</strong> con el título por defecto. Entrevista envía <strong>entrevista_confirmacion_1</strong> con día/hora/lugar configurados.
-            </div>
+            {sendTemplateNow && newMode !== 'OFF' ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                <label style={{ display: 'grid', gap: 4, fontSize: 13 }}>
+                  Plantilla a enviar (nombre real en Meta)
+                  <select
+                    value={selectedTemplateName}
+                    onChange={(e) => setSelectedTemplateName(e.target.value)}
+                    style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+                    disabled={templateOptionsLoading || templateOptions.length === 0}
+                  >
+                    {templateOptions.length === 0 ? (
+                      <option value="">
+                        {templateOptionsLoading ? 'Cargando plantillas…' : 'Sin plantillas disponibles'}
+                      </option>
+                    ) : (
+                      templateOptions.map((opt) => (
+                        <option key={opt.name} value={opt.name}>
+                          {opt.name} · {opt.category || 'Sin categoría'} · {opt.language || '—'} · {opt.status || '—'}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+                <div style={{ fontSize: 12, color: '#555' }}>
+                  Default reclutamiento: <strong>{templateDefaults.recruit || '—'}</strong> · Default entrevista:{' '}
+                  <strong>{templateDefaults.interview || '—'}</strong>
+                </div>
+                {!templateOptionsLoading && templateSyncInfo.synced === false && templateSyncInfo.syncError ? (
+                  <div style={{ fontSize: 12, color: '#7a3b00' }}>
+                    Catálogo Meta no sincronizado ahora: {templateSyncInfo.syncError}
+                  </div>
+                ) : null}
+                {templateOptionsError ? (
+                  <div style={{ fontSize: 12, color: '#b93800' }}>{templateOptionsError}</div>
+                ) : null}
+              </div>
+            ) : null}
             {createError && <div style={{ color: '#b93800', fontSize: 13 }}>{createError}</div>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button

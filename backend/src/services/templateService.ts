@@ -34,25 +34,56 @@ function defaults(): TemplateConfig {
   };
 }
 
-export async function loadTemplateConfig(logger?: FastifyBaseLogger): Promise<TemplateConfig> {
+export async function loadTemplateConfig(
+  logger?: FastifyBaseLogger,
+  workspaceId?: string | null
+): Promise<TemplateConfig> {
   try {
-    const config = await prisma.systemConfig.findUnique({
-      where: { id: 1 },
-      select: {
-        templateInterviewInvite: true,
-        templateGeneralFollowup: true,
-        templateLanguageCode: true,
-        defaultJobTitle: true,
-        defaultInterviewDay: true,
-        defaultInterviewTime: true,
-        defaultInterviewLocation: true,
-        testPhoneNumber: true
-      }
-    });
+    const [config, workspace] = await Promise.all([
+      prisma.systemConfig.findUnique({
+        where: { id: 1 },
+        select: {
+          templateInterviewInvite: true,
+          templateGeneralFollowup: true,
+          templateLanguageCode: true,
+          defaultJobTitle: true,
+          defaultInterviewDay: true,
+          defaultInterviewTime: true,
+          defaultInterviewLocation: true,
+          testPhoneNumber: true
+        }
+      }),
+      workspaceId
+        ? prisma.workspace
+            .findUnique({
+              where: { id: workspaceId },
+              select: {
+                templateRecruitmentStartName: true as any,
+                templateInterviewConfirmationName: true as any,
+                archivedAt: true,
+              } as any,
+            })
+            .catch(() => null)
+        : Promise.resolve(null),
+    ]);
     const base = defaults();
+    const workspaceRecruitTemplate =
+      workspace && !(workspace as any).archivedAt
+        ? String((workspace as any).templateRecruitmentStartName || '').trim()
+        : '';
+    const workspaceInterviewTemplate =
+      workspace && !(workspace as any).archivedAt
+        ? String((workspace as any).templateInterviewConfirmationName || '').trim()
+        : '';
     return {
-      templateInterviewInvite: config?.templateInterviewInvite || base.templateInterviewInvite,
-      templateGeneralFollowup: config?.templateGeneralFollowup || base.templateGeneralFollowup,
+      templateInterviewInvite:
+        workspaceInterviewTemplate ||
+        config?.templateInterviewInvite ||
+        base.templateInterviewInvite,
+      templateGeneralFollowup:
+        workspaceRecruitTemplate ||
+        config?.templateGeneralFollowup ||
+        base.templateGeneralFollowup,
       templateLanguageCode: config?.templateLanguageCode || base.templateLanguageCode,
       defaultJobTitle: config?.defaultJobTitle || base.defaultJobTitle,
       defaultInterviewDay: config?.defaultInterviewDay || base.defaultInterviewDay,

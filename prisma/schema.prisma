@@ -52,6 +52,8 @@ model Workspace {
   id          String        @id @default(cuid())
   name        String
   isSandbox   Boolean       @default(false)
+  templateRecruitmentStartName String?
+  templateInterviewConfirmationName String?
   ssclinicalNurseLeaderEmail String?
   staffDefaultProgram Program? @relation("WorkspaceStaffDefaultProgram", fields: [staffDefaultProgramId], references: [id])
   staffDefaultProgramId String?

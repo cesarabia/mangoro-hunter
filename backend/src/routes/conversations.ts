@@ -18,10 +18,11 @@ import { stableHash } from '../services/agent/tools';
 import { runAutomations } from '../services/automationRunnerService';
 import { isKnownActiveStage, normalizeStageSlug } from '../services/workspaceStageService';
 import { createInAppNotification } from '../services/notificationService';
+import { listWorkspaceTemplateCatalog } from '../services/whatsappTemplateCatalogService';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
-  const fetchTemplateConfigSafe = () => loadTemplateConfig(app.log);
+  const fetchTemplateConfigSafe = (workspaceId?: string | null) => loadTemplateConfig(app.log, workspaceId || undefined);
   const isSuspiciousCandidateName = (value?: string | null) => {
     if (!value) return true;
     const lower = value.toLowerCase();
@@ -216,6 +217,24 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get('/template-options', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const modeRaw = String((request.query as any)?.mode || 'RECRUIT').trim().toUpperCase();
+    const mode = modeRaw === 'INTERVIEW' ? 'INTERVIEW' : 'RECRUIT';
+    const catalog = await listWorkspaceTemplateCatalog(access.workspaceId);
+    const selectedDefault = mode === 'INTERVIEW' ? catalog.defaults.interview : catalog.defaults.recruit;
+    return {
+      mode,
+      selectedDefault,
+      templates: catalog.templates,
+      defaults: catalog.defaults,
+      sync: catalog.sync,
+    };
+  });
+
   app.get('/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
@@ -246,7 +265,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       orderBy: { timestamp: 'desc' }
     });
     const within24h = isWithin24Hours(lastInbound?.timestamp, WINDOW_MS);
-    const templates = await fetchTemplateConfigSafe();
+    const templates = await fetchTemplateConfigSafe(access.workspaceId);
     const normalizedStatus = ['NEW', 'OPEN', 'CLOSED'].includes(conversation.status)
       ? conversation.status
       : 'NEW';
@@ -921,7 +940,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Contacto marcado como NO_CONTACTAR. Reactívalo antes de enviar.' });
     }
 
-    const templates = await fetchTemplateConfigSafe();
+    const templates = await fetchTemplateConfigSafe(access.workspaceId);
     const finalVariables = resolveTemplateVariables(body.templateName, body.variables, templates, {
       interviewDay: conversation.interviewDay,
       interviewTime: conversation.interviewTime,

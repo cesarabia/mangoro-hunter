@@ -904,6 +904,8 @@ export async function runAgent(event: AgentEvent): Promise<{
 
   let lastInvalidRaw: string | null = null;
   let lastInvalidIssues: any = null;
+  const runStartedAt = Date.now();
+  const MAX_RUN_BUDGET_MS = 32_000;
 
   const buildTechnicalFallbackText = (reasonRaw: string): string => {
     const reason = String(reasonRaw || 'UNKNOWN').toUpperCase();
@@ -963,6 +965,34 @@ export async function runAgent(event: AgentEvent): Promise<{
     };
     while (safetyIterations < 6) {
       safetyIterations += 1;
+      if (Date.now() - runStartedAt > MAX_RUN_BUDGET_MS) {
+        fallbackReason = 'RUN_BUDGET_EXCEEDED';
+        const fallback = buildFallbackResponse('RUN_BUDGET_EXCEEDED');
+        await prisma.agentRunLog.update({
+          where: { id: runLog.id },
+          data: {
+            status: 'PLANNED',
+            commandsJson: serializeJson(fallback),
+            resultsJson: serializeJson({
+              fallbackUsed: true,
+              reason: 'RUN_BUDGET_EXCEEDED',
+              modelRequested,
+              modelResolved,
+              modelFallbackUsed: modelResolved !== modelRequested,
+              modelCalls,
+              modelLatencyMs,
+              avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+              maxModelLatencyMs,
+              toolCalls: toolCallCount,
+              toolLatencyMs,
+              avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+              maxToolLatencyMs,
+              retries: responseRetryCount,
+            }),
+          },
+        });
+        return { runId: runLog.id, windowStatus, response: fallback };
+      }
       const modelStartedAt = Date.now();
       const completionResult = await createChatCompletionWithModelFallback(
         client,
@@ -974,7 +1004,11 @@ export async function runAgent(event: AgentEvent): Promise<{
           max_tokens: 900,
           response_format: { type: 'json_object' } as any,
         },
-        [activeModel, ...fallbackModels]
+        [activeModel, ...fallbackModels],
+        {
+          perRequestTimeoutMs: safetyIterations <= 1 ? 9_000 : 7_000,
+          totalTimeoutMs: 12_000,
+        }
       );
       const completionLatency = Date.now() - modelStartedAt;
       modelCalls += 1;
@@ -1289,8 +1323,10 @@ export async function runAgent(event: AgentEvent): Promise<{
     return { runId: runLog.id, windowStatus, response: fallback };
   } catch (err) {
     const errorText = err instanceof Error ? err.message : 'unknown';
-    fallbackReason = errorText || 'RUNTIME_EXCEPTION';
-    const fallback = buildFallbackResponse(errorText || 'RUNTIME_EXCEPTION');
+    const timeoutLike = err instanceof Error && /timeout/i.test(String(err.message || ''));
+    const fallbackCode = timeoutLike ? 'LLM_TIMEOUT' : errorText || 'RUNTIME_EXCEPTION';
+    fallbackReason = fallbackCode;
+    const fallback = buildFallbackResponse(fallbackCode);
     await prisma.agentRunLog.update({
       where: { id: runLog.id },
       data: {

@@ -39,6 +39,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         id: true,
         name: true,
         isSandbox: true,
+        templateRecruitmentStartName: true as any,
+        templateInterviewConfirmationName: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -59,6 +61,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       id: workspace.id,
       name: workspace.name,
       isSandbox: Boolean(workspace.isSandbox),
+      templateRecruitmentStartName: String((workspace as any).templateRecruitmentStartName || '').trim() || null,
+      templateInterviewConfirmationName: String((workspace as any).templateInterviewConfirmationName || '').trim() || null,
       ssclinicalNurseLeaderEmail: (workspace as any).ssclinicalNurseLeaderEmail || null,
       staffDefaultProgramId: (workspace as any).staffDefaultProgramId || null,
       clientDefaultProgramId: (workspace as any).clientDefaultProgramId || null,
@@ -112,6 +116,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const userId = request.user?.userId ? String(request.user.userId) : null;
 
     const body = request.body as {
+      templateRecruitmentStartName?: string | null;
+      templateInterviewConfirmationName?: string | null;
       ssclinicalNurseLeaderEmail?: string | null;
       staffDefaultProgramId?: string | null;
       clientDefaultProgramId?: string | null;
@@ -123,6 +129,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       partnerProgramMenuIds?: string[] | null;
       partnerPhoneE164s?: string[] | null;
     };
+    const hasRecruitTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateRecruitmentStartName');
+    const hasInterviewTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateInterviewConfirmationName');
     const hasEmail = Object.prototype.hasOwnProperty.call(body || {}, 'ssclinicalNurseLeaderEmail');
     const hasStaffProgram = Object.prototype.hasOwnProperty.call(body || {}, 'staffDefaultProgramId');
     const hasClientProgram = Object.prototype.hasOwnProperty.call(body || {}, 'clientDefaultProgramId');
@@ -134,6 +142,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const hasPartnerMenu = Object.prototype.hasOwnProperty.call(body || {}, 'partnerProgramMenuIds');
     const hasPartnerPhones = Object.prototype.hasOwnProperty.call(body || {}, 'partnerPhoneE164s');
     if (
+      !hasRecruitTemplate &&
+      !hasInterviewTemplate &&
       !hasEmail &&
       !hasStaffProgram &&
       !hasClientProgram &&
@@ -155,6 +165,32 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       emailRaw === null ? null : typeof emailRaw === 'string' ? emailRaw.trim().toLowerCase() : null;
     if (typeof emailRaw === 'string' && nextEmail && (!nextEmail.includes('@') || nextEmail.length > 254)) {
       return reply.code(400).send({ error: 'Email inválido.' });
+    }
+
+    const recruitTemplateRaw = body?.templateRecruitmentStartName;
+    const nextRecruitTemplateName =
+      recruitTemplateRaw === null
+        ? null
+        : typeof recruitTemplateRaw === 'string'
+          ? recruitTemplateRaw.trim()
+          : null;
+    if (typeof recruitTemplateRaw === 'string' && nextRecruitTemplateName && nextRecruitTemplateName.length > 120) {
+      return reply.code(400).send({ error: '"templateRecruitmentStartName" es demasiado largo (max 120).' });
+    }
+
+    const interviewTemplateRaw = body?.templateInterviewConfirmationName;
+    const nextInterviewTemplateName =
+      interviewTemplateRaw === null
+        ? null
+        : typeof interviewTemplateRaw === 'string'
+          ? interviewTemplateRaw.trim()
+          : null;
+    if (
+      typeof interviewTemplateRaw === 'string' &&
+      nextInterviewTemplateName &&
+      nextInterviewTemplateName.length > 120
+    ) {
+      return reply.code(400).send({ error: '"templateInterviewConfirmationName" es demasiado largo (max 120).' });
     }
 
     const staffProgramRaw = body?.staffDefaultProgramId;
@@ -208,6 +244,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       select: {
         id: true,
         archivedAt: true,
+        templateRecruitmentStartName: true as any,
+        templateInterviewConfirmationName: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -251,6 +289,18 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const updated = await prisma.workspace.update({
       where: { id: access.workspaceId },
       data: {
+        ...(hasRecruitTemplate
+          ? {
+              templateRecruitmentStartName:
+                typeof recruitTemplateRaw === 'string' ? nextRecruitTemplateName || null : null,
+            }
+          : {}),
+        ...(hasInterviewTemplate
+          ? {
+              templateInterviewConfirmationName:
+                typeof interviewTemplateRaw === 'string' ? nextInterviewTemplateName || null : null,
+            }
+          : {}),
         ...(hasEmail ? { ssclinicalNurseLeaderEmail: typeof emailRaw === 'string' ? nextEmail || null : null } : {}),
         ...(hasStaffProgram ? { staffDefaultProgramId: typeof staffProgramRaw === 'string' ? nextStaffProgramId || null : null } : {}),
         ...(hasClientProgram ? { clientDefaultProgramId: typeof clientProgramRaw === 'string' ? nextClientProgramId || null : null } : {}),
@@ -265,6 +315,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       } as any,
       select: {
         id: true,
+        templateRecruitmentStartName: true as any,
+        templateInterviewConfirmationName: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -306,6 +358,26 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         .catch(() => {});
     }
 
+    if (hasRecruitTemplate || hasInterviewTemplate) {
+      await prisma.configChangeLog
+        .create({
+          data: {
+            workspaceId: access.workspaceId,
+            userId,
+            type: 'WORKSPACE_TEMPLATE_DEFAULTS',
+            beforeJson: serializeJson({
+              templateRecruitmentStartName: (existing as any).templateRecruitmentStartName || null,
+              templateInterviewConfirmationName: (existing as any).templateInterviewConfirmationName || null,
+            }),
+            afterJson: serializeJson({
+              templateRecruitmentStartName: (updated as any).templateRecruitmentStartName || null,
+              templateInterviewConfirmationName: (updated as any).templateInterviewConfirmationName || null,
+            }),
+          },
+        })
+        .catch(() => {});
+    }
+
     if (hasClientProgram || hasPartnerProgram || hasAllowPersonaSwitch || hasPersonaTtl || hasStaffMenu || hasClientMenu || hasPartnerMenu || hasPartnerPhones) {
       await prisma.configChangeLog
         .create({
@@ -340,6 +412,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
 
     return {
       ok: true,
+      templateRecruitmentStartName: String((updated as any).templateRecruitmentStartName || '').trim() || null,
+      templateInterviewConfirmationName: String((updated as any).templateInterviewConfirmationName || '').trim() || null,
       ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null,
       staffDefaultProgramId: (updated as any).staffDefaultProgramId || null,
       clientDefaultProgramId: (updated as any).clientDefaultProgramId || null,
