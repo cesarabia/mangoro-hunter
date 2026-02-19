@@ -2727,12 +2727,13 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           assertions.push({ ok: false, message: 'interviewScheduleConflict: setup incompleto' });
         } else {
           const cfg = await getSystemConfig();
+          const scenarioLocation = `Scenario Conflict ${Date.now()}`;
           const first = await attemptScheduleInterview({
             conversationId: convA.id,
             contactId: contactA.id,
             day: 'martes',
             time: '10:00',
-            location: 'Providencia',
+            location: scenarioLocation,
             config: cfg,
           }).catch(() => ({ ok: false } as any));
           const second = await attemptScheduleInterview({
@@ -2740,7 +2741,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             contactId: contactB.id,
             day: 'martes',
             time: '10:00',
-            location: 'Providencia',
+            location: scenarioLocation,
             config: cfg,
           }).catch(() => ({ ok: false } as any));
           assertions.push({
