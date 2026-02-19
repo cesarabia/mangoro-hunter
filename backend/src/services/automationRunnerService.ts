@@ -489,6 +489,9 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
 
   if (
     /\b(casos?|clientes?|postulantes?)\s+nuev/.test(normalized) ||
+    /\b(que|cuales|cuáles)\s+(son\s+)?(los\s+)?(casos?|clientes?|postulantes?)\s+nuev/.test(normalized) ||
+    /\bque\s+tengo\s+pendiente/.test(normalized) ||
+    /\bque\s+me\s+llego\s+hoy/.test(normalized) ||
     normalized === 'nuevos' ||
     normalized === 'mis casos'
   ) {
@@ -528,30 +531,31 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
   const toolResult = toolExecResult?.details?.result || null;
   const toolError = toolExecResult?.details?.error || null;
   if (toolError) {
-    return `No pude consultar casos ahora (${toolError}). Intenta de nuevo en unos segundos o abre Inbox y filtra por estado.`;
+    return `No pude consultar eso ahora (${toolError}). Intenta de nuevo en unos segundos y lo revisamos.`;
   }
   if (command.type === 'LIST_CASES') {
     const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
-    if (cases.length === 0)
-      return 'No encontré casos nuevos en este momento. Puedes intentar “buscar <nombre/comuna/id>” o revisar Inbox con filtro Nuevo.';
+    if (cases.length === 0) {
+      return 'Por ahora no veo casos nuevos. Si quieres, te busco uno por nombre/comuna/id.';
+    }
     const lines = cases.slice(0, 10).map((c: any) => {
       const idShort = String(c?.id || '').slice(0, 8);
       const name = String(c?.contactDisplay || 'Caso');
       const stage = String(c?.stage || '—');
-      return `• ${name} · ${stage} · ${idShort}`;
+      return `• ${name} (${stage}) · ${idShort}`;
     });
-    return `Casos encontrados (${Math.min(cases.length, 10)}):\n${lines.join('\n')}`;
+    return `Te dejo los más recientes (${Math.min(cases.length, 10)}):\n${lines.join('\n')}`;
   }
   if (command.type === 'GET_CASE_SUMMARY') {
     const c = toolResult?.case;
-    if (!c) return 'No encontré ese caso. Verifica el ID (puede ser el prefijo).';
+    if (!c) return 'No encontré ese caso. Pásame el ID (o prefijo) y lo reviso.';
     const name = String(c?.contact?.displayName || 'Caso');
     const stage = String(c?.stage || '—');
     const location = [c?.contact?.comuna, c?.contact?.ciudad, c?.contact?.region].filter(Boolean).join(' · ');
     const availability = String(c?.contact?.availabilityText || '').trim();
     const idShort = String(c?.id || '').slice(0, 8);
     return [
-      `Resumen ${idShort}:`,
+      `Aquí va el resumen (${idShort}):`,
       `• Nombre: ${name}`,
       `• Estado: ${stage}`,
       location ? `• Ubicación: ${location}` : null,
@@ -562,15 +566,15 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
   }
   if (command.type === 'SET_STAGE') {
     const stage = String(toolResult?.stage || command.args.stageSlug || '').trim();
-    return stage ? `Listo. Cambié el estado del caso a ${stage}.` : 'Listo. Actualicé el estado del caso.';
+    return stage ? `Listo, ya dejé el caso en ${stage}.` : 'Listo, ya actualicé el estado del caso.';
   }
   if (command.type === 'SEND_CUSTOMER_MESSAGE') {
     if (toolExecResult?.blocked) {
       const reason = String(toolExecResult?.blockedReason || 'BLOCKED');
-      return `No pude enviar el mensaje al candidato (bloqueado: ${reason}). Revisa Logs → Outbound.`;
+      return `No pude enviar el mensaje al candidato (bloqueado: ${reason}). Si quieres, veo contigo el motivo en Logs.`;
     }
     const ok = Boolean(toolResult?.sendResult?.success ?? true);
-    if (ok) return 'Listo. Mensaje enviado al candidato.';
+    if (ok) return 'Listo, mensaje enviado al candidato.';
     return `No pude enviar el mensaje (${String(toolResult?.sendResult?.error || 'error desconocido')}).`;
   }
   return 'Listo.';

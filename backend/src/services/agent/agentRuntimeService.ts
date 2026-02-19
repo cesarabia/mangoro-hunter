@@ -60,9 +60,13 @@ Reglas de seguridad y guardrails:
   - OUTSIDE_24H: solo SEND_MESSAGE type=TEMPLATE (nunca SESSION_TEXT).
 - Para RESPONDER al humano debes usar SEND_MESSAGE. "notes" es SOLO para debug interno (no es un mensaje).
 - Nunca sobrescribas candidateName si existe candidateNameManual.
-- Evita loops: no repitas la misma pregunta 2+ veces; si necesitas confirmar, pide confirmación en formato 1/2.
+- Evita loops: no repitas la misma pregunta 2+ veces; si necesitas confirmar, hazlo en lenguaje natural (sin menú rígido).
 - Si event.type == "AI_SUGGEST": NO cambies estado/perfil (no UPSERT_PROFILE_FIELDS ni SET_CONVERSATION_*). Devuelve SOLO 1 SEND_MESSAGE con el texto sugerido. Si existe event.draftText, mejora ese borrador manteniendo el significado.
 - El Program actual (incluido en el prompt) es la fuente única de verdad. Si el historial de la conversación parece de otro Program, igual debes responder siguiendo el Program actual.
+- Estilo de conversación: humano, cercano, claro y breve. Entiende mensajes fragmentados y modismos; no exijas formatos tipo "Responde así: ...".
+- Evita tono robótico/formal excesivo. Responde como una persona operativa real.
+- Acepta respuestas libres de ubicación/horario (ej: "Pudahuel", "mañana en la tarde") y continúa pidiendo solo el dato faltante.
+- No uses menús numerados (1/2/3) salvo que el usuario lo pida explícitamente o sea estrictamente necesario para desambiguar.
 `.trim();
 
   return `${policy}\n\nEstado ventana WhatsApp: ${params.windowStatus}\n\n${params.programPrompt}`.trim();
@@ -315,6 +319,62 @@ function normalizeAgentResponseShape(value: any): any {
     });
   }
   return out;
+}
+
+function pickFirstString(obj: any, keys: string[]): string | null {
+  if (!obj || typeof obj !== 'object') return null;
+  for (const key of keys) {
+    const raw = (obj as any)[key];
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    return trimmed;
+  }
+  return null;
+}
+
+function coerceNaturalReplyToCommand(value: any, raw: string): any {
+  const hasCommands = Boolean(value && typeof value === 'object' && Array.isArray((value as any).commands));
+  if (hasCommands) return value;
+
+  const fromObject = pickFirstString(value, [
+    'reply',
+    'response',
+    'message',
+    'text',
+    'output',
+    'final_answer',
+    'assistant_reply',
+    'assistantMessage',
+    'answer',
+    'notes',
+  ]);
+
+  const rawTrimmed = String(raw || '').trim();
+  const fromRaw =
+    !fromObject &&
+    rawTrimmed &&
+    !/^\s*[\[{]/.test(rawTrimmed) &&
+    !/^\s*```/.test(rawTrimmed)
+      ? rawTrimmed
+      : null;
+
+  const text = fromObject || fromRaw;
+  if (!text) return value;
+
+  return {
+    agent: 'coerced_text_reply',
+    version: 1,
+    commands: [
+      {
+        command: 'SEND_MESSAGE',
+        channel: 'WHATSAPP',
+        type: 'SESSION_TEXT',
+        text,
+      },
+    ],
+    notes: 'coerced_from_text',
+  };
 }
 
 function applyCommandDefaults(
@@ -834,7 +894,11 @@ export async function runAgent(event: AgentEvent): Promise<{
           if (draft) return draft;
           return '¿Qué respuesta quieres enviar? Escribe un borrador y lo mejoro.';
         }
-        return 'Gracias por tu mensaje. ¿Me puedes contar un poco más para ayudarte?';
+        const kind = String((conversation as any)?.conversationKind || '').toUpperCase();
+        if (kind === 'STAFF') {
+          return 'Te leo. ¿Quieres que vea casos nuevos, busque uno puntual o cambie un estado?';
+        }
+        return 'Perfecto, te leo. Cuéntame un poco más y avanzamos altiro.';
       })();
       const dedupeSeed = `${conversation.id}:${event.eventType}:${event.inboundMessageId || ''}:FALLBACK:${fallbackText}`;
       return {
@@ -931,7 +995,9 @@ export async function runAgent(event: AgentEvent): Promise<{
       }
 
       const raw = String((message as any).content || '').trim();
-      const parsedRaw = applyCommandDefaults(normalizeAgentResponseShape(parseJsonLoose(raw)), {
+      const parsedLoose = parseJsonLoose(raw);
+      const coercedShape = coerceNaturalReplyToCommand(normalizeAgentResponseShape(parsedLoose), raw);
+      const parsedRaw = applyCommandDefaults(coercedShape, {
         workspaceId: event.workspaceId,
         conversationId: conversation.id,
         contactId: conversation.contactId,
