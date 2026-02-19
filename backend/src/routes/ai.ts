@@ -40,6 +40,20 @@ function isWeakSuggestion(text: string, draft?: string | null): boolean {
   return false;
 }
 
+function looksLikeCandidateVoice(text: string): boolean {
+  const low = String(text || '').trim().toLowerCase();
+  if (!low) return false;
+  return (
+    /\bme interesa postular\b/.test(low) ||
+    /\bme llamo\b/.test(low) ||
+    /\bsoy de\b/.test(low) ||
+    /\bvivo en\b/.test(low) ||
+    /\btengo licencia\b/.test(low) ||
+    /\btengo experiencia\b/.test(low) ||
+    /\bestoy buscando trabajo\b/.test(low)
+  );
+}
+
 export async function registerAiRoutes(app: FastifyInstance) {
   app.post('/:id/ai-suggest', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
@@ -93,7 +107,9 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (!suggestion.trim()) {
         return reply.code(502).send({ error: 'El agente devolvió un SEND_MESSAGE sin texto.' });
       }
-      if (isWeakSuggestion(suggestion, typeof draft === 'string' ? draft : '')) {
+      const weakOrOffRole =
+        isWeakSuggestion(suggestion, typeof draft === 'string' ? draft : '') || looksLikeCandidateVoice(suggestion);
+      if (weakOrOffRole) {
         const backup = await buildBackupSuggestion({
           workspaceId: access.workspaceId,
           conversationId: conversation.id,
@@ -189,7 +205,7 @@ async function buildBackupSuggestion(params: {
           {
             role: 'system',
             content:
-              'Eres asistente de CRM. Devuelve SOLO una sugerencia breve (2-4 líneas) en español, humana y contextual para responder al candidato. Sin formato rígido, sin menús 1/2/3, sin frases vacías.',
+              'Eres copiloto de CRM para operadores humanos. Devuelve SOLO una sugerencia breve (2-4 líneas) en español, humana y contextual para responder al contacto. Debes escribir como operador/agente, nunca como candidato/postulante. Sin formato rígido, sin menús 1/2/3, sin frases vacías.',
           },
           {
             role: 'user',

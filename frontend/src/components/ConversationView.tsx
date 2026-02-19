@@ -116,6 +116,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [templateSending, setTemplateSending] = useState(false);
   const [templateVariables, setTemplateVariables] = useState<string[]>([]);
+  const [templateCatalogOptions, setTemplateCatalogOptions] = useState<
+    Array<{ name: string; category?: string | null; language?: string | null; status?: string | null; source?: string | null }>
+  >([]);
+  const [templateCatalogLoading, setTemplateCatalogLoading] = useState(false);
+  const [templateCatalogError, setTemplateCatalogError] = useState<string | null>(null);
+  const [selectedTemplateName, setSelectedTemplateName] = useState('');
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const previousCountRef = useRef(0);
@@ -175,6 +181,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setSendError(null);
       setModeSaving(false);
       setTemplateVariables([]);
+      setTemplateCatalogOptions([]);
+      setTemplateCatalogLoading(false);
+      setTemplateCatalogError(null);
+      setSelectedTemplateName('');
       setDownloadError(null);
       setDetailsOpen(false);
       setInterviewDay('');
@@ -582,12 +592,20 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     isInterviewContext ? templateInterviewInvite : templateGeneralFollowup;
   const requiredTemplateLabel =
     isInterviewContext ? 'entrevista' : 'seguimiento';
-  const templateVariableCount =
-    requiredTemplate === 'postulacion_completar_1'
-      ? 1
-      : requiredTemplate === 'entrevista_confirmacion_1'
-      ? 3
-      : 0;
+  const templateNameForSend = selectedTemplateName || requiredTemplate || '';
+  const selectedTemplateOption = templateCatalogOptions.find(
+    (opt) => String(opt?.name || '').trim() === String(templateNameForSend || '').trim()
+  );
+  const templateVariableCount = (() => {
+    const selected = String(templateNameForSend || '').trim();
+    if (!selected) return 0;
+    const selectedLower = selected.toLowerCase();
+    const recruitDefault = String(templateGeneralFollowup || '').trim();
+    const interviewDefault = String(templateInterviewInvite || '').trim();
+    if (selectedLower === 'postulacion_completar_1' || (recruitDefault && selected === recruitDefault)) return 1;
+    if (selectedLower === 'entrevista_confirmacion_1' || (interviewDefault && selected === interviewDefault)) return 3;
+    return 0;
+  })();
   const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF'; label: string }> = [
     { key: 'RECRUIT', label: 'Reclutamiento' },
     { key: 'INTERVIEW', label: 'Entrevista' },
@@ -636,19 +654,79 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     : '—';
 
   useEffect(() => {
+    if (!conversation || isAdmin) {
+      setTemplateCatalogOptions([]);
+      setTemplateCatalogError(null);
+      setTemplateCatalogLoading(false);
+      setSelectedTemplateName('');
+      return;
+    }
+    let cancelled = false;
+    const mode = isInterviewContext ? 'INTERVIEW' : 'RECRUIT';
+    const load = async () => {
+      setTemplateCatalogLoading(true);
+      setTemplateCatalogError(null);
+      try {
+        const data: any = await apiClient.get(`/api/conversations/template-options?mode=${encodeURIComponent(mode)}`);
+        if (cancelled) return;
+        const list = Array.isArray(data?.templates) ? data.templates : [];
+        setTemplateCatalogOptions(list);
+        const preferredFromRequired = String(requiredTemplate || '').trim();
+        const preferredFromDefault = String(data?.selectedDefault || '').trim();
+        const initial =
+          (preferredFromRequired && list.some((t: any) => String(t?.name || '').trim() === preferredFromRequired)
+            ? preferredFromRequired
+            : '') ||
+          (preferredFromDefault && list.some((t: any) => String(t?.name || '').trim() === preferredFromDefault)
+            ? preferredFromDefault
+            : '') ||
+          (list.length > 0 ? String(list[0]?.name || '').trim() : '');
+        setSelectedTemplateName(initial);
+        if (list.length === 0) {
+          setTemplateCatalogError('No hay plantillas disponibles/sincronizadas en este workspace.');
+        }
+      } catch (err: any) {
+        if (cancelled) return;
+        setTemplateCatalogOptions([]);
+        setSelectedTemplateName(String(requiredTemplate || '').trim());
+        setTemplateCatalogError(err?.message || 'No se pudo cargar el catálogo de plantillas.');
+      } finally {
+        if (!cancelled) setTemplateCatalogLoading(false);
+      }
+    };
+    load().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [conversation?.id, isAdmin, isInterviewContext, requiredTemplate]);
+
+  useEffect(() => {
     if (!conversation) {
       setTemplateVariables([]);
       return;
     }
-    if (!requiredTemplate || templateVariableCount === 0) {
+    if (!templateNameForSend || templateVariableCount === 0) {
       setTemplateVariables([]);
       return;
     }
-    if (requiredTemplate === 'postulacion_completar_1') {
-      setTemplateVariables([templateConfig.defaultJobTitle || '']);
+    const recruitDefault = String(templateGeneralFollowup || '').trim();
+    const interviewDefault = String(templateInterviewInvite || '').trim();
+    if (
+      templateNameForSend === 'postulacion_completar_1' ||
+      (recruitDefault && templateNameForSend === recruitDefault)
+    ) {
+      const fallbackName =
+        String(conversation?.contact?.candidateNameManual || '').trim() ||
+        String(conversation?.contact?.candidateName || '').trim() ||
+        String(conversation?.contact?.displayName || '').trim() ||
+        'Postulante';
+      setTemplateVariables([fallbackName]);
       return;
     }
-    if (requiredTemplate === 'entrevista_confirmacion_1') {
+    if (
+      templateNameForSend === 'entrevista_confirmacion_1' ||
+      (interviewDefault && templateNameForSend === interviewDefault)
+    ) {
       setTemplateVariables([
         conversation?.interviewDay || templateConfig.defaultInterviewDay || '',
         conversation?.interviewTime || templateConfig.defaultInterviewTime || '',
@@ -659,25 +737,31 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     setTemplateVariables(Array.from({ length: templateVariableCount }, () => ''));
   }, [
     conversation?.id,
-    requiredTemplate,
+    templateNameForSend,
     templateVariableCount,
+    templateGeneralFollowup,
+    templateInterviewInvite,
     templateConfig.defaultJobTitle,
     templateConfig.defaultInterviewDay,
     templateConfig.defaultInterviewTime,
     templateConfig.defaultInterviewLocation,
+    conversation?.contact?.candidateNameManual,
+    conversation?.contact?.candidateName,
+    conversation?.contact?.displayName,
     conversation?.interviewDay,
     conversation?.interviewTime,
     conversation?.interviewLocation
   ]);
 
   const handleSendTemplate = async () => {
-    if (!conversation || !requiredTemplate) return;
+    if (!conversation || !templateNameForSend) return;
     setTemplateSending(true);
     setSendError(null);
     try {
       await apiClient.post(`/api/conversations/${conversation.id}/send-template`, {
-        templateName: requiredTemplate,
-        variables: templateVariables.map(value => value.trim())
+        templateName: templateNameForSend,
+        variables: templateVariables.map(value => value.trim()),
+        templateLanguageCode: selectedTemplateOption?.language ? String(selectedTemplateOption.language).trim() : null
       });
       onMessageSent();
     } catch (err: any) {
@@ -1312,8 +1396,23 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         {safeModeActionError && <div style={{ color: '#b93800', fontSize: 13 }}>{safeModeActionError}</div>}
         {hasConversation && !isAdmin && (
           <>
-            {requiredTemplate ? (
+            {templateCatalogOptions.length > 0 ? (
               <>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <div style={{ fontSize: 12, color: '#666' }}>Plantilla a enviar (catálogo del workspace)</div>
+                  <select
+                    value={templateNameForSend}
+                    onChange={(e) => setSelectedTemplateName(e.target.value)}
+                    disabled={templateCatalogLoading}
+                    style={{ padding: 8, borderRadius: 4, border: '1px solid #ccc', maxWidth: 560 }}
+                  >
+                    {templateCatalogOptions.map((opt) => (
+                      <option key={String(opt.name)} value={String(opt.name)}>
+                        {opt.name} · {opt.category || 'Sin categoría'} · {opt.language || '—'} · {opt.status || '—'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 {templateVariableCount > 0 && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <div style={{ fontSize: 12, color: '#666' }}>Variables plantilla ({templateVariableCount}):</div>
@@ -1336,15 +1435,17 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 )}
                 <button
                   onClick={handleSendTemplate}
-                  disabled={templateSending || !templateVariablesReady}
+                  disabled={templateSending || !templateVariablesReady || !templateNameForSend}
                   style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 4, border: '1px solid #111', background: '#fff' }}
                 >
-                  {templateSending ? 'Enviando plantilla...' : `Enviar plantilla de ${requiredTemplateLabel}`}
+                  {templateSending ? 'Enviando plantilla...' : 'Enviar plantilla seleccionada'}
                 </button>
               </>
             ) : (
               <div style={{ fontSize: 13, color: '#b93800' }}>
-                No hay plantilla configurada para {requiredTemplateLabel}. Ve a Configuración → Plantillas WhatsApp.
+                {templateCatalogLoading
+                  ? 'Cargando catálogo de plantillas...'
+                  : templateCatalogError || `No hay plantillas configuradas para ${requiredTemplateLabel}. Ve a Configuración → Plantillas WhatsApp.`}
               </div>
             )}
           </>

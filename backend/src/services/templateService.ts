@@ -132,14 +132,14 @@ export function resolveTemplateVariables(
       String(templateName || '').trim().toLowerCase() ===
       String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase();
     const candidateName = String(conversationOverrides?.candidateName || '').trim();
-    const v1 =
-      normalized[0] ||
-      (isLegacyRecruitTemplate ? '' : candidateName) ||
-      conversationOverrides?.jobTitle ||
-      templates.defaultJobTitle ||
-      DEFAULT_JOB_TITLE ||
-      candidateName ||
-      'Postulante';
+    const v1 = isLegacyRecruitTemplate
+      ? normalized[0] ||
+        conversationOverrides?.jobTitle ||
+        templates.defaultJobTitle ||
+        DEFAULT_JOB_TITLE ||
+        candidateName ||
+        'Postulante'
+      : normalized[0] || candidateName || 'Postulante';
     return [v1];
   }
 
