@@ -28,6 +28,18 @@ function buildAiMessageText(m: {
   return `${base}\n[Adjunto transcrito]\n${snippet}`;
 }
 
+function isWeakSuggestion(text: string, draft?: string | null): boolean {
+  const value = String(text || '').trim();
+  if (!value) return true;
+  const low = value.toLowerCase();
+  const draftNorm = String(draft || '').trim().toLowerCase();
+  if (draftNorm && low === draftNorm) return true;
+  if (value.length < 8) return true;
+  if (/^(hola|ok|dale|si|sí|gracias)\.?$/i.test(value)) return true;
+  if (/problema técnico para generar la sugerencia/i.test(value)) return true;
+  return false;
+}
+
 export async function registerAiRoutes(app: FastifyInstance) {
   app.post('/:id/ai-suggest', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
@@ -81,7 +93,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (!suggestion.trim()) {
         return reply.code(502).send({ error: 'El agente devolvió un SEND_MESSAGE sin texto.' });
       }
-      if (/problema técnico para generar la sugerencia/i.test(suggestion)) {
+      if (isWeakSuggestion(suggestion, typeof draft === 'string' ? draft : '')) {
         const backup = await buildBackupSuggestion({
           workspaceId: access.workspaceId,
           conversationId: conversation.id,
@@ -114,9 +126,12 @@ async function buildBackupSuggestion(params: {
     prisma.conversation.findFirst({
       where: { id: params.conversationId, workspaceId: params.workspaceId },
       include: {
+        program: {
+          select: { id: true, name: true, slug: true, agentSystemPrompt: true },
+        },
         messages: {
           orderBy: { timestamp: 'asc' },
-          take: 14,
+          take: 120,
           select: { direction: true, text: true, transcriptText: true, mediaType: true },
         },
       },
@@ -137,15 +152,24 @@ async function buildBackupSuggestion(params: {
   ) as string[];
   if (models.length === 0) return null;
 
-  const transcript = (conversation.messages || [])
+  const messages = conversation.messages || [];
+  const transcript = messages
     .map((m) => {
       const role = m.direction === 'INBOUND' ? 'CANDIDATO' : 'STAFF';
       const text = buildAiMessageText(m as any).trim();
       return `${role}: ${truncateText(text, 500)}`;
     })
     .filter(Boolean)
-    .slice(-10)
+    .slice(-35)
     .join('\n');
+  const lastInbound = messages
+    .slice()
+    .reverse()
+    .find((m) => String(m.direction || '').toUpperCase() === 'INBOUND');
+  const lastInboundText = String(lastInbound ? buildAiMessageText(lastInbound as any) : '').trim();
+  const programPrompt = String((conversation as any)?.program?.agentSystemPrompt || '').trim();
+  const programName =
+    String((conversation as any)?.program?.name || (conversation as any)?.program?.slug || '').trim() || 'Program actual';
 
   const client = new OpenAI({ apiKey });
   const completion = await createChatCompletionWithModelFallback(
@@ -155,15 +179,26 @@ async function buildBackupSuggestion(params: {
         {
           role: 'system',
           content:
-            'Eres asistente de CRM. Devuelve SOLO una sugerencia breve (2-4 líneas) en español, humana y contextual para responder al candidato. No uses menús rígidos ni formato 1/2/3.',
+            'Eres asistente de CRM. Devuelve SOLO una sugerencia breve (2-4 líneas) en español, humana y contextual para responder al candidato. Sin formato rígido, sin menús 1/2/3, sin frases vacías.',
         },
         {
           role: 'user',
-          content: `Contexto reciente:\n${transcript || '(sin historial)'}\n\nBorrador actual: ${params.draft || '(vacío)'}\n\nEntrega solo el texto sugerido final.`,
+          content: `Programa actual: ${programName}
+Instrucciones del programa (resumen): ${truncateText(programPrompt || '(sin prompt)', 1400)}
+
+Último mensaje del candidato: ${lastInboundText || '(sin mensaje)'}
+
+Historial reciente:
+${transcript || '(sin historial)'}
+
+Borrador actual: ${params.draft || '(vacío)'}
+
+Entrega solo el texto sugerido final.
+Si falta información para avanzar, pide SOLO el siguiente dato faltante en lenguaje natural.`,
         },
       ],
       temperature: 0.3,
-      max_tokens: 220,
+      max_tokens: 260,
     },
     models,
     {
@@ -173,8 +208,9 @@ async function buildBackupSuggestion(params: {
   );
 
   const text = String(completion.completion.choices?.[0]?.message?.content || '').trim();
-  if (!text) return null;
-  return text.replace(/```[\s\S]*?```/g, '').trim() || null;
+  const cleaned = text.replace(/```[\s\S]*?```/g, '').trim();
+  if (!cleaned || isWeakSuggestion(cleaned, params.draft || '')) return null;
+  return cleaned;
 }
 
 function formatAiError(err: any, model?: string | null): { status: number; message: string } {
