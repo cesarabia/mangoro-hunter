@@ -100,6 +100,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
           draft: typeof draft === 'string' ? draft : '',
         });
         if (backup) return { suggestion: backup };
+        return reply.code(502).send({ error: 'No pude generar una sugerencia contextual ahora. Inténtalo de nuevo en unos segundos.' });
       }
       return { suggestion };
     } catch (err: any) {
@@ -172,18 +173,27 @@ async function buildBackupSuggestion(params: {
     String((conversation as any)?.program?.name || (conversation as any)?.program?.slug || '').trim() || 'Program actual';
 
   const client = new OpenAI({ apiKey });
-  const completion = await createChatCompletionWithModelFallback(
-    client,
-    {
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Eres asistente de CRM. Devuelve SOLO una sugerencia breve (2-4 líneas) en español, humana y contextual para responder al candidato. Sin formato rígido, sin menús 1/2/3, sin frases vacías.',
-        },
-        {
-          role: 'user',
-          content: `Programa actual: ${programName}
+  const deterministicFallback = (() => {
+    const clipped = truncateText(lastInboundText || '', 90);
+    if (!clipped) {
+      return `Gracias por escribir. Para avanzar en ${programName}, te sugiero pedir solo el siguiente dato faltante en una frase breve.`;
+    }
+    return `Gracias por tu mensaje. Te leí: “${clipped}”. Para avanzar, te sugiero confirmar el dato faltante más importante en una sola pregunta breve.`;
+  })();
+  let cleaned = '';
+  try {
+    const completion = await createChatCompletionWithModelFallback(
+      client,
+      {
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Eres asistente de CRM. Devuelve SOLO una sugerencia breve (2-4 líneas) en español, humana y contextual para responder al candidato. Sin formato rígido, sin menús 1/2/3, sin frases vacías.',
+          },
+          {
+            role: 'user',
+            content: `Programa actual: ${programName}
 Instrucciones del programa (resumen): ${truncateText(programPrompt || '(sin prompt)', 1400)}
 
 Último mensaje del candidato: ${lastInboundText || '(sin mensaje)'}
@@ -195,20 +205,22 @@ Borrador actual: ${params.draft || '(vacío)'}
 
 Entrega solo el texto sugerido final.
 Si falta información para avanzar, pide SOLO el siguiente dato faltante en lenguaje natural.`,
-        },
-      ],
-      temperature: 0.3,
-      max_tokens: 260,
-    },
-    models,
-    {
-      perRequestTimeoutMs: 5000,
-      totalTimeoutMs: 8000,
-    }
-  );
-
-  const text = String(completion.completion.choices?.[0]?.message?.content || '').trim();
-  const cleaned = text.replace(/```[\s\S]*?```/g, '').trim();
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 260,
+      },
+      models,
+      {
+        perRequestTimeoutMs: 5000,
+        totalTimeoutMs: 8000,
+      }
+    );
+    const text = String(completion.completion.choices?.[0]?.message?.content || '').trim();
+    cleaned = text.replace(/```[\s\S]*?```/g, '').trim();
+  } catch {
+    cleaned = deterministicFallback;
+  }
   if (!cleaned || isWeakSuggestion(cleaned, params.draft || '')) return null;
   return cleaned;
 }
