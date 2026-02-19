@@ -3,6 +3,10 @@ import { prisma } from '../db/client';
 import OpenAI from 'openai';
 import { resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { runAgent } from '../services/agent/agentRuntimeService';
+import { getEffectiveOpenAiKey } from '../services/aiService';
+import { DEFAULT_AI_MODEL, getSystemConfig } from '../services/configService';
+import { resolveModelChain } from '../services/modelResolutionService';
+import { createChatCompletionWithModelFallback } from '../services/openAiChatCompletionService';
 
 function truncateText(text: string, maxLength: number): string {
   if (!text) return '';
@@ -77,13 +81,100 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (!suggestion.trim()) {
         return reply.code(502).send({ error: 'El agente devolvió un SEND_MESSAGE sin texto.' });
       }
+      if (/problema técnico para generar la sugerencia/i.test(suggestion)) {
+        const backup = await buildBackupSuggestion({
+          workspaceId: access.workspaceId,
+          conversationId: conversation.id,
+          draft: typeof draft === 'string' ? draft : '',
+        });
+        if (backup) return { suggestion: backup };
+      }
       return { suggestion };
     } catch (err: any) {
+      const backup = await buildBackupSuggestion({
+        workspaceId: access.workspaceId,
+        conversationId: conversation.id,
+        draft: typeof draft === 'string' ? draft : '',
+      }).catch(() => null);
+      if (backup) return { suggestion: backup };
       const { status, message } = formatAiError(err, null);
       request.log.error({ err }, 'ai_suggest failed');
       return reply.code(status).send({ error: message });
     }
   });
+}
+
+async function buildBackupSuggestion(params: {
+  workspaceId: string;
+  conversationId: string;
+  draft: string;
+}): Promise<string | null> {
+  const [config, conversation] = await Promise.all([
+    getSystemConfig().catch(() => null),
+    prisma.conversation.findFirst({
+      where: { id: params.conversationId, workspaceId: params.workspaceId },
+      include: {
+        messages: {
+          orderBy: { timestamp: 'asc' },
+          take: 14,
+          select: { direction: true, text: true, transcriptText: true, mediaType: true },
+        },
+      },
+    }),
+  ]);
+  if (!config || !conversation) return null;
+  const apiKey = getEffectiveOpenAiKey(config);
+  if (!apiKey) return null;
+
+  const modelChain = resolveModelChain({
+    modelOverride: (config as any)?.aiModelOverride || null,
+    modelAlias: (config as any)?.aiModelAlias || null,
+    legacyModel: (config as any)?.aiModel || null,
+    defaultModel: DEFAULT_AI_MODEL,
+  });
+  const models = modelChain.modelChain.filter(
+    (m, idx, arr) => m && arr.indexOf(m) === idx
+  ) as string[];
+  if (models.length === 0) return null;
+
+  const transcript = (conversation.messages || [])
+    .map((m) => {
+      const role = m.direction === 'INBOUND' ? 'CANDIDATO' : 'STAFF';
+      const text = buildAiMessageText(m as any).trim();
+      return `${role}: ${truncateText(text, 500)}`;
+    })
+    .filter(Boolean)
+    .slice(-10)
+    .join('\n');
+
+  const client = new OpenAI({ apiKey });
+  const completion = await createChatCompletionWithModelFallback(
+    client,
+    {
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Eres asistente de CRM. Devuelve SOLO una sugerencia breve (2-4 líneas) en español, humana y contextual para responder al candidato. No uses menús rígidos ni formato 1/2/3.',
+        },
+        {
+          role: 'user',
+          content: `Contexto reciente:\n${transcript || '(sin historial)'}\n\nBorrador actual: ${params.draft || '(vacío)'}\n\nEntrega solo el texto sugerido final.`,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 220,
+    },
+    models,
+    {
+      perRequestTimeoutMs: 5000,
+      totalTimeoutMs: 8000,
+    }
+  );
+
+  const text = String(completion.completion.choices?.[0]?.message?.content || '').trim();
+  if (!text) return null;
+  return text.replace(/```[\s\S]*?```/g, '').trim() || null;
 }
 
 function formatAiError(err: any, model?: string | null): { status: number; message: string } {
