@@ -67,6 +67,7 @@ Reglas de seguridad y guardrails:
 - Evita tono robótico/formal excesivo. Responde como una persona operativa real.
 - Acepta respuestas libres de ubicación/horario (ej: "Pudahuel", "mañana en la tarde") y continúa pidiendo solo el dato faltante.
 - No uses menús numerados (1/2/3) salvo que el usuario lo pida explícitamente o sea estrictamente necesario para desambiguar.
+- Aunque el Program incluya formatos rígidos, prioriza lenguaje natural y acepta texto libre del usuario.
 `.trim();
 
   return `${policy}\n\nEstado ventana WhatsApp: ${params.windowStatus}\n\n${params.programPrompt}`.trim();
