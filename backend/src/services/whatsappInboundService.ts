@@ -3408,8 +3408,10 @@ function extractNameFromText(text?: string): string | null {
   if (hasDisqualifyingIntent) return null;
   if (/^[A-Za-zÁÉÍÓÚáéíóúÑñ\s]{2,60}$/.test(candidateChunk)) {
     const normalized = normalizeName(candidateChunk);
+    const words = normalized ? normalized.split(/\s+/).filter(Boolean) : [];
     if (
       normalized &&
+      words.length >= 2 &&
       isValidName(normalized) &&
       !containsDataLabel(normalized) &&
       !isSuspiciousCandidateName(normalized)
@@ -3447,8 +3449,11 @@ function isValidName(value?: string | null): boolean {
   if (stripAccents(lower).includes("informacion") || /\binfo\b/.test(stripAccents(lower))) return false;
   const blacklist = [
     "hola",
+    "holi",
     "buenas",
     "buenos",
+    "wena",
+    "wenas",
     "gracias",
     "ok",
     "vale",
