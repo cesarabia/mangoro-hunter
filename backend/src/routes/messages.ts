@@ -11,8 +11,15 @@ export async function registerMessageRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'Archivo no disponible' });
     }
 
-    const absolutePath = path.join(__dirname, '..', message.mediaPath);
-    if (!fs.existsSync(absolutePath)) {
+    const mediaPath = String(message.mediaPath || '').trim();
+    const candidates = [
+      path.resolve(process.cwd(), mediaPath), // new storage (backend/uploads/...)
+      path.resolve(path.join(__dirname, '..'), mediaPath), // legacy storage under dist
+      path.resolve(process.cwd(), 'dist', mediaPath), // additional legacy fallback
+    ];
+    const absolutePath = candidates.find((p) => fs.existsSync(p));
+
+    if (!absolutePath) {
       return reply.code(404).send({ error: 'Archivo no encontrado' });
     }
 

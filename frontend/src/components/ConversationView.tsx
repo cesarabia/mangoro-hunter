@@ -833,13 +833,21 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     setDownloadError(null);
     try {
       const token = localStorage.getItem('token');
+      const workspaceId = localStorage.getItem('workspaceId');
       const res = await fetch(`/api/messages/${message.id}/download`, {
         headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(workspaceId ? { 'X-Workspace-Id': workspaceId } : {}),
         }
       });
       if (!res.ok) {
-        throw new Error('No se pudo descargar el archivo');
+        let errorText = '';
+        try {
+          errorText = await res.text();
+        } catch {
+          errorText = '';
+        }
+        throw new Error(errorText || 'No se pudo descargar el archivo');
       }
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);

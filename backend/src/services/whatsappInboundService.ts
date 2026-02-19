@@ -79,7 +79,8 @@ interface InboundMessageParams {
   config?: SystemConfig;
 }
 
-const UPLOADS_BASE = path.join(__dirname, "..", "uploads");
+// Persist uploads outside build artifacts. `dist` is recreated on each deploy.
+const UPLOADS_BASE = path.join(process.cwd(), "uploads");
 
 async function mergeOrCreateContact(params: { workspaceId: string; waId: string; preferredId?: string }) {
   const candidates = buildWaIdCandidates(params.waId);
@@ -2698,7 +2699,8 @@ async function processMediaAttachment(
     const filename = `${options.messageId}.${extension}`;
     const absolutePath = path.join(dir, filename);
     await fs.writeFile(absolutePath, buffer);
-    const relativePath = path.relative(path.join(__dirname, ".."), absolutePath);
+    // Store path relative to backend cwd, so it remains valid across builds.
+    const relativePath = path.relative(process.cwd(), absolutePath);
 
     await prisma.message.update({
       where: { id: options.messageId },
