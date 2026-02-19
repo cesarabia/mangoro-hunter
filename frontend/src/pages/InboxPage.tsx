@@ -35,6 +35,7 @@ export const InboxPage: React.FC<Props> = ({
   const [backendError, setBackendError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newPhone, setNewPhone] = useState('');
+  const [newContactName, setNewContactName] = useState('');
   const [newMode, setNewMode] = useState<'RECRUIT' | 'INTERVIEW' | 'OFF'>('RECRUIT');
   const [newStatus, setNewStatus] = useState<'NEW' | 'OPEN' | 'CLOSED'>('NEW');
   const [sendTemplateNow, setSendTemplateNow] = useState(true);
@@ -273,6 +274,7 @@ export const InboxPage: React.FC<Props> = ({
 
   const resetAddModal = () => {
     setNewPhone('');
+    setNewContactName('');
     setNewMode('RECRUIT');
     setNewStatus('NEW');
     setSendTemplateNow(true);
@@ -358,6 +360,7 @@ export const InboxPage: React.FC<Props> = ({
     try {
       const res = await apiClient.post('/api/conversations/create-and-send', {
         phoneE164: newPhone.trim(),
+        contactName: newContactName.trim() || null,
         mode: newMode,
         status: newStatus,
         sendTemplateNow,
@@ -566,6 +569,16 @@ export const InboxPage: React.FC<Props> = ({
                 value={newPhone}
                 onChange={e => setNewPhone(e.target.value)}
                 placeholder="Ej: 56982345846"
+                style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+              Nombre visible (opcional)
+              <input
+                type="text"
+                value={newContactName}
+                onChange={e => setNewContactName(e.target.value)}
+                placeholder="Ej: Juan Pérez"
                 style={{ padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
               />
             </label>

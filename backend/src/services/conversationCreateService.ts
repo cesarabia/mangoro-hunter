@@ -16,6 +16,7 @@ type Status = 'NEW' | 'OPEN' | 'CLOSED';
 
 export interface CreateAndSendParams {
   phoneE164: string;
+  contactName?: string | null;
   mode?: string | null;
   status?: string | null;
   sendTemplateNow?: boolean;
@@ -49,6 +50,17 @@ function normalizeStatus(value?: string | null): Status {
   return 'NEW';
 }
 
+function normalizeManualName(value?: string | null): string | null {
+  if (typeof value !== 'string') return null;
+  const cleaned = value
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return null;
+  if (cleaned.length < 2 || cleaned.length > 120) return null;
+  if (/[:;{}<>]/.test(cleaned)) return null;
+  return cleaned;
+}
+
 export async function createConversationAndMaybeSend(
   params: CreateAndSendParams
 ): Promise<CreateAndSendResult> {
@@ -64,6 +76,7 @@ export async function createConversationAndMaybeSend(
   }
   const mode = normalizeMode(params.mode);
   const status = normalizeStatus(params.status);
+  const manualName = normalizeManualName(params.contactName);
 
   const phoneLine = await (async () => {
     const explicit = typeof params.phoneLineId === 'string' && params.phoneLineId.trim() ? params.phoneLineId.trim() : null;
@@ -86,8 +99,16 @@ export async function createConversationAndMaybeSend(
 
   const contact = await prisma.contact.upsert({
     where: { workspaceId_waId: { workspaceId, waId } },
-    update: { phone: waId },
-    create: { workspaceId, waId, phone: waId }
+    update: {
+      phone: waId,
+      ...(manualName ? { candidateNameManual: manualName, displayName: manualName } : {}),
+    },
+    create: {
+      workspaceId,
+      waId,
+      phone: waId,
+      ...(manualName ? { candidateNameManual: manualName, displayName: manualName, name: manualName } : {}),
+    }
   });
 
   let conversation = await prisma.conversation.findFirst({
@@ -144,20 +165,22 @@ export async function createConversationAndMaybeSend(
     templateUsed = templateName;
     variablesUsed = finalVariables;
 
-    await prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        direction: 'OUTBOUND',
-        text: `[TEMPLATE] ${templateName}`,
-        rawPayload: serializeJson({
-          template: templateName,
-          variables: finalVariables || [],
-          sendResult
-        }),
-        timestamp: new Date(),
-        read: true
-      }
-    });
+    if (sendResult.success) {
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          direction: 'OUTBOUND',
+          text: `[TEMPLATE] ${templateName}`,
+          rawPayload: serializeJson({
+            template: templateName,
+            variables: finalVariables || [],
+            sendResult
+          }),
+          timestamp: new Date(),
+          read: true
+        }
+      });
+    }
 
     await prisma.outboundMessageLog
       .create({

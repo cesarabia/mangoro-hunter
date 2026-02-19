@@ -571,7 +571,7 @@ export async function runAgent(event: AgentEvent): Promise<{
   const lastMessages = await prisma.message.findMany({
     where: { conversationId: event.conversationId },
     orderBy: { timestamp: 'desc' },
-    take: 25,
+    take: event.eventType === 'AI_SUGGEST' ? 120 : 25,
     select: {
       id: true,
       direction: true,
@@ -894,11 +894,17 @@ export async function runAgent(event: AgentEvent): Promise<{
   let fallbackReason: string | null = null;
 
   const latestInboundText = (() => {
-    const inbound = (lastMessages || []).find((m) => String((m as any).direction || '').toUpperCase() === 'INBOUND');
+    const inbound = (lastMessages || [])
+      .slice()
+      .reverse()
+      .find((m) => String((m as any).direction || '').toUpperCase() === 'INBOUND');
     return String((inbound as any)?.transcriptText || (inbound as any)?.text || event.draftText || '').trim();
   })();
   const lastOutboundText = (() => {
-    const outbound = (lastMessages || []).find((m) => String((m as any).direction || '').toUpperCase() === 'OUTBOUND');
+    const outbound = (lastMessages || [])
+      .slice()
+      .reverse()
+      .find((m) => String((m as any).direction || '').toUpperCase() === 'OUTBOUND');
     return normalizeComparableText(String((outbound as any)?.transcriptText || (outbound as any)?.text || ''));
   })();
   const tools = toolDefinitions({

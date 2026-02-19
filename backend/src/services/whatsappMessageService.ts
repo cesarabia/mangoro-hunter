@@ -96,7 +96,7 @@ export async function sendWhatsAppTemplate(
   toWaId: string,
   templateName: string,
   variables?: string[],
-  options?: { phoneNumberId?: string | null; enforceSafeMode?: boolean }
+  options?: { phoneNumberId?: string | null; enforceSafeMode?: boolean; languageCode?: string | null }
 ): Promise<SendResult> {
   const config = await getSystemConfig();
 
@@ -132,49 +132,74 @@ export async function sendWhatsAppTemplate(
       : undefined;
 
   const baseLanguageCode =
-    config.templateLanguageCode?.trim() || DEFAULT_TEMPLATE_LANGUAGE_CODE;
+    options?.languageCode?.trim() ||
+    config.templateLanguageCode?.trim() ||
+    DEFAULT_TEMPLATE_LANGUAGE_CODE;
   const forcedLanguageByTemplate: Record<string, string> = {
     [DEFAULT_TEMPLATE_GENERAL_FOLLOWUP]: DEFAULT_TEMPLATE_LANGUAGE_CODE,
     [DEFAULT_TEMPLATE_INTERVIEW_INVITE]: DEFAULT_TEMPLATE_LANGUAGE_CODE
   };
-  const languageCode = forcedLanguageByTemplate[templateName] || baseLanguageCode;
 
-  const body: any = {
-    messaging_product: 'whatsapp',
-    to: toWaId,
-    type: 'template',
-    template: {
-      name: templateName,
-      language: { code: languageCode }
-    }
-  };
-  if (components) {
-    body.template.components = components;
-  }
+  const requestedCodes = [
+    forcedLanguageByTemplate[templateName] || baseLanguageCode,
+    baseLanguageCode,
+    'es',
+    'es_419',
+    'es_CL',
+  ]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean)
+    .filter((v, idx, arr) => arr.indexOf(v) === idx);
 
   const authHeader = `Bearer ${config.whatsappToken}`;
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: authHeader
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      return { success: false, error: errorText || `HTTP ${res.status}` };
+  let lastError = 'Unknown error';
+  for (const languageCode of requestedCodes) {
+    const body: any = {
+      messaging_product: 'whatsapp',
+      to: toWaId,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode }
+      }
+    };
+    if (components) {
+      body.template.components = components;
     }
 
-    const data = (await res.json()) as any;
-    return {
-      success: true,
-      messageId: data.messages?.[0]?.id
-    };
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-    return { success: false, error: errorMessage };
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: authHeader
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        lastError = errorText || `HTTP ${res.status}`;
+        // Retry with next language only when translation is missing for this locale.
+        const low = String(lastError || '').toLowerCase();
+        const shouldRetryLanguage =
+          low.includes('template name') && low.includes('does not exist in');
+        if (shouldRetryLanguage) {
+          continue;
+        }
+        return { success: false, error: lastError };
+      }
+
+      const data = (await res.json()) as any;
+      return {
+        success: true,
+        messageId: data.messages?.[0]?.id
+      };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : 'Unknown error';
+      return { success: false, error: lastError };
+    }
   }
+
+  return { success: false, error: lastError };
 }

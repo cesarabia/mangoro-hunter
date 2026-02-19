@@ -179,6 +179,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
     const body = request.body as {
       phoneE164?: string;
+      contactName?: string | null;
       phoneLineId?: string | null;
       mode?: string | null;
       status?: string | null;
@@ -194,6 +195,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     try {
       const result = await createConversationAndMaybeSend({
         phoneE164: body.phoneE164,
+        contactName: typeof body.contactName === 'string' ? body.contactName : null,
         mode: body.mode,
         status: body.status,
         sendTemplateNow: body.sendTemplateNow !== false,

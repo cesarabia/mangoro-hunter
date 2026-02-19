@@ -3292,11 +3292,13 @@ async function maybeUpdateContactName(
     name: string | null;
     displayName?: string | null;
     candidateName?: string | null;
+    candidateNameManual?: string | null;
   },
   profileName?: string,
   fallbackText?: string,
   config?: SystemConfig,
 ) {
+  const manualLockedName = String((contact as any).candidateNameManual || '').trim();
   const updates: Record<string, string | null> = {};
   if (contact.candidateName && isSuspiciousCandidateName(contact.candidateName)) {
     updates.candidateName = null;
@@ -3314,7 +3316,7 @@ async function maybeUpdateContactName(
     labeledParts,
   });
   const candidate = candidateFromLabels || extractNameFromText(fallbackText);
-  if (candidate && isValidName(candidate) && !isSuspiciousCandidateName(candidate)) {
+  if (!manualLockedName && candidate && isValidName(candidate) && !isSuspiciousCandidateName(candidate)) {
     const existing = existingCandidate;
     const existingScore = scoreName(existing);
     const candidateScore = scoreName(candidate);
@@ -3338,6 +3340,7 @@ async function maybeUpdateContactName(
   }
   let currentCandidate = updates.candidateName ?? contact.candidateName ?? null;
   if (
+    !manualLockedName &&
     (!currentCandidate || isSuspiciousCandidateName(currentCandidate)) &&
     config &&
     shouldTryAiNameExtraction(fallbackText)
@@ -3352,6 +3355,7 @@ async function maybeUpdateContactName(
     }
   }
   if (
+    !manualLockedName &&
     currentCandidate &&
     !isSuspiciousCandidateName(currentCandidate) &&
     contact.candidateName &&
