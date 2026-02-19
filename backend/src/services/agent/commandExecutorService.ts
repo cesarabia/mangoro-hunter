@@ -101,12 +101,28 @@ function isSuspiciousCandidateName(value?: string | null): boolean {
     'pdf',
     'word',
     'docx',
+    'licencia',
+    'clase b',
+    'clase a',
+    'conductor',
+    'manejo',
   ];
   if (patterns.some((p) => lower.includes(normalizeForNameChecks(p)))) return true;
   if (/^soy\s+de\b/.test(lower) || /^soy\s+del\b/.test(lower) || /^soy\s+de\s+la\b/.test(lower)) return true;
   if (/^(vivo|resido)\s+en\b/.test(lower)) return true;
   if (/\b\d{1,2}:\d{2}\b/.test(lower)) return true;
   return false;
+}
+
+function humanizeOutboundText(raw: string): string {
+  const text = String(raw || '').trim();
+  if (!text) return text;
+  let out = text;
+  out = out.replace(/responde\s+as[ií]\s*:\s*/gi, '');
+  out = out.replace(/escr[ií]belo?\s+en\s+una\s+sola\s+l[ií]nea/gi, 'escríbelo completo, como te salga natural');
+  out = out.replace(/formato\s+obligatorio/gi, 'formato sugerido');
+  out = out.replace(/\n{3,}/g, '\n\n');
+  return out.trim();
 }
 
 function safeOutboundBlockedReason(params: {
@@ -884,7 +900,7 @@ export async function executeAgentResponse(params: {
         continue;
       }
 
-      let effectiveText = cmd.text || '';
+      let effectiveText = cmd.text ? humanizeOutboundText(String(cmd.text)) : '';
       let guardrailOverride: any = null;
       if (cmd.type === 'SESSION_TEXT' && effectiveText) {
         const askedFields = detectAskedFields(effectiveText);
@@ -1430,7 +1446,7 @@ export async function executeAgentResponse(params: {
           typeof (args as any).dedupeKey === 'string' && String((args as any).dedupeKey).trim()
             ? String((args as any).dedupeKey).trim()
             : `staff_send_customer:${params.agentRunId}:${stableHash(textArg).slice(0, 10)}`;
-        let effectiveText = textArg;
+        let effectiveText = humanizeOutboundText(textArg);
         let payloadHash = stableHash(`TEXT:${effectiveText}`);
 
         const window = await computeWhatsAppWindowStatusStrict(customerConversation.id).catch(() => 'OUTSIDE_24H' as WhatsAppWindowStatus);
