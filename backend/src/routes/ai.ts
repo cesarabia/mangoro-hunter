@@ -221,7 +221,8 @@ Si falta información para avanzar, pide SOLO el siguiente dato faltante en leng
   } catch {
     cleaned = deterministicFallback;
   }
-  if (!cleaned || isWeakSuggestion(cleaned, params.draft || '')) return null;
+  if (!cleaned) return deterministicFallback;
+  if (isWeakSuggestion(cleaned, params.draft || '')) return deterministicFallback;
   return cleaned;
 }
 
