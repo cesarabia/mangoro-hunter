@@ -32,18 +32,20 @@ function checkSafeOutbound(toWaId: string, config: any): { allowed: boolean; rea
 export async function sendWhatsAppText(
   toWaId: string,
   text: string,
-  options?: { phoneNumberId?: string | null }
+  options?: { phoneNumberId?: string | null; enforceSafeMode?: boolean }
 ): Promise<SendResult> {
   const config = await getSystemConfig();
   const normalizedText = normalizeEscapedWhitespace(text);
 
-  const safe = checkSafeOutbound(toWaId, config);
-  if (!safe.allowed) {
-    const policy = getOutboundPolicy(config);
-    return {
-      success: false,
-      error: `SAFE_OUTBOUND_BLOCKED:${policy}:${safe.reason || 'BLOCKED'}`,
-    };
+  if (options?.enforceSafeMode !== false) {
+    const safe = checkSafeOutbound(toWaId, config);
+    if (!safe.allowed) {
+      const policy = getOutboundPolicy(config);
+      return {
+        success: false,
+        error: `SAFE_OUTBOUND_BLOCKED:${policy}:${safe.reason || 'BLOCKED'}`,
+      };
+    }
   }
 
   const phoneNumberId = options?.phoneNumberId || config.whatsappPhoneId;
@@ -94,17 +96,19 @@ export async function sendWhatsAppTemplate(
   toWaId: string,
   templateName: string,
   variables?: string[],
-  options?: { phoneNumberId?: string | null }
+  options?: { phoneNumberId?: string | null; enforceSafeMode?: boolean }
 ): Promise<SendResult> {
   const config = await getSystemConfig();
 
-  const safe = checkSafeOutbound(toWaId, config);
-  if (!safe.allowed) {
-    const policy = getOutboundPolicy(config);
-    return {
-      success: false,
-      error: `SAFE_OUTBOUND_BLOCKED:${policy}:${safe.reason || 'BLOCKED'}`,
-    };
+  if (options?.enforceSafeMode !== false) {
+    const safe = checkSafeOutbound(toWaId, config);
+    if (!safe.allowed) {
+      const policy = getOutboundPolicy(config);
+      return {
+        success: false,
+        error: `SAFE_OUTBOUND_BLOCKED:${policy}:${safe.reason || 'BLOCKED'}`,
+      };
+    }
   }
 
   const phoneNumberId = options?.phoneNumberId || config.whatsappPhoneId;

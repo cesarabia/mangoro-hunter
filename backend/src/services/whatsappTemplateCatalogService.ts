@@ -90,6 +90,59 @@ async function fetchMetaTemplates(args: {
   }
 }
 
+async function fetchWabaIdFromPhoneNumber(args: {
+  baseUrl: string;
+  token: string;
+  waPhoneNumberId: string;
+}): Promise<{ wabaId: string | null; error: string | null }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const url = `${args.baseUrl.replace(/\/+$/, '')}/${args.waPhoneNumberId}?fields=whatsapp_business_account`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${args.token}`,
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      return { wabaId: null, error: `HTTP ${res.status}${text ? `: ${text.slice(0, 220)}` : ''}` };
+    }
+    const json = (await res.json()) as any;
+    const wabaId = normalizeName((json as any)?.whatsapp_business_account?.id);
+    if (!wabaId) {
+      return { wabaId: null, error: 'WABA_ID_NOT_FOUND' };
+    }
+    return { wabaId, error: null };
+  } catch (err: any) {
+    const message = err?.name === 'AbortError' ? 'timeout' : String(err?.message || 'request_failed');
+    return { wabaId: null, error: message };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function toFriendlySyncError(raw: string | null): string | null {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const low = text.toLowerCase();
+  if (low.includes('nonexisting field (message_templates) on node type (user)')) {
+    return 'No se pudo sincronizar desde Meta: el WABA ID configurado no es válido para plantillas. Revisa el wabaId de la línea o reconecta la integración.';
+  }
+  if (low.includes('waba_id_not_found')) {
+    return 'No se pudo sincronizar desde Meta: no encontramos el WABA asociado al phone_number_id de la línea.';
+  }
+  if (low.includes('unsupported post request') || low.includes('object with id')) {
+    return 'No se pudo sincronizar desde Meta: revisa permisos/token y que el phone_number_id / wabaId pertenezcan a tu cuenta.';
+  }
+  if (low.includes('timeout')) {
+    return 'Meta tardó demasiado en responder al sincronizar plantillas. Intenta de nuevo en unos segundos.';
+  }
+  return `No se pudo sincronizar catálogo Meta (${text.slice(0, 180)}).`;
+}
+
 export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise<WorkspaceTemplateCatalogResult> {
   const [config, templateConfig, workspace, activeLines] = await Promise.all([
     getSystemConfig(),
@@ -141,19 +194,49 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
 
   const token = String((config as any)?.whatsappToken || '').trim();
   const baseUrl = String((config as any)?.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL).trim() || DEFAULT_WHATSAPP_BASE_URL;
-  const wabaId =
-    normalizeName(activeLines.find((l: any) => String(l?.wabaId || '').trim())?.wabaId) || null;
+  const explicitWabaIds = Array.from(
+    new Set(
+      activeLines
+        .map((l: any) => normalizeName(l?.wabaId))
+        .filter(Boolean)
+    )
+  );
+  const phoneNumberIds = Array.from(
+    new Set(
+      activeLines
+        .map((l: any) => normalizeName(l?.waPhoneNumberId))
+        .filter(Boolean)
+    )
+  );
 
-  const metaEnabled = Boolean(token && wabaId);
-  let syncError: string | null = null;
+  const metaEnabled = Boolean(token && (explicitWabaIds.length > 0 || phoneNumberIds.length > 0));
+  let syncErrorRaw: string | null = null;
   let synced = false;
+  let resolvedWabaId: string | null = explicitWabaIds[0] || null;
 
-  if (metaEnabled && wabaId) {
-    const meta = await fetchMetaTemplates({ baseUrl, token, wabaId });
-    if (meta.error) {
-      syncError = meta.error;
-    } else {
+  if (metaEnabled && token) {
+    const candidateWabaIds = new Set<string>(explicitWabaIds);
+
+    // If line does not have a valid WABA configured, try to resolve from phone_number_id.
+    for (const phoneId of phoneNumberIds) {
+      if (!phoneId) continue;
+      const resolved = await fetchWabaIdFromPhoneNumber({ baseUrl, token, waPhoneNumberId: phoneId });
+      if (resolved.wabaId) {
+        candidateWabaIds.add(resolved.wabaId);
+      } else if (!syncErrorRaw && resolved.error) {
+        syncErrorRaw = resolved.error;
+      }
+    }
+
+    for (const candidate of candidateWabaIds) {
+      const meta = await fetchMetaTemplates({ baseUrl, token, wabaId: candidate });
+      if (meta.error) {
+        syncErrorRaw = meta.error;
+        continue;
+      }
       synced = true;
+      resolvedWabaId = candidate;
+      syncErrorRaw = null;
       for (const row of meta.data) {
         const name = normalizeName((row as any)?.name);
         if (!name) continue;
@@ -169,6 +252,7 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
           source: 'META',
         });
       }
+      break;
     }
   }
 
@@ -180,8 +264,8 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
     sync: {
       metaEnabled,
       synced,
-      syncError,
-      wabaId,
+      syncError: toFriendlySyncError(syncErrorRaw),
+      wabaId: resolvedWabaId,
     },
   };
 }

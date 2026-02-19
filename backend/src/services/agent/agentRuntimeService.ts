@@ -423,8 +423,20 @@ function applyCommandDefaults(
     }
     if (command === 'SEND_MESSAGE') {
       next.channel = 'WHATSAPP';
-      if (!next.type) {
+      const explicitType = typeof next.type === 'string' ? next.type.trim().toUpperCase() : '';
+      if (defaults.eventType === 'AI_SUGGEST') {
+        // Suggestion is a draft for a human user, so default to SESSION_TEXT to avoid
+        // template semantics failures when outside 24h.
+        next.type = explicitType || 'SESSION_TEXT';
+        const hasTemplateName = typeof next.templateName === 'string' && next.templateName.trim().length > 0;
+        const hasText = typeof next.text === 'string' && next.text.trim().length > 0;
+        if (next.type === 'TEMPLATE' && !hasTemplateName && hasText) {
+          next.type = 'SESSION_TEXT';
+        }
+      } else if (!explicitType) {
         next.type = defaults.windowStatus === 'OUTSIDE_24H' ? 'TEMPLATE' : 'SESSION_TEXT';
+      } else {
+        next.type = explicitType;
       }
       if (!next.dedupeKey) {
         const seed = `${defaults.conversationId}:${defaults.eventType}:${defaults.inboundMessageId || ''}:${next.type}:${next.text || ''}:${next.templateName || ''}`;
@@ -1146,6 +1158,22 @@ export async function runAgent(event: AgentEvent): Promise<{
             path: ['commands'],
             message: 'INBOUND_MESSAGE requiere al menos 1 SEND_MESSAGE (para no dejar al humano sin respuesta).',
           });
+        }
+      }
+      if (event.eventType === 'AI_SUGGEST' && semanticIssues.length > 0) {
+        const notesText = typeof validated.data.notes === 'string' ? validated.data.notes.trim() : '';
+        const draftText = typeof event.draftText === 'string' ? event.draftText.trim() : '';
+        const fallbackText = draftText || notesText || latestInboundText || '';
+        if (fallbackText) {
+          for (const cmd of validated.data.commands as any[]) {
+            if (!cmd || typeof cmd !== 'object' || cmd.command !== 'SEND_MESSAGE') continue;
+            const cmdType = String(cmd.type || '').toUpperCase();
+            if (cmdType === 'SESSION_TEXT') {
+              const current = typeof cmd.text === 'string' ? cmd.text.trim() : '';
+              if (!current) cmd.text = fallbackText;
+            }
+          }
+          semanticIssues.splice(0, semanticIssues.length, ...validateAgentResponseSemantics(validated.data));
         }
       }
       if (semanticIssues.length > 0) {

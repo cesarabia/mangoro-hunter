@@ -200,7 +200,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         variables: body.variables,
         templateNameOverride: body.templateName ?? null,
         workspaceId: access.workspaceId,
-        phoneLineId: typeof body.phoneLineId === 'string' ? body.phoneLineId.trim() : body.phoneLineId ?? null
+        phoneLineId: typeof body.phoneLineId === 'string' ? body.phoneLineId.trim() : body.phoneLineId ?? null,
+        enforceSafeMode: false,
       });
 
       if (body.sendTemplateNow !== false && result.sendResult && !result.sendResult.success) {
@@ -610,7 +611,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
 
     const sendResultRaw = await sendWhatsAppText(conversation.contact.waId, text, {
-      phoneNumberId: conversation.phoneLine?.waPhoneNumberId || null
+      phoneNumberId: conversation.phoneLine?.waPhoneNumberId || null,
+      enforceSafeMode: false,
     }).catch(err => ({
       success: false,
       error: err instanceof Error ? err.message : 'Unknown error'
@@ -948,7 +950,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     });
 
     const sendResult = await sendWhatsAppTemplate(conversation.contact.waId, body.templateName, finalVariables, {
-      phoneNumberId: conversation.phoneLine?.waPhoneNumberId || null
+      phoneNumberId: conversation.phoneLine?.waPhoneNumberId || null,
+      enforceSafeMode: false,
     });
     if (!sendResult.success) {
       return reply.code(502).send({ error: sendResult.error || 'Falló el envío de plantilla' });

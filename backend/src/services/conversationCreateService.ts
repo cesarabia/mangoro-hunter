@@ -23,6 +23,7 @@ export interface CreateAndSendParams {
   templateNameOverride?: string | null;
   workspaceId?: string | null;
   phoneLineId?: string | null;
+  enforceSafeMode?: boolean;
 }
 
 export interface CreateAndSendResult {
@@ -137,7 +138,8 @@ export async function createConversationAndMaybeSend(
     });
 
     sendResult = await sendWhatsAppTemplate(waId, templateName, finalVariables, {
-      phoneNumberId: phoneLine.waPhoneNumberId
+      phoneNumberId: phoneLine.waPhoneNumberId,
+      enforceSafeMode: params.enforceSafeMode !== false,
     });
     templateUsed = templateName;
     variablesUsed = finalVariables;
