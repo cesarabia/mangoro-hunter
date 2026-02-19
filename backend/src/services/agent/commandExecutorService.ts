@@ -331,7 +331,7 @@ function buildLoopBreakerQuestion(params: { field: string; contact: any }): stri
     if (candidateName) {
       return `Solo para confirmar: ¿tu nombre es ${candidateName}? Si no, escríbelo completo.`;
     }
-    return 'Para avanzar necesito tu nombre y apellido (escríbelo en una sola línea).';
+    return 'Para avanzar necesito tu nombre y apellido. Me lo puedes escribir como te salga natural.';
   }
   if (params.field === 'location') {
     if (comuna) {
