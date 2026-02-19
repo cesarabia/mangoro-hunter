@@ -629,6 +629,12 @@ async function maybeHandleStaffDeterministicRouter(params: {
     });
     const toolResult = Array.isArray(toolExec.results) && toolExec.results.length > 0 ? toolExec.results[0] : null;
     const replyText = buildStaffRouterReply(command, toolResult);
+    // Dedupe by inbound message when available so repeated staff commands
+    // ("casos nuevos", "buscar ...") do not get muted by ANTI_LOOP_DEDUPE_KEY.
+    const replyDedupeSeed = params.inboundMessageId
+      ? `mid:${params.inboundMessageId}`
+      : `toolRun:${toolRun.id}`;
+    const replyDedupeKey = `staff_cmd_reply:${stableHash(`${params.conversation.id}:${replyDedupeSeed}`).slice(0, 16)}`;
 
     const replyRun = await prisma.agentRunLog.create({
       data: {
@@ -653,7 +659,7 @@ async function maybeHandleStaffDeterministicRouter(params: {
               channel: 'WHATSAPP',
               type: 'SESSION_TEXT',
               text: replyText,
-              dedupeKey: `staff_cmd_reply:${stableHash(`${params.conversation.id}:${inbound}:${replyText}`).slice(0, 16)}`,
+              dedupeKey: replyDedupeKey,
             },
           ],
         }),
@@ -674,7 +680,7 @@ async function maybeHandleStaffDeterministicRouter(params: {
             channel: 'WHATSAPP',
             type: 'SESSION_TEXT',
             text: replyText,
-            dedupeKey: `staff_cmd_reply:${stableHash(`${params.conversation.id}:${inbound}:${replyText}`).slice(0, 16)}`,
+            dedupeKey: replyDedupeKey,
           } as any,
         ],
       } as any,
