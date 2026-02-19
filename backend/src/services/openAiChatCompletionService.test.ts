@@ -12,7 +12,7 @@ test('normalizeChatCreateArgsForModel migrates max_tokens for gpt-5 models', () 
 
   assert.equal(normalized.max_tokens, undefined);
   assert.equal(normalized.max_completion_tokens, 42);
-  assert.equal(normalized.temperature, 0);
+  assert.equal(normalized.temperature, undefined);
 });
 
 test('normalizeChatCreateArgsForModel keeps max_tokens for non gpt-5 models', () => {

@@ -30,6 +30,9 @@ export function normalizeChatCreateArgsForModel(createArgs: any, model: string):
       next.max_completion_tokens = next.max_tokens;
     }
     delete next.max_tokens;
+    // GPT-5 chat endpoints currently only accept the default temperature.
+    // Omit explicit temperature to avoid request errors.
+    delete next.temperature;
   }
   return next;
 }
