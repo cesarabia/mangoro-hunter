@@ -40,6 +40,62 @@ function isWeakSuggestion(text: string, draft?: string | null): boolean {
   return false;
 }
 
+function normalizeComparableText(text: string): string {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function hasForbiddenMetaPhrases(text: string): boolean {
+  const low = String(text || '').toLowerCase();
+  if (!low) return false;
+  return (
+    /\bte sugiero\b/.test(low) ||
+    /\bcomo recomendaci[oó]n\b/.test(low) ||
+    /\bpara avanzar en\b/.test(low) ||
+    /\bprograma actual\b/.test(low) ||
+    /\binstrucciones del programa\b/.test(low) ||
+    /\bborrador actual\b/.test(low) ||
+    /\bhistorial reciente\b/.test(low) ||
+    /\bestoy obteniendo\b/.test(low) ||
+    /\bun momento\b/.test(low)
+  );
+}
+
+function mentionsProgramIdentity(text: string, programName?: string | null, programSlug?: string | null): boolean {
+  const low = String(text || '').toLowerCase();
+  const pName = String(programName || '').trim().toLowerCase();
+  const pSlug = String(programSlug || '').trim().toLowerCase();
+  if (!low) return false;
+  if (pName && pName.length >= 5 && low.includes(pName)) return true;
+  if (pSlug && pSlug.length >= 5 && low.includes(pSlug)) return true;
+  return false;
+}
+
+function validateSendableSuggestion(params: {
+  suggestion: string;
+  draft?: string | null;
+  lastInboundText?: string | null;
+  programName?: string | null;
+  programSlug?: string | null;
+}): { ok: boolean; reason?: string } {
+  const suggestion = String(params.suggestion || '').trim();
+  if (!suggestion) return { ok: false, reason: 'EMPTY' };
+  if (isWeakSuggestion(suggestion, params.draft || null)) return { ok: false, reason: 'WEAK' };
+  if (hasForbiddenMetaPhrases(suggestion)) return { ok: false, reason: 'META_PHRASE' };
+  if (mentionsProgramIdentity(suggestion, params.programName, params.programSlug)) return { ok: false, reason: 'PROGRAM_IDENTITY' };
+  const inboundNorm = normalizeComparableText(String(params.lastInboundText || ''));
+  const suggestionNorm = normalizeComparableText(suggestion);
+  if (inboundNorm && suggestionNorm && inboundNorm === suggestionNorm) {
+    return { ok: false, reason: 'ECHO_INBOUND' };
+  }
+  return { ok: true };
+}
+
 function looksLikeCandidateVoice(text: string): boolean {
   const low = String(text || '').trim().toLowerCase();
   if (!low) return false;
@@ -82,6 +138,13 @@ export async function registerAiRoutes(app: FastifyInstance) {
     }
 
     try {
+      const lastInbound = (conversation.messages || [])
+        .slice()
+        .reverse()
+        .find((m: any) => String(m?.direction || '').toUpperCase() === 'INBOUND');
+      const lastInboundText = lastInbound ? buildAiMessageText(lastInbound as any).trim() : '';
+      const programName = String((conversation as any)?.program?.name || '').trim();
+      const programSlug = String((conversation as any)?.program?.slug || '').trim();
       const agent = await runAgent({
         workspaceId: access.workspaceId,
         conversationId: conversation.id,
@@ -107,15 +170,37 @@ export async function registerAiRoutes(app: FastifyInstance) {
       if (!suggestion.trim()) {
         return reply.code(502).send({ error: 'El agente devolvió un SEND_MESSAGE sin texto.' });
       }
+      const validation = validateSendableSuggestion({
+        suggestion,
+        draft: typeof draft === 'string' ? draft : '',
+        lastInboundText,
+        programName,
+        programSlug,
+      });
       const weakOrOffRole =
-        isWeakSuggestion(suggestion, typeof draft === 'string' ? draft : '') || looksLikeCandidateVoice(suggestion);
+        !validation.ok || looksLikeCandidateVoice(suggestion);
       if (weakOrOffRole) {
         const backup = await buildBackupSuggestion({
           workspaceId: access.workspaceId,
           conversationId: conversation.id,
           draft: typeof draft === 'string' ? draft : '',
+          lastInboundText,
+          programName,
+          programSlug,
+          rejectReason: validation.reason || (looksLikeCandidateVoice(suggestion) ? 'CANDIDATE_VOICE' : 'WEAK'),
         });
-        if (backup) return { suggestion: backup };
+        if (backup) {
+          const backupValidation = validateSendableSuggestion({
+            suggestion: backup,
+            draft: typeof draft === 'string' ? draft : '',
+            lastInboundText,
+            programName,
+            programSlug,
+          });
+          if (backupValidation.ok && !looksLikeCandidateVoice(backup)) {
+            return { suggestion: backup };
+          }
+        }
         return reply.code(502).send({ error: 'No pude generar una sugerencia contextual ahora. Inténtalo de nuevo en unos segundos.' });
       }
       return { suggestion };
@@ -124,6 +209,7 @@ export async function registerAiRoutes(app: FastifyInstance) {
         workspaceId: access.workspaceId,
         conversationId: conversation.id,
         draft: typeof draft === 'string' ? draft : '',
+        rejectReason: 'AGENT_RUNTIME_ERROR',
       }).catch(() => null);
       if (backup) return { suggestion: backup };
       const { status, message } = formatAiError(err, null);
@@ -137,6 +223,10 @@ async function buildBackupSuggestion(params: {
   workspaceId: string;
   conversationId: string;
   draft: string;
+  lastInboundText?: string | null;
+  programName?: string | null;
+  programSlug?: string | null;
+  rejectReason?: string | null;
 }): Promise<string | null> {
   const [config, conversation] = await Promise.all([
     getSystemConfig().catch(() => null),
@@ -183,19 +273,14 @@ async function buildBackupSuggestion(params: {
     .slice()
     .reverse()
     .find((m) => String(m.direction || '').toUpperCase() === 'INBOUND');
-  const lastInboundText = String(lastInbound ? buildAiMessageText(lastInbound as any) : '').trim();
+  const lastInboundText = String(params.lastInboundText || (lastInbound ? buildAiMessageText(lastInbound as any) : '')).trim();
   const programPrompt = String((conversation as any)?.program?.agentSystemPrompt || '').trim();
   const programName =
-    String((conversation as any)?.program?.name || (conversation as any)?.program?.slug || '').trim() || 'Program actual';
+    String(params.programName || (conversation as any)?.program?.name || (conversation as any)?.program?.slug || '').trim() || 'Program actual';
+  const programSlug = String(params.programSlug || (conversation as any)?.program?.slug || '').trim();
 
   const client = new OpenAI({ apiKey });
-  const deterministicFallback = (() => {
-    const clipped = truncateText(lastInboundText || '', 90);
-    if (!clipped) {
-      return `Gracias por escribir. Para avanzar en ${programName}, te sugiero pedir solo el siguiente dato faltante en una frase breve.`;
-    }
-    return `Gracias por tu mensaje. Te leí: “${clipped}”. Para avanzar, te sugiero confirmar el dato faltante más importante en una sola pregunta breve.`;
-  })();
+  const deterministicFallback = 'Gracias por tu mensaje. Para continuar, cuéntame un poco más y te ayudo altiro.';
   let cleaned = '';
   try {
     const completion = await createChatCompletionWithModelFallback(
@@ -205,7 +290,7 @@ async function buildBackupSuggestion(params: {
           {
             role: 'system',
             content:
-              'Eres copiloto de CRM para operadores humanos. Devuelve SOLO una sugerencia breve (2-4 líneas) en español, humana y contextual para responder al contacto. Debes escribir como operador/agente, nunca como candidato/postulante. Sin formato rígido, sin menús 1/2/3, sin frases vacías.',
+              'Eres copiloto de CRM para operadores humanos. Devuelve SOLO un mensaje final enviable al contacto (sin encabezados, sin notas). No copies textual el último mensaje del contacto. No uses frases meta como "te sugiero", "como recomendación", "para avanzar en". No menciones el nombre del programa ni detalles de sistema. Debes escribir como operador/agente, nunca como candidato/postulante.',
           },
           {
             role: 'user',
@@ -218,6 +303,8 @@ Historial reciente:
 ${transcript || '(sin historial)'}
 
 Borrador actual: ${params.draft || '(vacío)'}
+Rechazo previo: ${String(params.rejectReason || 'N/A')}
+Slug del programa (no mencionar en salida): ${programSlug || '(sin slug)'}
 
 Entrega solo el texto sugerido final.
 Si falta información para avanzar, pide SOLO el siguiente dato faltante en lenguaje natural.`,
@@ -238,7 +325,13 @@ Si falta información para avanzar, pide SOLO el siguiente dato faltante en leng
     cleaned = deterministicFallback;
   }
   if (!cleaned) return deterministicFallback;
-  if (isWeakSuggestion(cleaned, params.draft || '')) return deterministicFallback;
+  if (isWeakSuggestion(cleaned, params.draft || '')) return null;
+  if (hasForbiddenMetaPhrases(cleaned)) return null;
+  if (looksLikeCandidateVoice(cleaned)) return null;
+  if (mentionsProgramIdentity(cleaned, programName, programSlug)) return null;
+  const inboundNorm = normalizeComparableText(lastInboundText);
+  const cleanedNorm = normalizeComparableText(cleaned);
+  if (inboundNorm && cleanedNorm && inboundNorm === cleanedNorm) return null;
   return cleaned;
 }
 

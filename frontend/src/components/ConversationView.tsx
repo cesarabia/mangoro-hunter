@@ -116,6 +116,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [templateSending, setTemplateSending] = useState(false);
   const [templateVariables, setTemplateVariables] = useState<string[]>([]);
+  const [templatePanelOpen, setTemplatePanelOpen] = useState(false);
   const [templateCatalogOptions, setTemplateCatalogOptions] = useState<
     Array<{ name: string; category?: string | null; language?: string | null; status?: string | null; source?: string | null }>
   >([]);
@@ -185,6 +186,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setTemplateCatalogLoading(false);
       setTemplateCatalogError(null);
       setSelectedTemplateName('');
+      setTemplatePanelOpen(false);
       setDownloadError(null);
       setDetailsOpen(false);
       setInterviewDay('');
@@ -224,6 +226,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       return;
     }
     setDetailsOpen(false);
+    setTemplatePanelOpen(false);
     setAutoScrollEnabled(true);
     scrollToBottom();
     previousCountRef.current = conversation.messages?.length ?? 0;
@@ -1395,60 +1398,77 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         {safeModeActionStatus && <div style={{ color: '#1a7f37', fontSize: 13 }}>{safeModeActionStatus}</div>}
         {safeModeActionError && <div style={{ color: '#b93800', fontSize: 13 }}>{safeModeActionError}</div>}
         {hasConversation && !isAdmin && (
-          <>
-            {templateCatalogOptions.length > 0 ? (
-              <>
-                <div style={{ display: 'grid', gap: 6 }}>
-                  <div style={{ fontSize: 12, color: '#666' }}>Plantilla a enviar (catálogo del workspace)</div>
-                  <select
-                    value={templateNameForSend}
-                    onChange={(e) => setSelectedTemplateName(e.target.value)}
-                    disabled={templateCatalogLoading}
-                    style={{ padding: 8, borderRadius: 4, border: '1px solid #ccc', maxWidth: 560 }}
-                  >
-                    {templateCatalogOptions.map((opt) => (
-                      <option key={String(opt.name)} value={String(opt.name)}>
-                        {opt.name} · {opt.category || 'Sin categoría'} · {opt.language || '—'} · {opt.status || '—'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {templateVariableCount > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ fontSize: 12, color: '#666' }}>Variables plantilla ({templateVariableCount}):</div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {Array.from({ length: templateVariableCount }, (_, index) => (
-                        <input
-                          key={index}
-                          value={templateVariables[index] || ''}
-                          onChange={e => {
-                            const next = [...templateVariables];
-                            next[index] = e.target.value;
-                            setTemplateVariables(next);
-                          }}
-                          placeholder={index === 0 ? 'Variable 1 (ej: nombre)' : `Variable ${index + 1}`}
-                          style={{ flex: '1 1 160px', minWidth: 160, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
-                        />
+          <div style={{ display: 'grid', gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setTemplatePanelOpen((prev) => !prev)}
+              style={{
+                alignSelf: 'flex-start',
+                padding: '6px 10px',
+                borderRadius: 8,
+                border: '1px solid #ccc',
+                background: '#fff',
+                fontSize: 12,
+                fontWeight: 800,
+              }}
+            >
+              {templatePanelOpen ? 'Ocultar plantillas' : 'Mostrar plantillas'}
+            </button>
+            {templatePanelOpen ? (
+              templateCatalogOptions.length > 0 ? (
+                <>
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    <div style={{ fontSize: 12, color: '#666' }}>Plantilla a enviar (catálogo del workspace)</div>
+                    <select
+                      value={templateNameForSend}
+                      onChange={(e) => setSelectedTemplateName(e.target.value)}
+                      disabled={templateCatalogLoading}
+                      style={{ padding: 8, borderRadius: 4, border: '1px solid #ccc', maxWidth: 560 }}
+                    >
+                      {templateCatalogOptions.map((opt) => (
+                        <option key={String(opt.name)} value={String(opt.name)}>
+                          {opt.name} · {opt.category || 'Sin categoría'} · {opt.language || '—'} · {opt.status || '—'}
+                        </option>
                       ))}
-                    </div>
+                    </select>
                   </div>
-                )}
-                <button
-                  onClick={handleSendTemplate}
-                  disabled={templateSending || !templateVariablesReady || !templateNameForSend}
-                  style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 4, border: '1px solid #111', background: '#fff' }}
-                >
-                  {templateSending ? 'Enviando plantilla...' : 'Enviar plantilla seleccionada'}
-                </button>
-              </>
-            ) : (
-              <div style={{ fontSize: 13, color: '#b93800' }}>
-                {templateCatalogLoading
-                  ? 'Cargando catálogo de plantillas...'
-                  : templateCatalogError || `No hay plantillas configuradas para ${requiredTemplateLabel}. Ve a Configuración → Plantillas WhatsApp.`}
-              </div>
-            )}
-          </>
+                  {templateVariableCount > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <div style={{ fontSize: 12, color: '#666' }}>Variables plantilla ({templateVariableCount}):</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        {Array.from({ length: templateVariableCount }, (_, index) => (
+                          <input
+                            key={index}
+                            value={templateVariables[index] || ''}
+                            onChange={e => {
+                              const next = [...templateVariables];
+                              next[index] = e.target.value;
+                              setTemplateVariables(next);
+                            }}
+                            placeholder={index === 0 ? 'Variable 1 (ej: nombre)' : `Variable ${index + 1}`}
+                            style={{ flex: '1 1 160px', minWidth: 160, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <button
+                    onClick={handleSendTemplate}
+                    disabled={templateSending || !templateVariablesReady || !templateNameForSend}
+                    style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 4, border: '1px solid #111', background: '#fff' }}
+                  >
+                    {templateSending ? 'Enviando plantilla...' : 'Enviar plantilla seleccionada'}
+                  </button>
+                </>
+              ) : (
+                <div style={{ fontSize: 13, color: '#b93800' }}>
+                  {templateCatalogLoading
+                    ? 'Cargando catálogo de plantillas...'
+                    : templateCatalogError || `No hay plantillas configuradas para ${requiredTemplateLabel}. Ve a Configuración → Plantillas WhatsApp.`}
+                </div>
+              )
+            ) : null}
+          </div>
         )}
       </div>
 

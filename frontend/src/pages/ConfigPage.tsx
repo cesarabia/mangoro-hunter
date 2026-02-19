@@ -131,6 +131,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [templateDefaultsSaving, setTemplateDefaultsSaving] = useState(false);
   const [templateDefaultsStatus, setTemplateDefaultsStatus] = useState<string | null>(null);
   const [templateDefaultsError, setTemplateDefaultsError] = useState<string | null>(null);
+  const [workspaceTemplateCatalog, setWorkspaceTemplateCatalog] = useState<
+    Array<{ name: string; category?: string | null; language?: string | null; status?: string | null; source?: string | null }>
+  >([]);
+  const [workspaceTemplateCatalogLoading, setWorkspaceTemplateCatalogLoading] = useState(false);
+  const [workspaceTemplateCatalogError, setWorkspaceTemplateCatalogError] = useState<string | null>(null);
+  const [workspaceTemplateSyncInfo, setWorkspaceTemplateSyncInfo] = useState<{ synced?: boolean; syncError?: string | null }>({});
   const [staffDefaultProgramIdDraft, setStaffDefaultProgramIdDraft] = useState<string>('');
   const [staffDefaultProgramSaving, setStaffDefaultProgramSaving] = useState(false);
   const [staffDefaultProgramStatus, setStaffDefaultProgramStatus] = useState<string | null>(null);
@@ -438,6 +444,29 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setTemplateDefaultsError(err?.message || 'No se pudo guardar');
     } finally {
       setTemplateDefaultsSaving(false);
+    }
+  };
+
+  const loadWorkspaceTemplateCatalog = async () => {
+    setWorkspaceTemplateCatalogLoading(true);
+    setWorkspaceTemplateCatalogError(null);
+    try {
+      const data: any = await apiClient.get('/api/conversations/template-options?mode=RECRUIT');
+      const list = Array.isArray(data?.templates) ? data.templates : [];
+      setWorkspaceTemplateCatalog(list);
+      setWorkspaceTemplateSyncInfo({
+        synced: Boolean(data?.sync?.synced),
+        syncError: typeof data?.sync?.syncError === 'string' ? data.sync.syncError : null,
+      });
+      if (list.length === 0) {
+        setWorkspaceTemplateCatalogError('No hay plantillas disponibles/sincronizadas para este workspace.');
+      }
+    } catch (err: any) {
+      setWorkspaceTemplateCatalog([]);
+      setWorkspaceTemplateSyncInfo({});
+      setWorkspaceTemplateCatalogError(err?.message || 'No se pudo cargar el catálogo de plantillas.');
+    } finally {
+      setWorkspaceTemplateCatalogLoading(false);
     }
   };
 
@@ -1209,6 +1238,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   useEffect(() => {
     loadWorkspaces().catch(() => {});
     loadWorkspaceDetails().catch(() => {});
+    loadWorkspaceTemplateCatalog().catch(() => {});
     loadWorkspaceStages().catch(() => {});
     loadPrograms().catch(() => {});
     loadPhoneLines().catch(() => {});
@@ -1219,6 +1249,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
   useEffect(() => {
     loadWorkspaceDetails().catch(() => {});
+    loadWorkspaceTemplateCatalog().catch(() => {});
     loadWorkspaceStages().catch(() => {});
   }, [workspaceId]);
 
@@ -1230,6 +1261,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   useEffect(() => {
     if (tab === 'workspace') {
       loadWorkspaceDetails().catch(() => {});
+      loadWorkspaceTemplateCatalog().catch(() => {});
       loadWorkspaceStages().catch(() => {});
       loadPrograms().catch(() => {});
       loadPhoneLines().catch(() => {});
@@ -2300,23 +2332,92 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               <div style={{ display: 'grid', gap: 10 }}>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
                   Plantilla default para inicio (reclutamiento)
-                  <input
+                  <select
                     value={templateRecruitDefaultDraft}
                     onChange={(e) => setTemplateRecruitDefaultDraft(e.target.value)}
-                    placeholder="Ej: enviorapido_postulacion_inicio_v1"
                     style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
-                  />
+                  >
+                    <option value="">(sin default)</option>
+                    {workspaceTemplateCatalog.map((tpl) => (
+                      <option key={`recruit-${tpl.name}`} value={String(tpl.name)}>
+                        {tpl.name} · {tpl.category || 'Sin categoría'} · {tpl.language || '—'} · {tpl.status || '—'}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
                   Plantilla default para confirmación de entrevista
-                  <input
+                  <select
                     value={templateInterviewDefaultDraft}
                     onChange={(e) => setTemplateInterviewDefaultDraft(e.target.value)}
-                    placeholder="Ej: enviorapido_confirma_entrevista_v1"
                     style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
-                  />
+                  >
+                    <option value="">(sin default)</option>
+                    {workspaceTemplateCatalog.map((tpl) => (
+                      <option key={`interview-${tpl.name}`} value={String(tpl.name)}>
+                        {tpl.name} · {tpl.category || 'Sin categoría'} · {tpl.language || '—'} · {tpl.status || '—'}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </div>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => loadWorkspaceTemplateCatalog().catch(() => {})}
+                  disabled={workspaceTemplateCatalogLoading}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 10,
+                    border: '1px solid #ccc',
+                    background: '#fff',
+                    fontWeight: 800,
+                    fontSize: 12,
+                  }}
+                >
+                  {workspaceTemplateCatalogLoading ? 'Sincronizando…' : 'Refrescar catálogo'}
+                </button>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  Catálogo Meta:{' '}
+                  <b style={{ color: workspaceTemplateSyncInfo.synced ? '#1a7f37' : '#7a3b00' }}>
+                    {workspaceTemplateSyncInfo.synced ? 'Sincronizado' : 'No sincronizado'}
+                  </b>
+                </div>
+              </div>
+              {workspaceTemplateSyncInfo.synced === false && workspaceTemplateSyncInfo.syncError ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#7a3b00' }}>
+                  {workspaceTemplateSyncInfo.syncError}
+                </div>
+              ) : null}
+              {workspaceTemplateCatalogError ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{workspaceTemplateCatalogError}</div>
+              ) : null}
+              {workspaceTemplateCatalog.length > 0 ? (
+                <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, maxHeight: 180, overflow: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Template</th>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Categoría</th>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Idioma</th>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Estado</th>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Origen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {workspaceTemplateCatalog.map((tpl) => (
+                        <tr key={`row-${tpl.name}`}>
+                          <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>{tpl.name}</td>
+                          <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>{tpl.category || '—'}</td>
+                          <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>{tpl.language || '—'}</td>
+                          <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>{tpl.status || '—'}</td>
+                          <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>{tpl.source || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
               <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button
                   type="button"
