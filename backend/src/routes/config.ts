@@ -66,6 +66,7 @@ import {
 import fs from 'fs/promises';
 import path from 'path';
 import OpenAI from 'openai';
+import { normalizeChatCreateArgsForModel } from '../services/openAiChatCompletionService';
 
 export async function registerConfigRoutes(app: FastifyInstance) {
   const whatsappDefaults = {
@@ -624,13 +625,18 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         const candidate = uniqueModels[idx];
         try {
           completion = await client.chat.completions.create({
+            ...normalizeChatCreateArgsForModel(
+              {
+                messages: [
+                  { role: 'system', content: 'Eres un verificador de conectividad. Responde solo "OK".' },
+                  { role: 'user', content: 'ping' },
+                ],
+                max_tokens: 5,
+                temperature: 0,
+              },
+              candidate
+            ),
             model: candidate,
-            messages: [
-              { role: 'system', content: 'Eres un verificador de conectividad. Responde solo "OK".' },
-              { role: 'user', content: 'ping' },
-            ],
-            max_tokens: 5,
-            temperature: 0,
           });
           usedModel = candidate;
           fallbackUsed = idx > 0;

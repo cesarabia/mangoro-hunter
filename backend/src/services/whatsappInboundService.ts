@@ -55,6 +55,7 @@ import { runAutomations } from "./automationRunnerService";
 import { ensurePartnerConversation, ensureStaffConversation } from "./staffConversationService";
 import { stableHash } from "./agent/tools";
 import { resolveWorkspaceProgramForKind } from "./programRoutingService";
+import { normalizeChatCreateArgsForModel } from "./openAiChatCompletionService";
 
 interface InboundMedia {
   type: string;
@@ -3478,18 +3479,23 @@ async function extractNameWithAi(text: string, config: SystemConfig): Promise<st
     normalizeModelId(config.aiModel?.trim() || DEFAULT_AI_MODEL) || DEFAULT_AI_MODEL;
   try {
     const completion = await client.chat.completions.create({
-      model,
-      temperature: 0,
-      messages: [
+      ...normalizeChatCreateArgsForModel(
         {
-          role: "system",
-          content:
-            "Extrae el nombre propio del candidato solo si se identifica explícitamente (ej: \"me llamo X\", \"soy X\"). Devuelve JSON {\"full_name\": string|null, \"confidence\": number}. No inventes ni supongas; si no hay nombre claro, usa null.",
+          temperature: 0,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Extrae el nombre propio del candidato solo si se identifica explícitamente (ej: \"me llamo X\", \"soy X\"). Devuelve JSON {\"full_name\": string|null, \"confidence\": number}. No inventes ni supongas; si no hay nombre claro, usa null.",
+            },
+            { role: "user", content: text },
+          ],
+          max_tokens: 60,
+          response_format: { type: "json_object" },
         },
-        { role: "user", content: text },
-      ],
-      max_tokens: 60,
-      response_format: { type: "json_object" },
+        model
+      ),
+      model,
     });
     const raw = completion.choices?.[0]?.message?.content || "";
     const parsed = JSON.parse(raw);

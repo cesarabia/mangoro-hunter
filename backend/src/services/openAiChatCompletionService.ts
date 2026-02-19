@@ -18,6 +18,22 @@ export function isOpenAiModelError(err: any): boolean {
   return typeof detail === 'string' && /model/i.test(detail) && /(not found|invalid)/i.test(detail);
 }
 
+function requiresMaxCompletionTokens(model: string): boolean {
+  const normalized = String(model || '').trim().toLowerCase();
+  return normalized.startsWith('gpt-5');
+}
+
+export function normalizeChatCreateArgsForModel(createArgs: any, model: string): any {
+  const next = { ...(createArgs || {}) } as any;
+  if (requiresMaxCompletionTokens(model)) {
+    if (typeof next.max_completion_tokens === 'undefined' && typeof next.max_tokens !== 'undefined') {
+      next.max_completion_tokens = next.max_tokens;
+    }
+    delete next.max_tokens;
+  }
+  return next;
+}
+
 export async function createChatCompletionWithModelFallback(
   client: OpenAI,
   createArgs: any,
@@ -29,10 +45,8 @@ export async function createChatCompletionWithModelFallback(
   for (let idx = 0; idx < chain.length; idx += 1) {
     const candidate = chain[idx];
     try {
-      const completion = await client.chat.completions.create({
-        ...createArgs,
-        model: candidate,
-      });
+      const normalizedArgs = normalizeChatCreateArgsForModel(createArgs, candidate);
+      const completion = await client.chat.completions.create({ ...normalizedArgs, model: candidate });
       return {
         completion,
         modelRequested: first,
@@ -49,4 +63,3 @@ export async function createChatCompletionWithModelFallback(
   }
   throw lastError || new Error('OpenAI completion failed');
 }
-
