@@ -225,7 +225,7 @@ async function resolveStaffActorForConversation(params: {
       take: 50,
     })
     .catch(() => []);
-  const match = memberships.find((m) => {
+  const matches = memberships.filter((m) => {
     const primary = normalizeWhatsAppId(String((m as any).staffWhatsAppE164 || '')) === waId;
     if (primary) return true;
     const extraRaw = String((m as any).staffWhatsAppExtraE164sJson || '').trim();
@@ -244,6 +244,14 @@ async function resolveStaffActorForConversation(params: {
       .filter(Boolean)
       .includes(waId);
   });
+  if (matches.length === 0) return null;
+  const match = [...matches].sort((a: any, b: any) => {
+    const roleDiff = roleRank(String((b as any).role || '')) - roleRank(String((a as any).role || ''));
+    if (roleDiff !== 0) return roleDiff;
+    const bUpdated = (b as any).updatedAt ? new Date((b as any).updatedAt).getTime() : 0;
+    const aUpdated = (a as any).updatedAt ? new Date((a as any).updatedAt).getTime() : 0;
+    return bUpdated - aUpdated;
+  })[0];
   if (!match?.id || !match.user?.id) return null;
   return {
     membershipId: match.id,
