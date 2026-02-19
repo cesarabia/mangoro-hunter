@@ -100,6 +100,21 @@ export type ScenarioStep = {
       workspaceId?: string;
       slug?: string;
     };
+    clientNoCannedRepeat?: {
+      workspaceId?: string;
+    };
+    clientFreeTextFields?: {
+      workspaceId?: string;
+    };
+    staffCaseSummaryWorks?: {
+      workspaceId?: string;
+    };
+    staffErrorTransparent?: {
+      workspaceId?: string;
+    };
+    latencyTimeoutBehavior?: {
+      workspaceId?: string;
+    };
     clientLocationFreeText?: {
       workspaceId?: string;
     };
@@ -630,6 +645,34 @@ export const SCENARIOS: ScenarioDefinition[] = [
     ],
   },
   {
+    id: 'client_no_canned_repeat',
+    name: 'CLIENT: no canned repeat (alias)',
+    description:
+      'Alias de validación para respuestas sin repetición enlatada, sin formato rígido y sin bloqueos ANTI_LOOP_SAME_TEXT.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check client no canned repeat',
+        expect: {
+          clientNoCannedRepeat: { workspaceId: 'scenario-client-no-canned-repeat' },
+        },
+      },
+    ],
+  },
+  {
+    id: 'client_free_text_fields',
+    name: 'CLIENT: extracción de campos en texto libre',
+    description:
+      'Valida que ubicación/nombre en texto libre se interpreten sin exigir formato tipo “Comuna: …”.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check client free text fields',
+        expect: { clientFreeTextFields: { workspaceId: 'scenario-client-free-text-fields' } },
+      },
+    ],
+  },
+  {
     id: 'staff_cases_new_includes_new_intake',
     name: 'STAFF: casos nuevos incluye NEW_INTAKE',
     description:
@@ -639,6 +682,45 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check staff cases new includes intake',
         expect: { staffClientsNewUsesListCases: { workspaceId: 'scenario-staff-cases-new-intake' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_case_summary_works',
+    name: 'STAFF: lista + resumen de casos',
+    description:
+      'Valida que “lista postulantes” y “dame resumen de cada caso” devuelvan datos reales usando LIST_CASES/GET_CASE_SUMMARY.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff case summary works',
+        expect: { staffCaseSummaryWorks: { workspaceId: 'scenario-staff-case-summary' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_error_transparent',
+    name: 'STAFF: error transparente',
+    description:
+      'Simula un fallo de consulta y valida que la respuesta sea honesta (sin “estoy obteniendo…”).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff error transparent',
+        expect: { staffErrorTransparent: { workspaceId: 'scenario-staff-error-transparent' } },
+      },
+    ],
+  },
+  {
+    id: 'latency_timeout_behavior',
+    name: 'Runtime: timeout/technical fallback transparente',
+    description:
+      'Valida que ante bloqueo técnico equivalente a timeout no quede silencio y se emita mensaje técnico honesto.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check latency timeout behavior',
+        expect: { latencyTimeoutBehavior: { workspaceId: 'scenario-latency-timeout-behavior' } },
       },
     ],
   },

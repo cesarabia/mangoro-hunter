@@ -237,6 +237,12 @@ function parseJsonLoose(value: string | null | undefined): any {
   }
 }
 
+function normalizeComparableText(value: string | null | undefined): string {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function canonicalizeEnum(value: any): any {
   if (typeof value !== 'string') return value;
   return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
@@ -866,10 +872,22 @@ export async function runAgent(event: AgentEvent): Promise<{
   let usagePromptTokens = 0;
   let usageCompletionTokens = 0;
   let usageTotalTokens = 0;
+  let modelCalls = 0;
+  let modelLatencyMs = 0;
+  let maxModelLatencyMs = 0;
+  let toolCallCount = 0;
+  let toolLatencyMs = 0;
+  let maxToolLatencyMs = 0;
+  let responseRetryCount = 0;
+  let fallbackReason: string | null = null;
 
   const latestInboundText = (() => {
     const inbound = (lastMessages || []).find((m) => String((m as any).direction || '').toUpperCase() === 'INBOUND');
     return String((inbound as any)?.transcriptText || (inbound as any)?.text || event.draftText || '').trim();
+  })();
+  const lastOutboundText = (() => {
+    const outbound = (lastMessages || []).find((m) => String((m as any).direction || '').toUpperCase() === 'OUTBOUND');
+    return normalizeComparableText(String((outbound as any)?.transcriptText || (outbound as any)?.text || ''));
   })();
   const tools = toolDefinitions({
     conversationKind: String((conversation as any).conversationKind || '').toUpperCase(),
@@ -887,40 +905,44 @@ export async function runAgent(event: AgentEvent): Promise<{
   let lastInvalidRaw: string | null = null;
   let lastInvalidIssues: any = null;
 
-  try {
-    const buildFallbackResponse = (reason: string): AgentResponse => {
-      const fallbackText = (() => {
-        if (event.eventType === 'AI_SUGGEST') {
-          const draft = String(event.draftText || '').trim();
-          if (draft) return draft;
-          return '¿Qué respuesta quieres enviar? Escribe un borrador y lo mejoro.';
-        }
-        const kind = String((conversation as any)?.conversationKind || '').toUpperCase();
-        if (kind === 'STAFF') {
-          return 'Te leo. ¿Quieres que vea casos nuevos, busque uno puntual o cambie un estado?';
-        }
-        return 'Perfecto, te leo. Cuéntame un poco más y avanzamos altiro.';
-      })();
-      const dedupeSeed = `${conversation.id}:${event.eventType}:${event.inboundMessageId || ''}:FALLBACK:${fallbackText}`;
-      return {
-        agent: 'fallback',
-        version: 1,
-        commands: [
-          {
-            command: 'SEND_MESSAGE',
-            conversationId: conversation.id,
-            channel: 'WHATSAPP',
-            type: 'SESSION_TEXT',
-            text: fallbackText,
-            dedupeKey: `fallback:${stableHash(dedupeSeed).slice(0, 16)}`,
-          } as any,
-        ],
-        notes: `fallback:${reason}`,
-      };
+  const buildTechnicalFallbackText = (reasonRaw: string): string => {
+    const reason = String(reasonRaw || 'UNKNOWN').toUpperCase();
+    const ref = String(runLog.id || '').slice(-8) || 'n/a';
+    const convKind = String((conversation as any)?.conversationKind || '').toUpperCase();
+    if (event.eventType === 'AI_SUGGEST') {
+      return `Estoy con un problema técnico para generar la sugerencia (ref ${ref}, ${reason}). ¿Lo intentamos de nuevo?`;
+    }
+    if (convKind === 'STAFF') {
+      return `Estoy con un problema técnico para completar eso ahora (ref ${ref}, ${reason}). ¿Lo intentamos de nuevo en unos segundos?`;
+    }
+    return `Estoy con un problema técnico para responderte ahora (ref ${ref}, ${reason}). ¿Me repites tu último mensaje en unos segundos?`;
+  };
+
+  const buildFallbackResponse = (reason: string): AgentResponse => {
+    const fallbackText = buildTechnicalFallbackText(reason);
+    const dedupeSeed = `${conversation.id}:${event.eventType}:${event.inboundMessageId || ''}:FALLBACK:${fallbackText}`;
+    return {
+      agent: 'fallback',
+      version: 1,
+      commands: [
+        {
+          command: 'SEND_MESSAGE',
+          conversationId: conversation.id,
+          channel: 'WHATSAPP',
+          type: 'SESSION_TEXT',
+          text: fallbackText,
+          dedupeKey: `fallback:${stableHash(dedupeSeed).slice(0, 16)}`,
+        } as any,
+      ],
+      notes: `fallback:${reason}`,
     };
+  };
+
+  try {
 
     let safetyIterations = 0;
     let invalidAttempts = 0;
+    let duplicateRephraseAttempts = 0;
     let downgradedModelOnValidation = false;
     const tryDowngradeModelForValidation = (validationType: 'INVALID_SCHEMA' | 'INVALID_SEMANTICS'): boolean => {
       if (downgradedModelOnValidation) return false;
@@ -941,6 +963,7 @@ export async function runAgent(event: AgentEvent): Promise<{
     };
     while (safetyIterations < 6) {
       safetyIterations += 1;
+      const modelStartedAt = Date.now();
       const completionResult = await createChatCompletionWithModelFallback(
         client,
         {
@@ -953,6 +976,10 @@ export async function runAgent(event: AgentEvent): Promise<{
         },
         [activeModel, ...fallbackModels]
       );
+      const completionLatency = Date.now() - modelStartedAt;
+      modelCalls += 1;
+      modelLatencyMs += completionLatency;
+      if (completionLatency > maxModelLatencyMs) maxModelLatencyMs = completionLatency;
       const completion = completionResult.completion;
       activeModel = completionResult.modelResolved;
       modelResolved = completionResult.modelResolved;
@@ -976,7 +1003,12 @@ export async function runAgent(event: AgentEvent): Promise<{
           const toolName = call.function?.name;
           const argsRaw = call.function?.arguments || '{}';
           const args = parseJsonLoose(argsRaw) || {};
+          const toolStartedAt = Date.now();
           const result = await runTool(toolName, args);
+          const toolElapsed = Date.now() - toolStartedAt;
+          toolCallCount += 1;
+          toolLatencyMs += toolElapsed;
+          if (toolElapsed > maxToolLatencyMs) maxToolLatencyMs = toolElapsed;
           await prisma.toolCallLog.create({
             data: {
               agentRunId: runLog.id,
@@ -1030,6 +1062,7 @@ export async function runAgent(event: AgentEvent): Promise<{
         if (tryDowngradeModelForValidation('INVALID_SCHEMA')) {
           continue;
         }
+        fallbackReason = 'INVALID_SCHEMA';
         const fallback = buildFallbackResponse('INVALID_SCHEMA');
         await prisma.agentRunLog.update({
           where: { id: runLog.id },
@@ -1041,6 +1074,18 @@ export async function runAgent(event: AgentEvent): Promise<{
               reason: 'INVALID_SCHEMA',
               lastInvalidRaw,
               lastInvalidIssues,
+              modelRequested,
+              modelResolved,
+              modelFallbackUsed: modelResolved !== modelRequested,
+              modelCalls,
+              modelLatencyMs,
+              avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+              maxModelLatencyMs,
+              toolCalls: toolCallCount,
+              toolLatencyMs,
+              avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+              maxToolLatencyMs,
+              retries: responseRetryCount,
             }),
           },
         });
@@ -1090,6 +1135,7 @@ export async function runAgent(event: AgentEvent): Promise<{
         if (tryDowngradeModelForValidation('INVALID_SEMANTICS')) {
           continue;
         }
+        fallbackReason = 'INVALID_SEMANTICS';
         const fallback = buildFallbackResponse('INVALID_SEMANTICS');
         await prisma.agentRunLog.update({
           where: { id: runLog.id },
@@ -1101,6 +1147,70 @@ export async function runAgent(event: AgentEvent): Promise<{
               reason: 'INVALID_SEMANTICS',
               lastInvalidRaw,
               lastInvalidIssues,
+              modelRequested,
+              modelResolved,
+              modelFallbackUsed: modelResolved !== modelRequested,
+              modelCalls,
+              modelLatencyMs,
+              avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+              maxModelLatencyMs,
+              toolCalls: toolCallCount,
+              toolLatencyMs,
+              avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+              maxToolLatencyMs,
+              retries: responseRetryCount,
+            }),
+          },
+        });
+        return { runId: runLog.id, windowStatus, response: fallback };
+      }
+
+      const outboundTexts = (validated.data.commands || [])
+        .filter((c: any) => c && typeof c === 'object' && c.command === 'SEND_MESSAGE' && String(c.type || '').toUpperCase() === 'SESSION_TEXT')
+        .map((c: any) => normalizeComparableText(String(c.text || '')))
+        .filter(Boolean);
+      const hasConsecutiveDuplicate =
+        outboundTexts.length > 0 &&
+        Boolean(lastOutboundText) &&
+        outboundTexts.some((t) => t === lastOutboundText);
+      if (hasConsecutiveDuplicate) {
+        if (duplicateRephraseAttempts < 1) {
+          duplicateRephraseAttempts += 1;
+          responseRetryCount += 1;
+          messages.push({ role: 'assistant', content: raw || serializeJson(validated.data) });
+          messages.push({
+            role: 'user',
+            content: serializeJson({
+              error: 'CONSECUTIVE_DUPLICATE_OUTBOUND',
+              instruction:
+                'Tu respuesta repite exactamente el último outbound. Reescribe la respuesta sin repetir el texto literal, aborda explícitamente el último inbound y mantén tono humano natural.',
+              lastInboundText: latestInboundText || null,
+            }),
+          });
+          continue;
+        }
+        fallbackReason = 'CONSECUTIVE_DUPLICATE_OUTBOUND';
+        const fallback = buildFallbackResponse('CONSECUTIVE_DUPLICATE_OUTBOUND');
+        await prisma.agentRunLog.update({
+          where: { id: runLog.id },
+          data: {
+            status: 'PLANNED',
+            commandsJson: serializeJson(fallback),
+            resultsJson: serializeJson({
+              fallbackUsed: true,
+              reason: 'CONSECUTIVE_DUPLICATE_OUTBOUND',
+              modelRequested,
+              modelResolved,
+              modelFallbackUsed: modelResolved !== modelRequested,
+              modelCalls,
+              modelLatencyMs,
+              avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+              maxModelLatencyMs,
+              toolCalls: toolCallCount,
+              toolLatencyMs,
+              avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+              maxToolLatencyMs,
+              retries: responseRetryCount,
             }),
           },
         });
@@ -1116,6 +1226,16 @@ export async function runAgent(event: AgentEvent): Promise<{
             modelRequested,
             modelResolved,
             modelFallbackUsed: modelResolved !== modelRequested,
+            modelCalls,
+            modelLatencyMs,
+            avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+            maxModelLatencyMs,
+            toolCalls: toolCallCount,
+            toolLatencyMs,
+            avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+            maxToolLatencyMs,
+            retries: responseRetryCount,
+            fallbackReason,
           }),
         },
       });
@@ -1141,18 +1261,60 @@ export async function runAgent(event: AgentEvent): Promise<{
       return { runId: runLog.id, windowStatus, response: validated.data };
     }
 
-    throw new Error('Loop de tools excedido');
-  } catch (err) {
-    const errorText = err instanceof Error ? err.message : 'unknown';
+    fallbackReason = 'TOOL_LOOP_EXCEEDED';
+    const fallback = buildFallbackResponse('TOOL_LOOP_EXCEEDED');
     await prisma.agentRunLog.update({
       where: { id: runLog.id },
       data: {
-        status: 'ERROR',
+        status: 'PLANNED',
+        commandsJson: serializeJson(fallback),
+        resultsJson: serializeJson({
+          fallbackUsed: true,
+          reason: 'TOOL_LOOP_EXCEEDED',
+          modelRequested,
+          modelResolved,
+          modelFallbackUsed: modelResolved !== modelRequested,
+          modelCalls,
+          modelLatencyMs,
+          avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+          maxModelLatencyMs,
+          toolCalls: toolCallCount,
+          toolLatencyMs,
+          avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+          maxToolLatencyMs,
+          retries: responseRetryCount,
+        }),
+      },
+    });
+    return { runId: runLog.id, windowStatus, response: fallback };
+  } catch (err) {
+    const errorText = err instanceof Error ? err.message : 'unknown';
+    fallbackReason = errorText || 'RUNTIME_EXCEPTION';
+    const fallback = buildFallbackResponse(errorText || 'RUNTIME_EXCEPTION');
+    await prisma.agentRunLog.update({
+      where: { id: runLog.id },
+      data: {
+        status: 'PLANNED',
+        commandsJson: serializeJson(fallback),
         error: errorText,
         resultsJson: serializeJson({
           error: errorText,
           lastInvalidRaw,
           lastInvalidIssues,
+          fallbackUsed: true,
+          reason: fallbackReason,
+          modelRequested,
+          modelResolved,
+          modelFallbackUsed: modelResolved !== modelRequested,
+          modelCalls,
+          modelLatencyMs,
+          avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+          maxModelLatencyMs,
+          toolCalls: toolCallCount,
+          toolLatencyMs,
+          avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+          maxToolLatencyMs,
+          retries: responseRetryCount,
         }),
       },
     });
@@ -1173,6 +1335,6 @@ export async function runAgent(event: AgentEvent): Promise<{
         },
       })
       .catch(() => {});
-    throw err;
+    return { runId: runLog.id, windowStatus, response: fallback };
   }
 }

@@ -313,62 +313,6 @@ function detectAskedFields(text: string): string[] {
   return fields;
 }
 
-function buildLoopBreakerQuestion(params: { field: string; contact: any }): string {
-  const contact = params.contact || {};
-  const candidateName = String(contact.candidateName || '').trim();
-  const comuna = String((contact as any).comuna || '').trim();
-  const ciudad = String((contact as any).ciudad || '').trim();
-  const rut = String((contact as any).rut || '').trim();
-  const email = String((contact as any).email || '').trim();
-  const experienceYearsRaw = (contact as any).experienceYears;
-  const experienceYears =
-    typeof experienceYearsRaw === 'number' && Number.isFinite(experienceYearsRaw)
-      ? experienceYearsRaw
-      : null;
-  const availabilityText = String((contact as any).availabilityText || '').trim();
-
-  if (params.field === 'candidateName') {
-    if (candidateName) {
-      return `Solo para confirmar: ¿tu nombre es ${candidateName}? Si no, escríbelo completo.`;
-    }
-    return 'Para avanzar necesito tu nombre y apellido. Me lo puedes escribir como te salga natural.';
-  }
-  if (params.field === 'location') {
-    if (comuna) {
-      return `Solo para confirmar: ¿tu comuna es ${comuna}? Si no, dime tu comuna o ciudad en texto libre.`;
-    }
-    if (ciudad) {
-      return `Solo para confirmar: ¿tu ciudad es ${ciudad}? Si no, indícame comuna o ciudad en texto libre.`;
-    }
-    return 'Para avanzar necesito tu comuna o ciudad (Chile). Puedes escribirla en texto libre, por ejemplo: Pudahuel o Providencia.';
-  }
-  if (params.field === 'rut') {
-    if (rut) {
-      return `Solo para confirmar: ¿tu RUT es ${rut}? Si no, escríbelo nuevamente.`;
-    }
-    return 'Para avanzar necesito tu RUT (ej: 12.345.678-9).';
-  }
-  if (params.field === 'email') {
-    if (email) {
-      return `Solo para confirmar: ¿tu email es ${email}? Si no, escríbelo nuevamente.`;
-    }
-    return '¿Me indicas tu email? (opcional; si no tienes, escribe “no tengo”).';
-  }
-  if (params.field === 'experience') {
-    if (experienceYears !== null) {
-      return `Solo para confirmar: ¿tienes ${experienceYears} años de experiencia? Si no, cuéntame años y rubros.`;
-    }
-    return '¿Cuánta experiencia tienes en ventas? (años y rubros; si hiciste terreno, indícalo).';
-  }
-  if (params.field === 'availability') {
-    if (availabilityText) {
-      return `Solo para confirmar: ¿tu disponibilidad es “${availabilityText}”? Si no, indícala de nuevo.`;
-    }
-    return '¿Cuál es tu disponibilidad para empezar?';
-  }
-  return '¿Me confirmas ese dato, por favor?';
-}
-
 async function bumpAskedField(conversationId: string, field: string, askedHash: string) {
   const now = new Date();
   await prisma.conversationAskedField.upsert({
@@ -454,73 +398,123 @@ async function shouldBlockOutbound(params: {
   });
 }
 
-function buildAntiLoopTextVariants(text: string): string[] {
-  const clean = String(text || '').trim();
-  if (!clean) return [];
-  const variants = [
-    `Recibido ✅ ${clean}`,
-    `Perfecto, te leo ✅ ${clean}`,
-    `Gracias por el detalle ✅ ${clean}`,
-  ];
-  const out: string[] = [];
-  for (const v of variants) {
-    const next = v.trim();
-    if (!next || next === clean) continue;
-    if (!out.includes(next)) out.push(next);
-  }
-  return out;
+function shouldEmitTransparentTechnicalMessage(blockReason: string | null): boolean {
+  if (!blockReason) return false;
+  return (
+    blockReason === 'ANTI_LOOP_SAME_TEXT' ||
+    blockReason === 'ANTI_LOOP_DEDUPE_KEY' ||
+    blockReason === 'CONSECUTIVE_DUPLICATE'
+  );
 }
 
-async function resolveOutboundWithAntiLoopFallback(params: {
-  conversationId: string;
-  dedupeKey: string;
-  text: string;
-  currentStageChangedAt?: Date | null;
-  forceVariantOnSameText?: boolean;
-}): Promise<{
-  text: string;
-  dedupeKey: string;
-  textHash: string;
-  blockReason: string | null;
-  fallbackApplied: boolean;
-}> {
-  let text = String(params.text || '').trim();
-  let dedupeKey = String(params.dedupeKey || '').trim();
-  let textHash = stableHash(`TEXT:${text}`);
-  let blockReason = await shouldBlockOutbound({
-    conversationId: params.conversationId,
+function buildTransparentTechnicalMessage(params: {
+  conversationKind: string;
+  runId: string;
+  reason: string;
+}): string {
+  const ref = String(params.runId || '').slice(-8) || 'n/a';
+  const reason = String(params.reason || 'UNKNOWN').toUpperCase();
+  if (String(params.conversationKind || '').toUpperCase() === 'STAFF') {
+    return `Tuve un problema técnico al procesar tu solicitud (ref ${ref}, ${reason}). ¿Me la repites en unos segundos?`;
+  }
+  return `Tuve un problema técnico para responderte ahora (ref ${ref}, ${reason}). ¿Me repites el último mensaje en unos segundos?`;
+}
+
+async function trySendTransparentTechnicalMessage(params: {
+  workspaceId: string;
+  conversation: any;
+  agentRunId: string;
+  reason: string;
+  config: Awaited<ReturnType<typeof getSystemConfig>>;
+  transportMode: ExecutorTransportMode;
+  relatedConversationId?: string | null;
+}) {
+  const conversation = params.conversation;
+  const contact = conversation?.contact;
+  if (!conversation?.id || !contact) return;
+  const text = buildTransparentTechnicalMessage({
+    conversationKind: String((conversation as any)?.conversationKind || 'CLIENT'),
+    runId: params.agentRunId,
+    reason: params.reason,
+  });
+  const dedupeKey = `tech_err:${String(params.agentRunId || '').slice(-8)}:${stableHash(`${conversation.id}:${params.reason}`).slice(0, 8)}`;
+  const textHash = stableHash(`TEXT:${text}`);
+
+  const existing = await shouldBlockOutbound({
+    conversationId: conversation.id,
     dedupeKey,
     textHash,
-    currentStageChangedAt: params.currentStageChangedAt || null,
+    currentStageChangedAt: (conversation as any)?.stageChangedAt ? new Date((conversation as any).stageChangedAt) : null,
   });
-  const mustAttemptVariant = blockReason === 'ANTI_LOOP_SAME_TEXT' || Boolean(params.forceVariantOnSameText);
-  if (!mustAttemptVariant || !text) {
-    return { text, dedupeKey, textHash, blockReason, fallbackApplied: false };
-  }
-
-  const variants = buildAntiLoopTextVariants(text);
-  for (let i = 0; i < variants.length; i += 1) {
-    const variant = variants[i];
-    const variantDedupeKey = `${dedupeKey}:v${i + 1}`;
-    const variantHash = stableHash(`TEXT:${variant}`);
-    const variantBlock = await shouldBlockOutbound({
-      conversationId: params.conversationId,
-      dedupeKey: variantDedupeKey,
-      textHash: variantHash,
-      currentStageChangedAt: params.currentStageChangedAt || null,
+  if (existing) {
+    await logOutbound({
+      workspaceId: params.workspaceId,
+      conversationId: conversation.id,
+      agentRunId: params.agentRunId,
+      type: 'SESSION_TEXT',
+      templateName: null,
+      dedupeKey,
+      textHash,
+      blockedReason: existing,
+      relatedConversationId: params.relatedConversationId || null,
     });
-    if (!variantBlock) {
-      return {
-        text: variant,
-        dedupeKey: variantDedupeKey,
-        textHash: variantHash,
-        blockReason: null,
-        fallbackApplied: true,
-      };
-    }
+    return;
   }
 
-  return { text, dedupeKey, textHash, blockReason, fallbackApplied: false };
+  const toWaId = contact.waId || contact.phone || (params.transportMode === 'NULL' ? 'sandbox' : null);
+  if (!toWaId) return;
+  const safetyBlock = safeOutboundBlockedReason({ toWaId, config: params.config });
+  if (safetyBlock) {
+    await logOutbound({
+      workspaceId: params.workspaceId,
+      conversationId: conversation.id,
+      agentRunId: params.agentRunId,
+      type: 'SESSION_TEXT',
+      templateName: null,
+      dedupeKey,
+      textHash,
+      blockedReason: safetyBlock,
+      relatedConversationId: params.relatedConversationId || null,
+    });
+    return;
+  }
+
+  const phoneNumberId = conversation.phoneLine?.waPhoneNumberId || null;
+  let sendResult: SendResult = { success: true, messageId: `null-${Date.now()}` };
+  if (params.transportMode === 'REAL') {
+    sendResult = await sendWhatsAppText(toWaId, text, { phoneNumberId });
+  }
+
+  await prisma.message.create({
+    data: {
+      conversationId: conversation.id,
+      direction: 'OUTBOUND',
+      text,
+      rawPayload: serializeJson({
+        system: true,
+        technicalError: true,
+        reason: params.reason,
+        agentRunId: params.agentRunId,
+        dedupeKey,
+        sendResult,
+      }),
+      timestamp: new Date(),
+      read: true,
+    },
+  });
+  await prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } }).catch(() => {});
+  await logOutbound({
+    workspaceId: params.workspaceId,
+    conversationId: conversation.id,
+    agentRunId: params.agentRunId,
+    type: 'SESSION_TEXT',
+    templateName: null,
+    dedupeKey,
+    textHash,
+    blockedReason: sendResult.success ? null : `SEND_FAILED:${sendResult.error || 'unknown'}`,
+    waMessageId: sendResult.messageId || null,
+    relatedConversationId: params.relatedConversationId || null,
+  });
 }
 
 export async function executeAgentResponse(params: {
@@ -902,14 +896,6 @@ export async function executeAgentResponse(params: {
 
       let effectiveText = cmd.text ? humanizeOutboundText(String(cmd.text)) : '';
       let guardrailOverride: any = null;
-      if (cmd.type === 'SESSION_TEXT' && effectiveText) {
-        const askedFields = detectAskedFields(effectiveText);
-        const loopField = askedFields.find((f) => (askCountByField.get(f) || 0) >= 2) || null;
-        if (loopField) {
-          effectiveText = buildLoopBreakerQuestion({ field: loopField, contact });
-          guardrailOverride = { type: 'ASKED_FIELD_LOOP_BREAKER', field: loopField };
-        }
-      }
 
       let effectiveDedupeKey = cmd.dedupeKey;
       let payloadHash = stableHash(
@@ -925,62 +911,19 @@ export async function executeAgentResponse(params: {
           ? new Date((baseConversation as any).stageChangedAt)
           : null,
       });
-      if (cmd.type === 'SESSION_TEXT' && !blockReason && String(effectiveText || '').trim()) {
-        const repeatedRecently = await prisma.outboundMessageLog.findFirst({
-          where: {
-            conversationId: baseConversation.id,
-            blockedReason: null,
-            textHash: payloadHash,
-            createdAt: { gte: new Date(Date.now() - 120_000) },
-          },
-          select: { id: true },
-        });
-        if (repeatedRecently?.id) {
-          const fallback = await resolveOutboundWithAntiLoopFallback({
-            conversationId: baseConversation.id,
-            dedupeKey: effectiveDedupeKey,
-            text: effectiveText,
-            currentStageChangedAt: (baseConversation as any)?.stageChangedAt
-              ? new Date((baseConversation as any).stageChangedAt)
-              : null,
-            forceVariantOnSameText: true,
-          });
-          if (!fallback.blockReason && fallback.fallbackApplied) {
-            effectiveText = fallback.text;
-            effectiveDedupeKey = fallback.dedupeKey;
-            payloadHash = fallback.textHash;
-            guardrailOverride = {
-              ...(guardrailOverride || {}),
-              type: 'ANTI_LOOP_TEXT_VARIANT',
-              sourceReason: 'RECENT_SAME_TEXT',
-            };
-          }
-        }
-      }
-      if (cmd.type === 'SESSION_TEXT' && blockReason === 'ANTI_LOOP_SAME_TEXT' && String(effectiveText || '').trim()) {
-        const fallback = await resolveOutboundWithAntiLoopFallback({
-          conversationId: baseConversation.id,
-          dedupeKey: effectiveDedupeKey,
-          text: effectiveText,
-          currentStageChangedAt: (baseConversation as any)?.stageChangedAt
-            ? new Date((baseConversation as any).stageChangedAt)
-            : null,
-        });
-        if (!fallback.blockReason && fallback.fallbackApplied) {
-          effectiveText = fallback.text;
-          effectiveDedupeKey = fallback.dedupeKey;
-          payloadHash = fallback.textHash;
-          blockReason = null;
-          guardrailOverride = {
-            ...(guardrailOverride || {}),
-            type: 'ANTI_LOOP_TEXT_VARIANT',
-            sourceReason: 'ANTI_LOOP_SAME_TEXT',
-          };
-        } else {
-          blockReason = fallback.blockReason;
-        }
-      }
       if (blockReason) {
+        const shouldSendTransparent = cmd.type === 'SESSION_TEXT' && shouldEmitTransparentTechnicalMessage(blockReason);
+        if (shouldSendTransparent) {
+          await trySendTransparentTechnicalMessage({
+            workspaceId: params.workspaceId,
+            conversation: baseConversation,
+            agentRunId: params.agentRunId,
+            reason: blockReason,
+            config,
+            transportMode: params.transportMode,
+            relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
+          });
+        }
         await logOutbound({
           workspaceId: params.workspaceId,
           conversationId: baseConversation.id,
@@ -992,7 +935,12 @@ export async function executeAgentResponse(params: {
           blockedReason: blockReason,
           relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
         });
-        results.push({ ok: true, blocked: true, blockedReason: blockReason });
+        results.push({
+          ok: true,
+          blocked: true,
+          blockedReason: blockReason,
+          details: shouldSendTransparent ? { technicalMessageAttempted: true } : undefined,
+        });
         continue;
       }
 
@@ -1588,52 +1536,19 @@ export async function executeAgentResponse(params: {
             ? new Date((customerConversation as any).stageChangedAt)
             : null,
         });
-        if (!blockReason && String(effectiveText || '').trim()) {
-          const repeatedRecently = await prisma.outboundMessageLog.findFirst({
-            where: {
-              conversationId: customerConversation.id,
-              blockedReason: null,
-              textHash: payloadHash,
-              createdAt: { gte: new Date(Date.now() - 120_000) },
-            },
-            select: { id: true },
-          });
-          if (repeatedRecently?.id) {
-            const fallback = await resolveOutboundWithAntiLoopFallback({
-              conversationId: customerConversation.id,
-              dedupeKey,
-              text: effectiveText,
-              currentStageChangedAt: (customerConversation as any)?.stageChangedAt
-                ? new Date((customerConversation as any).stageChangedAt)
-                : null,
-              forceVariantOnSameText: true,
-            });
-            if (!fallback.blockReason && fallback.fallbackApplied) {
-              dedupeKey = fallback.dedupeKey;
-              payloadHash = fallback.textHash;
-              effectiveText = fallback.text;
-            }
-          }
-        }
-        if (blockReason === 'ANTI_LOOP_SAME_TEXT') {
-          const fallback = await resolveOutboundWithAntiLoopFallback({
-            conversationId: customerConversation.id,
-            dedupeKey,
-            text: effectiveText,
-            currentStageChangedAt: (customerConversation as any)?.stageChangedAt
-              ? new Date((customerConversation as any).stageChangedAt)
-              : null,
-          });
-          if (!fallback.blockReason && fallback.fallbackApplied) {
-            dedupeKey = fallback.dedupeKey;
-            payloadHash = fallback.textHash;
-            effectiveText = fallback.text;
-            blockReason = null;
-          } else {
-            blockReason = fallback.blockReason;
-          }
-        }
         if (blockReason) {
+          const shouldSendTransparent = shouldEmitTransparentTechnicalMessage(blockReason);
+          if (shouldSendTransparent) {
+            await trySendTransparentTechnicalMessage({
+              workspaceId: baseConversation.workspaceId,
+              conversation: customerConversation,
+              agentRunId: params.agentRunId,
+              reason: blockReason,
+              config,
+              transportMode: params.transportMode,
+              relatedConversationId: null,
+            });
+          }
           await logOutbound({
             workspaceId: baseConversation.workspaceId,
             conversationId: customerConversation.id,
@@ -1644,7 +1559,12 @@ export async function executeAgentResponse(params: {
             textHash: payloadHash,
             blockedReason: blockReason,
           });
-          results.push({ ok: true, blocked: true, blockedReason: blockReason });
+          results.push({
+            ok: true,
+            blocked: true,
+            blockedReason: blockReason,
+            details: shouldSendTransparent ? { technicalMessageAttempted: true, toolName } : undefined,
+          });
           continue;
         }
 

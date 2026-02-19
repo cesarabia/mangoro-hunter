@@ -477,7 +477,10 @@ async function maybeHandleProgramSelection(params: {
 }
 
 type StaffRouterCommand =
-  | { type: 'LIST_CASES'; args: { stageSlug?: string; assignedToMe: boolean; limit: number; query?: string } }
+  | {
+      type: 'LIST_CASES';
+      args: { stageSlug?: string; assignedToMe: boolean; limit: number; query?: string; includeSummary?: boolean };
+    }
   | { type: 'GET_CASE_SUMMARY'; args: { conversationId: string } }
   | { type: 'SET_STAGE'; args: { conversationId: string; stageSlug: string; reason?: string } }
   | { type: 'SEND_CUSTOMER_MESSAGE'; args: { conversationId: string; text: string } };
@@ -489,13 +492,17 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
 
   if (
     /\b(casos?|clientes?|postulantes?)\s+nuev/.test(normalized) ||
+    /\blista(r)?\s+(de\s+)?(casos?|clientes?|postulantes?)\b/.test(normalized) ||
     /\b(que|cuales|cuáles)\s+(son\s+)?(los\s+)?(casos?|clientes?|postulantes?)\s+nuev/.test(normalized) ||
     /\bque\s+tengo\s+pendiente/.test(normalized) ||
     /\bque\s+me\s+llego\s+hoy/.test(normalized) ||
     normalized === 'nuevos' ||
     normalized === 'mis casos'
   ) {
-    return { type: 'LIST_CASES', args: { stageSlug: 'NEW_INTAKE', assignedToMe: false, limit: 10 } };
+    return { type: 'LIST_CASES', args: { assignedToMe: false, limit: 10 } };
+  }
+  if (/\b(dame|darme|muestrame|muéstrame)\s+resumen(\s+de\s+(los\s+)?(casos?|postulantes?))?/.test(normalized)) {
+    return { type: 'LIST_CASES', args: { assignedToMe: false, limit: 5, includeSummary: true } };
   }
   const buscarMatch = raw.match(/^\s*buscar\s+(.+)\s*$/i);
   if (buscarMatch?.[1]) {
@@ -537,6 +544,16 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
     const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
     if (cases.length === 0) {
       return 'Por ahora no veo casos nuevos. Si quieres, te busco uno por nombre/comuna/id.';
+    }
+    if (command.args.includeSummary) {
+      const lines = cases.slice(0, 5).map((c: any) => {
+        const idShort = String(c?.id || '').slice(0, 8);
+        const name = String(c?.contactDisplay || 'Caso');
+        const stage = String(c?.stage || '—');
+        const status = String(c?.status || '—');
+        return `• ${name} (${stage}/${status}) · ID ${idShort}`;
+      });
+      return `Resumen rápido de casos recientes:\n${lines.join('\n')}\nSi quieres detalle de uno: "resumen <id>".`;
     }
     const lines = cases.slice(0, 10).map((c: any) => {
       const idShort = String(c?.id || '').slice(0, 8);
