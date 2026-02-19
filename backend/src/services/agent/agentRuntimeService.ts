@@ -80,8 +80,13 @@ async function computeWhatsAppWindowStatus(conversationId: string): Promise<What
   return delta <= WINDOW_MS ? 'IN_24H' : 'OUTSIDE_24H';
 }
 
-function toolDefinitions() {
-  return [
+function toolDefinitions(params?: { conversationKind?: string | null; inboundText?: string | null }) {
+  const kind = String(params?.conversationKind || '').trim().toUpperCase();
+  const inbound = String(params?.inboundText || '').toLowerCase();
+  const isStaffLike = kind === 'STAFF' || kind === 'PARTNER';
+  const allowProgramLookup = /\bmenu\b|\bprograma(s)?\b|\bcambiar programa\b/.test(inbound);
+
+  const base = [
     {
       type: 'function',
       function: {
@@ -112,19 +117,23 @@ function toolDefinitions() {
         },
       },
     },
-    {
-      type: 'function',
-      function: {
-        name: 'validate_rut',
-        description: 'Valida RUT chileno y retorna normalized (12345678-9) si aplica.',
-        parameters: {
-          type: 'object',
-          properties: { rutText: { type: 'string' } },
-          required: ['rutText'],
-          additionalProperties: false,
-        },
-      },
-    },
+    ...(!isStaffLike
+      ? [
+          {
+            type: 'function',
+            function: {
+              name: 'validate_rut',
+              description: 'Valida RUT chileno y retorna normalized (12345678-9) si aplica.',
+              parameters: {
+                type: 'object',
+                properties: { rutText: { type: 'string' } },
+                required: ['rutText'],
+                additionalProperties: false,
+              },
+            },
+          },
+        ]
+      : []),
     {
       type: 'function',
       function: {
@@ -151,23 +160,28 @@ function toolDefinitions() {
         },
       },
     },
-    {
-      type: 'function',
-      function: {
-        name: 'get_available_programs',
-        description: 'Lista programs activos por workspace (opcionalmente filtrado por phoneLine).',
-        parameters: {
-          type: 'object',
-          properties: {
-            workspaceId: { type: 'string' },
-            phoneLineId: { type: 'string' },
+    ...(isStaffLike && !allowProgramLookup
+      ? []
+      : [
+          {
+            type: 'function',
+            function: {
+              name: 'get_available_programs',
+              description: 'Lista programs activos por workspace (opcionalmente filtrado por phoneLine).',
+              parameters: {
+                type: 'object',
+                properties: {
+                  workspaceId: { type: 'string' },
+                  phoneLineId: { type: 'string' },
+                },
+                required: ['workspaceId'],
+                additionalProperties: false,
+              },
+            },
           },
-          required: ['workspaceId'],
-          additionalProperties: false,
-        },
-      },
-    },
+        ]),
   ] as const;
+  return base;
 }
 
 async function runTool(toolName: string, args: any): Promise<ToolResult> {
@@ -792,7 +806,14 @@ export async function runAgent(event: AgentEvent): Promise<{
   let usageCompletionTokens = 0;
   let usageTotalTokens = 0;
 
-  const tools = toolDefinitions();
+  const latestInboundText = (() => {
+    const inbound = (lastMessages || []).find((m) => String((m as any).direction || '').toUpperCase() === 'INBOUND');
+    return String((inbound as any)?.transcriptText || (inbound as any)?.text || event.draftText || '').trim();
+  })();
+  const tools = toolDefinitions({
+    conversationKind: String((conversation as any).conversationKind || '').toUpperCase(),
+    inboundText: latestInboundText,
+  });
 
   const messages: any[] = [
     { role: 'system', content: buildSystemPrompt({ programPrompt, windowStatus }) },

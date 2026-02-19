@@ -11,6 +11,7 @@ import { resolveReplyContextForInboundMessage, runAgent } from '../services/agen
 import { executeAgentResponse } from '../services/agent/commandExecutorService';
 import { resolveInboundPhoneLineRouting } from '../services/phoneLineRoutingService';
 import { normalizeWorkspaceTemplateId, seedWorkspaceTemplate } from '../services/workspaceTemplateService';
+import { attemptScheduleInterview } from '../services/interviewSchedulerService';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
   const normalizeForContains = (value: string): string =>
@@ -2649,6 +2650,324 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       }
 
       const staffTemplateVars = (step.expect as any)?.staffNotificationTemplateVariables;
+      const staffCasesNewOk = (step.expect as any)?.staffCasesNewOk;
+      const interviewScheduleConflict = (step.expect as any)?.interviewScheduleConflict;
+      if (interviewScheduleConflict && typeof interviewScheduleConflict === 'object') {
+        const wsId = String((interviewScheduleConflict as any)?.workspaceId || 'scenario-interview-conflict').trim() || 'scenario-interview-conflict';
+        const now = new Date();
+        await prisma.workspace
+          .upsert({
+            where: { id: wsId },
+            create: { id: wsId, name: 'Scenario Interview Conflict', isSandbox: true, archivedAt: null } as any,
+            update: { name: 'Scenario Interview Conflict', isSandbox: true, archivedAt: null } as any,
+          })
+          .catch(() => {});
+        const lineId = `scenario-interview-conflict-line-${Date.now()}`;
+        const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+        const line = await prisma.phoneLine
+          .create({
+            data: {
+              id: lineId,
+              workspaceId: wsId,
+              alias: 'Scenario Interview Conflict (temp)',
+              waPhoneNumberId,
+              isActive: true,
+              archivedAt: null,
+              needsAttention: false,
+            } as any,
+            select: { id: true },
+          })
+          .catch(() => null);
+
+        const contactA = await prisma.contact
+          .create({ data: { workspaceId: wsId, displayName: 'Conflicto A', archivedAt: null } as any, select: { id: true } })
+          .catch(() => null);
+        const contactB = await prisma.contact
+          .create({ data: { workspaceId: wsId, displayName: 'Conflicto B', archivedAt: null } as any, select: { id: true } })
+          .catch(() => null);
+
+        const convA =
+          line?.id && contactA?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: line.id,
+                    contactId: contactA.id,
+                    status: 'OPEN',
+                    channel: 'sandbox',
+                    conversationKind: 'CLIENT',
+                    conversationStage: 'INTERVIEW_PENDING',
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+        const convB =
+          line?.id && contactB?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: line.id,
+                    contactId: contactB.id,
+                    status: 'OPEN',
+                    channel: 'sandbox',
+                    conversationKind: 'CLIENT',
+                    conversationStage: 'INTERVIEW_PENDING',
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+        if (!convA?.id || !convB?.id || !contactA?.id || !contactB?.id) {
+          assertions.push({ ok: false, message: 'interviewScheduleConflict: setup incompleto' });
+        } else {
+          const cfg = await getSystemConfig();
+          const first = await attemptScheduleInterview({
+            conversationId: convA.id,
+            contactId: contactA.id,
+            day: 'martes',
+            time: '10:00',
+            location: 'Providencia',
+            config: cfg,
+          }).catch(() => ({ ok: false } as any));
+          const second = await attemptScheduleInterview({
+            conversationId: convB.id,
+            contactId: contactB.id,
+            day: 'martes',
+            time: '10:00',
+            location: 'Providencia',
+            config: cfg,
+          }).catch(() => ({ ok: false } as any));
+          assertions.push({
+            ok: Boolean((first as any)?.ok),
+            message: (first as any)?.ok ? 'interviewScheduleConflict: primera reserva OK' : 'interviewScheduleConflict: primera reserva falló',
+          });
+          const conflict = !(second as any)?.ok && Array.isArray((second as any)?.alternatives) && (second as any).alternatives.length > 0;
+          assertions.push({
+            ok: conflict,
+            message: conflict
+              ? 'interviewScheduleConflict: segundo intento detecta conflicto y propone alternativas'
+              : 'interviewScheduleConflict: faltó conflicto/alternativas',
+          });
+        }
+
+        await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        await prisma.phoneLine.updateMany({ where: { workspaceId: wsId, id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+      }
+
+      if (staffCasesNewOk && typeof staffCasesNewOk === 'object') {
+        const wsId = String((staffCasesNewOk as any)?.workspaceId || 'scenario-staff-cases-new-ok').trim() || 'scenario-staff-cases-new-ok';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'staffCasesNewOk: userId missing' });
+        } else {
+          const lineId = `scenario-staff-cases-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          const staffE164 = '+56982345846';
+          const staffWaId = '56982345846';
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Staff Cases New OK', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Staff Cases New OK', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+              update: { role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const staffProgram = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'staff-operaciones-router' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Staff — Operaciones Router',
+                slug: 'staff-operaciones-router',
+                description: 'Scenario Staff Router',
+                isActive: true,
+                archivedAt: null,
+                agentSystemPrompt: 'Programa staff para escenarios.',
+              } as any,
+              update: { isActive: true, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const line = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Staff Router (temp)',
+                waPhoneNumberId,
+                isActive: true,
+                defaultProgramId: staffProgram?.id || null,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const staffContact = await prisma.contact
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+              create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              update: { phone: staffE164, displayName: 'Scenario Staff', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const staffConv =
+            line?.id && staffContact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: line.id,
+                      programId: staffProgram?.id || null,
+                      contactId: staffContact.id,
+                      status: 'OPEN',
+                      channel: 'whatsapp',
+                      isAdmin: false,
+                      aiMode: 'OFF',
+                      conversationKind: 'STAFF',
+                      conversationStage: 'NUEVO',
+                      stageChangedAt: now,
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+          const mkCase = async (name: string) => {
+            const c = await prisma.contact
+              .create({ data: { workspaceId: wsId, displayName: name, comuna: 'Providencia', archivedAt: null } as any, select: { id: true } })
+              .catch(() => null);
+            if (!line?.id || !c?.id) return null;
+            return prisma.conversation
+              .create({
+                data: {
+                  workspaceId: wsId,
+                  phoneLineId: line.id,
+                  contactId: c.id,
+                  status: 'OPEN',
+                  conversationStage: 'NEW_INTAKE',
+                  stageChangedAt: now,
+                  assignedToId: userId,
+                  channel: 'system',
+                  isAdmin: false,
+                  conversationKind: 'CLIENT',
+                  archivedAt: null,
+                } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+          };
+          const caseA = await mkCase('Caso Router A');
+          await mkCase('Caso Router B');
+
+          if (!staffConv?.id || !caseA?.id) {
+            assertions.push({ ok: false, message: 'staffCasesNewOk: setup incompleto' });
+          } else {
+            const inbound = await prisma.message
+              .create({
+                data: {
+                  conversationId: staffConv.id,
+                  direction: 'INBOUND',
+                  text: 'Cuáles son los casos nuevos?',
+                  rawPayload: JSON.stringify({ simulated: true, scenario: 'staff_cases_new_ok' }),
+                  timestamp: now,
+                  read: true,
+                },
+                select: { id: true },
+              })
+              .catch(() => null);
+            if (!inbound?.id) {
+              assertions.push({ ok: false, message: 'staffCasesNewOk: no se pudo crear inbound' });
+            } else {
+              await runAutomations({
+                app,
+                workspaceId: wsId,
+                eventType: 'INBOUND_MESSAGE',
+                conversationId: staffConv.id,
+                inboundMessageId: inbound.id,
+                inboundText: 'Cuáles son los casos nuevos?',
+                transportMode: 'NULL',
+              }).catch(() => {});
+
+              const lastOutbound = await prisma.message
+                .findFirst({
+                  where: { conversationId: staffConv.id, direction: 'OUTBOUND' },
+                  orderBy: { timestamp: 'desc' },
+                  select: { text: true },
+                })
+                .catch(() => null);
+              const outboundText = String(lastOutbound?.text || '');
+              const outboundOk = /casos encontrados|caso/i.test(outboundText);
+              assertions.push({
+                ok: outboundOk,
+                message: outboundOk ? 'staffCasesNewOk: respuesta staff generada' : `staffCasesNewOk: respuesta inesperada (${outboundText || '—'})`,
+              });
+
+              const latestRuns = await prisma.agentRunLog
+                .findMany({
+                  where: { workspaceId: wsId, conversationId: staffConv.id },
+                  orderBy: { createdAt: 'desc' },
+                  take: 5,
+                  select: { eventType: true, status: true, error: true },
+                })
+                .catch(() => []);
+              const hasRouter = latestRuns.some((r) => String(r.eventType).startsWith('STAFF_COMMAND_ROUTER'));
+              assertions.push({
+                ok: hasRouter,
+                message: hasRouter ? 'staffCasesNewOk: ejecutó STAFF_COMMAND_ROUTER' : 'staffCasesNewOk: no ejecutó STAFF_COMMAND_ROUTER',
+              });
+
+              const toolCalls = await prisma.toolCallLog
+                .findMany({
+                  where: {
+                    agentRun: {
+                      workspaceId: wsId,
+                      conversationId: staffConv.id,
+                    } as any,
+                  } as any,
+                  select: { toolName: true },
+                  take: 20,
+                })
+                .catch(() => []);
+              const badTools = toolCalls
+                .map((t) => String(t.toolName || '').toLowerCase())
+                .filter((name) => name === 'validate_rut' || name === 'get_available_programs');
+              assertions.push({
+                ok: badTools.length === 0,
+                message:
+                  badTools.length === 0
+                    ? 'staffCasesNewOk: no se usaron validate_rut/get_available_programs'
+                    : `staffCasesNewOk: tools inesperadas detectadas (${badTools.join(', ')})`,
+              });
+            }
+          }
+
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+        }
+      }
+
       if (staffTemplateVars && typeof staffTemplateVars === 'object') {
         const wsId = String((staffTemplateVars as any)?.workspaceId || 'scenario-staff-template-vars').trim() || 'scenario-staff-template-vars';
         const userId = request.user?.userId ? String(request.user.userId) : '';

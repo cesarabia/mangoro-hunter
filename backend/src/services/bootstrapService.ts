@@ -777,9 +777,19 @@ Datos mínimos:
 
 Reglas:
 - Responde en español, corto y humano (máx 6 líneas).
+- No uses menús numerados (1/2/3). Conversa en lenguaje natural.
 - Si falta información, pide solo faltantes en 1 mensaje.
+- Si ya informaste sueldo/boleta/pago, no vuelvas a preguntar “¿te acomoda?”.
 - Si no califica (sin licencia, fuera de zona o criterio excluyente), marca stage REJECTED y cierra amable.
-- No inventes entrevistas ni direcciones.
+- Condiciones del cargo:
+  - Sueldo: $600.000 líquidos.
+  - Contrato: boleta de honorarios.
+  - Pago: quincenal.
+  - Requisito crítico: licencia clase B + estacionamiento para guardar vehículo.
+- Entrevista presencial en Providencia.
+- Entrega dirección exacta SOLO cuando la entrevista esté confirmada: Av. Salvador 1574, Providencia.
+- Al pedir disponibilidad, solicita día + rango horario (ej: martes 10:30–11:00).
+- No inventes horarios disponibles; si no hay agenda confirmada, dilo claramente.
 `.trim();
 
       const staffConductoresPrompt = `
@@ -954,6 +964,45 @@ Reglas:
                   requireAvailability: true,
                   templateText:
                     '🚚 Caso {{stage}} · {{clientName}} · {{service}} · {{location}} · {{availability}} · ID {{conversationIdShort}}. Responde a este mensaje para operar el caso.',
+                },
+              ]),
+              archivedAt: null,
+            } as any,
+          })
+          .catch(() => {});
+      }
+
+      const newLeadRule = await prisma.automationRule.findFirst({
+        where: {
+          workspaceId: wsId,
+          trigger: 'INBOUND_MESSAGE',
+          archivedAt: null,
+          name: 'Envio Rápido: NEW_INTAKE -> notify staff',
+        } as any,
+        select: { id: true },
+      });
+      if (!newLeadRule?.id) {
+        await prisma.automationRule
+          .create({
+            data: {
+              workspaceId: wsId,
+              name: 'Envio Rápido: NEW_INTAKE -> notify staff',
+              description:
+                'Notifica al staff cuando entra un postulante nuevo (dedupe diario por conversación) y deja fallback in-app si WhatsApp se bloquea.',
+              enabled: true,
+              priority: 120,
+              trigger: 'INBOUND_MESSAGE',
+              scopePhoneLineId: null,
+              scopeProgramId: null,
+              conditionsJson: JSON.stringify([{ field: 'conversation.stage', op: 'equals', value: 'NEW_INTAKE' }]),
+              actionsJson: JSON.stringify([
+                {
+                  type: 'NOTIFY_STAFF_WHATSAPP',
+                  recipients: 'ROLE:ADMIN',
+                  dedupePolicy: 'DAILY',
+                  requireAvailability: false,
+                  templateText:
+                    '🚚 Nuevo postulante: {{clientName}} · {{service}} · {{location}} · {{availability}} · ID {{conversationIdShort}}. Responde a este mensaje para operar el caso.',
                 },
               ]),
               archivedAt: null,

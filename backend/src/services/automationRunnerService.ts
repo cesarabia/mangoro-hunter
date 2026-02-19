@@ -9,6 +9,7 @@ import { getContactDisplayName } from '../utils/contactDisplay';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { ensurePartnerConversation, ensureStaffConversation } from './staffConversationService';
 import { resolveWorkspaceProgramForKind } from './programRoutingService';
+import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from './templateService';
 
 type ProgramSummary = { id: string; name: string; slug: string };
 
@@ -475,6 +476,263 @@ async function maybeHandleProgramSelection(params: {
   return { handled: true };
 }
 
+type StaffRouterCommand =
+  | { type: 'LIST_CASES'; args: { stageSlug?: string; assignedToMe: boolean; limit: number; query?: string } }
+  | { type: 'GET_CASE_SUMMARY'; args: { conversationId: string } }
+  | { type: 'SET_STAGE'; args: { conversationId: string; stageSlug: string; reason?: string } }
+  | { type: 'SEND_CUSTOMER_MESSAGE'; args: { conversationId: string; text: string } };
+
+function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null {
+  const raw = String(inboundText || '').trim();
+  if (!raw) return null;
+  const normalized = normalizeLoose(raw);
+
+  if (
+    /\b(casos?|clientes?|postulantes?)\s+nuev/.test(normalized) ||
+    normalized === 'nuevos' ||
+    normalized === 'mis casos'
+  ) {
+    return { type: 'LIST_CASES', args: { stageSlug: 'NEW_INTAKE', assignedToMe: true, limit: 10 } };
+  }
+  const buscarMatch = raw.match(/^\s*buscar\s+(.+)\s*$/i);
+  if (buscarMatch?.[1]) {
+    return { type: 'LIST_CASES', args: { assignedToMe: true, limit: 10, query: buscarMatch[1].trim() } };
+  }
+  const resumenMatch = raw.match(/^\s*resumen\s+([a-zA-Z0-9\-_]+)\s*$/i);
+  if (resumenMatch?.[1]) {
+    return { type: 'GET_CASE_SUMMARY', args: { conversationId: resumenMatch[1].trim() } };
+  }
+  const stageMatch = raw.match(/^\s*cambiar\s+estado\s+([a-zA-Z0-9\-_]+)\s+([a-zA-Z0-9\-_]+)\s*$/i);
+  if (stageMatch?.[1] && stageMatch?.[2]) {
+    return {
+      type: 'SET_STAGE',
+      args: {
+        conversationId: stageMatch[1].trim(),
+        stageSlug: stageMatch[2].trim(),
+        reason: 'staff_command_router',
+      },
+    };
+  }
+  const sendMatch = raw.match(/^\s*enviar\s+msg\s+([a-zA-Z0-9\-_]+)\s+(.+)\s*$/i);
+  if (sendMatch?.[1] && sendMatch?.[2]) {
+    return {
+      type: 'SEND_CUSTOMER_MESSAGE',
+      args: { conversationId: sendMatch[1].trim(), text: sendMatch[2].trim() },
+    };
+  }
+
+  return null;
+}
+
+function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any): string {
+  const toolResult = toolExecResult?.details?.result || null;
+  const toolError = toolExecResult?.details?.error || null;
+  if (toolError) {
+    return `No pude consultar casos ahora (${toolError}). Intenta de nuevo en unos segundos o abre Inbox y filtra por estado.`;
+  }
+  if (command.type === 'LIST_CASES') {
+    const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
+    if (cases.length === 0) return 'No encontré casos para ese filtro. Prueba “buscar <nombre/comuna/id>”.';
+    const lines = cases.slice(0, 10).map((c: any) => {
+      const idShort = String(c?.id || '').slice(0, 8);
+      const name = String(c?.contactDisplay || 'Caso');
+      const stage = String(c?.stage || '—');
+      return `• ${name} · ${stage} · ${idShort}`;
+    });
+    return `Casos encontrados (${Math.min(cases.length, 10)}):\n${lines.join('\n')}`;
+  }
+  if (command.type === 'GET_CASE_SUMMARY') {
+    const c = toolResult?.case;
+    if (!c) return 'No encontré ese caso. Verifica el ID (puede ser el prefijo).';
+    const name = String(c?.contact?.displayName || 'Caso');
+    const stage = String(c?.stage || '—');
+    const location = [c?.contact?.comuna, c?.contact?.ciudad, c?.contact?.region].filter(Boolean).join(' · ');
+    const availability = String(c?.contact?.availabilityText || '').trim();
+    const idShort = String(c?.id || '').slice(0, 8);
+    return [
+      `Resumen ${idShort}:`,
+      `• Nombre: ${name}`,
+      `• Estado: ${stage}`,
+      location ? `• Ubicación: ${location}` : null,
+      availability ? `• Disponibilidad: ${availability}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (command.type === 'SET_STAGE') {
+    const stage = String(toolResult?.stage || command.args.stageSlug || '').trim();
+    return stage ? `Listo. Cambié el estado del caso a ${stage}.` : 'Listo. Actualicé el estado del caso.';
+  }
+  if (command.type === 'SEND_CUSTOMER_MESSAGE') {
+    if (toolExecResult?.blocked) {
+      const reason = String(toolExecResult?.blockedReason || 'BLOCKED');
+      return `No pude enviar el mensaje al candidato (bloqueado: ${reason}). Revisa Logs → Outbound.`;
+    }
+    const ok = Boolean(toolResult?.sendResult?.success ?? true);
+    if (ok) return 'Listo. Mensaje enviado al candidato.';
+    return `No pude enviar el mensaje (${String(toolResult?.sendResult?.error || 'error desconocido')}).`;
+  }
+  return 'Listo.';
+}
+
+async function maybeHandleStaffDeterministicRouter(params: {
+  app: FastifyInstance;
+  workspaceId: string;
+  conversation: any;
+  inboundText: string | null;
+  inboundMessageId?: string | null;
+  transportMode: ExecutorTransportMode;
+}): Promise<{ handled: boolean }> {
+  const kind = String((params.conversation as any)?.conversationKind || '').toUpperCase();
+  if (kind !== 'STAFF') return { handled: false };
+  if (params.conversation?.isAdmin) return { handled: false };
+
+  const inbound = String(params.inboundText || '').trim();
+  if (!inbound) return { handled: false };
+  const command = parseStaffRouterCommand(inbound);
+  if (!command) return { handled: false };
+
+  try {
+    const toolRun = await prisma.agentRunLog.create({
+      data: {
+        workspaceId: params.workspaceId,
+        conversationId: params.conversation.id,
+        programId: params.conversation.programId || null,
+        phoneLineId: params.conversation.phoneLineId || null,
+        eventType: 'STAFF_COMMAND_ROUTER',
+        status: 'RUNNING',
+        inputContextJson: serializeJson({
+          inboundMessageId: params.inboundMessageId || null,
+          inboundText: inbound,
+          command,
+          deterministic: true,
+        }),
+        commandsJson: serializeJson({
+          agent: 'staff_command_router',
+          version: 1,
+          commands: [{ command: 'RUN_TOOL', toolName: command.type, args: command.args }],
+        }),
+      },
+    });
+
+    const toolExec = await executeAgentResponse({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      agentRunId: toolRun.id,
+      response: {
+        agent: 'staff_command_router',
+        version: 1,
+        commands: [{ command: 'RUN_TOOL', toolName: command.type, args: command.args } as any],
+      } as any,
+      transportMode: params.transportMode,
+    });
+    const toolResult = Array.isArray(toolExec.results) && toolExec.results.length > 0 ? toolExec.results[0] : null;
+    const replyText = buildStaffRouterReply(command, toolResult);
+
+    const replyRun = await prisma.agentRunLog.create({
+      data: {
+        workspaceId: params.workspaceId,
+        conversationId: params.conversation.id,
+        programId: params.conversation.programId || null,
+        phoneLineId: params.conversation.phoneLineId || null,
+        eventType: 'STAFF_COMMAND_ROUTER_REPLY',
+        status: 'RUNNING',
+        inputContextJson: serializeJson({
+          sourceRunId: toolRun.id,
+          command,
+          toolResult,
+        }),
+        commandsJson: serializeJson({
+          agent: 'staff_command_router',
+          version: 1,
+          commands: [
+            {
+              command: 'SEND_MESSAGE',
+              conversationId: params.conversation.id,
+              channel: 'WHATSAPP',
+              type: 'SESSION_TEXT',
+              text: replyText,
+              dedupeKey: `staff_cmd_reply:${stableHash(`${params.conversation.id}:${inbound}:${replyText}`).slice(0, 16)}`,
+            },
+          ],
+        }),
+      },
+    });
+
+    await executeAgentResponse({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      agentRunId: replyRun.id,
+      response: {
+        agent: 'staff_command_router',
+        version: 1,
+        commands: [
+          {
+            command: 'SEND_MESSAGE',
+            conversationId: params.conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_TEXT',
+            text: replyText,
+            dedupeKey: `staff_cmd_reply:${stableHash(`${params.conversation.id}:${inbound}:${replyText}`).slice(0, 16)}`,
+          } as any,
+        ],
+      } as any,
+      transportMode: params.transportMode,
+    });
+    return { handled: true };
+  } catch (err) {
+    params.app.log.warn({ err, conversationId: params.conversation.id }, 'Staff deterministic router failed');
+    const safeText =
+      'No pude consultar casos ahora. Intenta de nuevo en unos segundos o abre Inbox y filtra por estado.';
+    const safeRun = await prisma.agentRunLog.create({
+      data: {
+        workspaceId: params.workspaceId,
+        conversationId: params.conversation.id,
+        programId: params.conversation.programId || null,
+        phoneLineId: params.conversation.phoneLineId || null,
+        eventType: 'STAFF_COMMAND_ROUTER_FALLBACK',
+        status: 'RUNNING',
+        inputContextJson: serializeJson({ error: err instanceof Error ? err.message : 'unknown' }),
+        commandsJson: serializeJson({
+          agent: 'staff_command_router',
+          version: 1,
+          commands: [
+            {
+              command: 'SEND_MESSAGE',
+              conversationId: params.conversation.id,
+              channel: 'WHATSAPP',
+              type: 'SESSION_TEXT',
+              text: safeText,
+              dedupeKey: `staff_cmd_fail:${stableHash(`${params.conversation.id}:${Date.now()}`).slice(0, 16)}`,
+            },
+          ],
+        }),
+      },
+    });
+    await executeAgentResponse({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      agentRunId: safeRun.id,
+      response: {
+        agent: 'staff_command_router',
+        version: 1,
+        commands: [
+          {
+            command: 'SEND_MESSAGE',
+            conversationId: params.conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_TEXT',
+            text: safeText,
+            dedupeKey: `staff_cmd_fail:${stableHash(`${params.conversation.id}:${Date.now()}`).slice(0, 16)}`,
+          } as any,
+        ],
+      } as any,
+      transportMode: params.transportMode,
+    });
+    return { handled: true };
+  }
+}
+
 type ConditionRow = { field: string; op: string; value?: any };
 type ActionRow =
   | { type: 'RUN_AGENT'; agent?: string }
@@ -897,6 +1155,16 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
       transportMode: params.transportMode,
     });
     if (selection.handled) return;
+
+    const staffRouter = await maybeHandleStaffDeterministicRouter({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      conversation,
+      inboundText: params.inboundText || null,
+      inboundMessageId: params.inboundMessageId || null,
+      transportMode: params.transportMode,
+    });
+    if (staffRouter.handled) return;
   }
 
   const rules = await prisma.automationRule.findMany({
@@ -1301,55 +1569,62 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
             }
 
             const strictWindow = await computeWhatsAppWindowStatusStrict(staffThread.conversation.id).catch(() => 'OUTSIDE_24H' as const);
+            let notifyType: 'SESSION_TEXT' | 'TEMPLATE' = 'SESSION_TEXT';
+            let notifyText: string | null = text;
+            let notifyTemplateName: string | null = null;
+            let notifyTemplateVars: Record<string, string> | null = null;
             if (strictWindow === 'OUTSIDE_24H') {
-              const textHash = stableHash(`WINDOW:SESSION_TEXT:${text}`);
-              await prisma.outboundMessageLog
-                .create({
-                  data: {
-                    workspaceId: params.workspaceId,
-                    conversationId: staffThread.conversation.id,
-                    relatedConversationId: conversation.id,
-                    agentRunId: null,
-                    channel: 'WHATSAPP',
-                    type: 'SESSION_TEXT',
-                    templateName: null,
-                    dedupeKey,
-                    textHash,
-                    blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
-                    waMessageId: null,
-                  } as any,
-                })
-                .catch(() => {});
-              await prisma.notificationLog
-                .create({
-                  data: {
-                    workspaceId: params.workspaceId,
-                    sourceConversationId: conversation.id,
-                    targetConversationId: staffThread.conversation.id,
-                    targetKind: 'STAFF',
-                    targetE164: staffE164,
-                    channel: 'WHATSAPP',
-                    dedupeKey,
-                    templateText: templateRaw || null,
-                    renderedText: text,
-                    varsJson: serializeJson(vars),
-                    blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
-                    waMessageId: null,
-                  } as any,
-                })
-                .catch(() => {});
-              await createInAppNotification({
-                workspaceId: params.workspaceId,
-                userId: targetUser.id,
-                conversationId: conversation.id,
-                type: 'STAFF_WHATSAPP_BLOCKED',
-                title: 'No se pudo enviar WhatsApp (fuera de ventana 24h)',
-                body: 'Para habilitar mensajes libres, pídele al staff que envíe “activar” al número de WhatsApp de SSClinical (abre ventana 24h).',
-                data: { blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE', to: staffE164, dedupeKey },
-                dedupeKey: `staff_wa_block:${conversation.id}:${stage}:${today}:${targetUser.id}`,
-              }).catch(() => {});
-              perRecipient.push({ userId: targetUser.id, ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
-              continue;
+              const templates = await loadTemplateConfig().catch(() => null);
+              const mode = stage.includes('INTERVIEW') ? 'INTERVIEW' : 'RECRUIT';
+              const templateName = templates ? selectTemplateForMode(mode as any, templates) : '';
+              const templateVarsArr =
+                templates && templateName
+                  ? resolveTemplateVariables(templateName, undefined, templates, {
+                      interviewDay: String((conversation as any).interviewDay || '').trim() || null,
+                      interviewTime: String((conversation as any).interviewTime || '').trim() || null,
+                      interviewLocation: String((conversation as any).interviewLocation || '').trim() || null,
+                      jobTitle: `Nuevo caso ${stage}`,
+                    })
+                  : [];
+              if (!templateName) {
+                const textHash = stableHash(`WINDOW:SESSION_TEXT:${text}`);
+                await prisma.outboundMessageLog
+                  .create({
+                    data: {
+                      workspaceId: params.workspaceId,
+                      conversationId: staffThread.conversation.id,
+                      relatedConversationId: conversation.id,
+                      agentRunId: null,
+                      channel: 'WHATSAPP',
+                      type: 'SESSION_TEXT',
+                      templateName: null,
+                      dedupeKey,
+                      textHash,
+                      blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+                      waMessageId: null,
+                    } as any,
+                  })
+                  .catch(() => {});
+                await createInAppNotification({
+                  workspaceId: params.workspaceId,
+                  userId: targetUser.id,
+                  conversationId: conversation.id,
+                  type: 'STAFF_WHATSAPP_BLOCKED',
+                  title: 'No se pudo enviar WhatsApp (fuera de ventana 24h)',
+                  body: 'Configura una plantilla WhatsApp para notificaciones y vuelve a intentar.',
+                  data: { blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE', to: staffE164, dedupeKey },
+                  dedupeKey: `staff_wa_block:${conversation.id}:${stage}:${today}:${targetUser.id}`,
+                }).catch(() => {});
+                perRecipient.push({ userId: targetUser.id, ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+                continue;
+              }
+              notifyType = 'TEMPLATE';
+              notifyText = null;
+              notifyTemplateName = templateName;
+              notifyTemplateVars = {};
+              templateVarsArr.forEach((v, idx) => {
+                (notifyTemplateVars as Record<string, string>)[`var${idx + 1}`] = String(v || '');
+              });
             }
 
             const staffRun = await prisma.agentRunLog.create({
@@ -1376,8 +1651,10 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
                       command: 'SEND_MESSAGE',
                       conversationId: staffThread.conversation.id,
                       channel: 'WHATSAPP',
-                      type: 'SESSION_TEXT',
-                      text,
+                      type: notifyType,
+                      ...(notifyType === 'TEMPLATE'
+                        ? { templateName: notifyTemplateName || '', templateVars: notifyTemplateVars || {} }
+                        : { text: notifyText || text }),
                       dedupeKey,
                     },
                   ],
@@ -1397,8 +1674,10 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
                     command: 'SEND_MESSAGE',
                     conversationId: staffThread.conversation.id,
                     channel: 'WHATSAPP',
-                    type: 'SESSION_TEXT',
-                    text,
+                    type: notifyType,
+                    ...(notifyType === 'TEMPLATE'
+                      ? { templateName: notifyTemplateName || '', templateVars: notifyTemplateVars || {} }
+                      : { text: notifyText || text }),
                     dedupeKey,
                   } as any,
                 ],

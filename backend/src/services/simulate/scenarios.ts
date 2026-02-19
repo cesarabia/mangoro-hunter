@@ -65,6 +65,9 @@ export type ScenarioStep = {
     staffClientsNewUsesListCases?: {
       workspaceId?: string;
     };
+    staffCasesNewOk?: {
+      workspaceId?: string;
+    };
     staffReplyToNotificationUpdatesCase?: {
       workspaceId?: string;
     };
@@ -96,6 +99,9 @@ export type ScenarioStep = {
     stageDefinitionsCrudBasic?: {
       workspaceId?: string;
       slug?: string;
+    };
+    interviewScheduleConflict?: {
+      workspaceId?: string;
     };
     workspaceCreationWizardGates?: {
       workspaceId?: string;
@@ -214,6 +220,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
         inboundText: 'Hola',
         inboundOffsetHours: -26,
         expect: { outbound: { blockedDelta: 1, lastBlockedReasonContains: 'OUTSIDE_24H' } },
+      },
+    ],
+  },
+  {
+    id: 'template_outside_24h_first_contact',
+    name: 'Template outside 24h: primer contacto',
+    description:
+      'Si la conversación está fuera de 24h, debe usar TEMPLATE automáticamente (sin bloquear por OUTSIDE_24H_REQUIRES_TEMPLATE).',
+    steps: [
+      {
+        inboundText: 'Hola',
+        inboundOffsetHours: -26,
+        expect: { outbound: { sentDelta: 1, blockedDelta: 0, lastBlockedReasonNotContains: 'OUTSIDE_24H' } },
       },
     ],
   },
@@ -547,6 +566,32 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check staff clientes nuevos',
         expect: { staffClientsNewUsesListCases: { workspaceId: 'scenario-staff-clients-new' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_cases_new_ok',
+    name: 'Staff: casos nuevos (router determinístico)',
+    description:
+      'Valida que "casos nuevos" en conversación STAFF llama LIST_CASES y responde listado, sin loops de tools legacy.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff cases new ok',
+        expect: { staffCasesNewOk: { workspaceId: 'scenario-staff-cases-new-ok' } },
+      },
+    ],
+  },
+  {
+    id: 'interview_schedule_conflict',
+    name: 'Agenda: conflicto de entrevista',
+    description:
+      'Agenda 2 candidatos en el mismo slot y valida que el segundo reciba alternativas (sin doble reserva).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check interview schedule conflict',
+        expect: { interviewScheduleConflict: { workspaceId: 'scenario-interview-conflict' } },
       },
     ],
   },

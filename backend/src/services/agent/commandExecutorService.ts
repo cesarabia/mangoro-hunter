@@ -12,6 +12,7 @@ import { getContactDisplayName } from '../../utils/contactDisplay';
 import { normalizeWhatsAppId } from '../../utils/whatsapp';
 import { coerceStageSlug, isKnownActiveStage, normalizeStageSlug } from '../workspaceStageService';
 import { runAutomations } from '../automationRunnerService';
+import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from '../templateService';
 
 export type ExecutorTransportMode = 'REAL' | 'NULL';
 
@@ -130,6 +131,77 @@ async function computeWhatsAppWindowStatusStrict(conversationId: string): Promis
   if (!lastInbound?.timestamp) return 'OUTSIDE_24H';
   const delta = Date.now() - new Date(lastInbound.timestamp).getTime();
   return delta <= WINDOW_MS ? 'IN_24H' : 'OUTSIDE_24H';
+}
+
+function toTemplateVarsRecord(values: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  values.forEach((value, idx) => {
+    out[`var${idx + 1}`] = String(value || '');
+  });
+  return out;
+}
+
+async function buildOutside24hTemplateFallback(params: {
+  conversation: any;
+  preferredText?: string | null;
+}): Promise<{ templateName: string; templateVars: Record<string, string>; mode: 'RECRUIT' | 'INTERVIEW' }> {
+  const templates = await loadTemplateConfig();
+  const preferred = String(params.preferredText || '').toLowerCase();
+  const stage = String((params.conversation as any)?.conversationStage || '').toUpperCase();
+  const shouldUseInterview =
+    /\b(entrevista|agendar|agenda|reagendar|confirmar entrevista|interview)\b/.test(preferred) ||
+    stage.includes('INTERVIEW');
+  const mode: 'RECRUIT' | 'INTERVIEW' = shouldUseInterview ? 'INTERVIEW' : 'RECRUIT';
+  const templateName = selectTemplateForMode(mode, templates);
+  const values = resolveTemplateVariables(templateName, undefined, templates, {
+    interviewDay: String((params.conversation as any)?.interviewDay || '').trim() || null,
+    interviewTime: String((params.conversation as any)?.interviewTime || '').trim() || null,
+    interviewLocation:
+      String((params.conversation as any)?.interviewLocation || '').trim() ||
+      String((params.conversation as any)?.defaultInterviewLocation || '').trim() ||
+      null,
+    jobTitle: String((params.conversation as any)?.program?.name || '').trim() || null,
+  });
+  return { templateName, templateVars: toTemplateVarsRecord(values), mode };
+}
+
+async function resolveCaseConversationId(params: {
+  workspaceId: string;
+  ref: string | null | undefined;
+  relatedConversationId?: string | null;
+}): Promise<string | null> {
+  const direct = String(params.ref || '').trim();
+  if (!direct) return params.relatedConversationId ? String(params.relatedConversationId) : null;
+
+  const exact = await prisma.conversation
+    .findFirst({
+      where: {
+        id: direct,
+        workspaceId: params.workspaceId,
+        archivedAt: null,
+        isAdmin: false,
+      } as any,
+      select: { id: true },
+    })
+    .catch(() => null);
+  if (exact?.id) return exact.id;
+
+  const byPrefix = await prisma.conversation
+    .findMany({
+      where: {
+        id: { startsWith: direct },
+        workspaceId: params.workspaceId,
+        archivedAt: null,
+        isAdmin: false,
+      } as any,
+      select: { id: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 2,
+    })
+    .catch(() => []);
+  if (byPrefix.length === 1 && byPrefix[0]?.id) return byPrefix[0].id;
+
+  return params.relatedConversationId ? String(params.relatedConversationId) : null;
 }
 
 async function resolveStaffActorForConversation(params: {
@@ -646,19 +718,127 @@ export async function executeAgentResponse(params: {
       }
 
       if (windowStatus === 'OUTSIDE_24H' && cmd.type === 'SESSION_TEXT') {
-        const textHash = stableHash(`WINDOW:${cmd.type}:${cmd.text || ''}`);
+        const fallback = await buildOutside24hTemplateFallback({
+          conversation: baseConversation,
+          preferredText: cmd.text || '',
+        }).catch(() => null);
+        if (!fallback?.templateName) {
+          const textHash = stableHash(`WINDOW:${cmd.type}:${cmd.text || ''}`);
+          await logOutbound({
+            workspaceId: params.workspaceId,
+            conversationId: baseConversation.id,
+            agentRunId: params.agentRunId,
+            type: cmd.type,
+            templateName: null,
+            dedupeKey: cmd.dedupeKey,
+            textHash,
+            blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+            relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
+          });
+          results.push({ ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+          continue;
+        }
+
+        const templateDedupeKey = `${cmd.dedupeKey}:outside24h_template`;
+        const textHash = stableHash(`TEMPLATE:${fallback.templateName}:${serializeJson(fallback.templateVars)}`);
+        const blockReason = await shouldBlockOutbound({
+          conversationId: baseConversation.id,
+          dedupeKey: templateDedupeKey,
+          textHash,
+          currentStageChangedAt: (baseConversation as any)?.stageChangedAt
+            ? new Date((baseConversation as any).stageChangedAt)
+            : null,
+        });
+        if (blockReason) {
+          await logOutbound({
+            workspaceId: params.workspaceId,
+            conversationId: baseConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'TEMPLATE',
+            templateName: fallback.templateName,
+            dedupeKey: templateDedupeKey,
+            textHash,
+            blockedReason: blockReason,
+            relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
+          });
+          results.push({ ok: true, blocked: true, blockedReason: blockReason });
+          continue;
+        }
+
+        const toWaId = contact.waId || contact.phone || (params.transportMode === 'NULL' ? 'sandbox' : null);
+        if (!toWaId) {
+          results.push({ ok: false, details: { error: 'missing_contact_waid' } });
+          continue;
+        }
+        const safetyBlock = safeOutboundBlockedReason({ toWaId, config });
+        if (safetyBlock) {
+          await logOutbound({
+            workspaceId: params.workspaceId,
+            conversationId: baseConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'TEMPLATE',
+            templateName: fallback.templateName,
+            dedupeKey: templateDedupeKey,
+            textHash,
+            blockedReason: safetyBlock,
+            relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
+          });
+          results.push({ ok: true, blocked: true, blockedReason: safetyBlock });
+          continue;
+        }
+
+        const phoneNumberId = baseConversation.phoneLine?.waPhoneNumberId || null;
+        let sendResult: SendResult = { success: true, messageId: `null-${Date.now()}` };
+        if (params.transportMode === 'REAL') {
+          sendResult = await sendWhatsAppTemplate(
+            toWaId,
+            fallback.templateName,
+            Object.values(fallback.templateVars),
+            { phoneNumberId },
+          );
+        }
+        await prisma.message.create({
+          data: {
+            conversationId: baseConversation.id,
+            direction: 'OUTBOUND',
+            text: `[TEMPLATE] ${fallback.templateName}`,
+            rawPayload: serializeJson({
+              system: true,
+              agentRunId: params.agentRunId,
+              dedupeKey: templateDedupeKey,
+              sendResult,
+              templateVars: fallback.templateVars,
+              fallbackFromOutside24h: true,
+            }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+        await prisma.conversation.update({
+          where: { id: baseConversation.id },
+          data: { updatedAt: new Date() },
+        });
         await logOutbound({
           workspaceId: params.workspaceId,
           conversationId: baseConversation.id,
           agentRunId: params.agentRunId,
-          type: cmd.type,
-          templateName: null,
-          dedupeKey: cmd.dedupeKey,
+          type: 'TEMPLATE',
+          templateName: fallback.templateName,
+          dedupeKey: templateDedupeKey,
           textHash,
-          blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+          blockedReason: sendResult.success ? null : `SEND_FAILED:${sendResult.error || 'unknown'}`,
+          waMessageId: sendResult.messageId || null,
           relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
         });
-        results.push({ ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+        results.push({
+          ok: true,
+          details: {
+            sendResult,
+            fallbackFromOutside24h: true,
+            templateName: fallback.templateName,
+            mode: fallback.mode,
+          },
+        });
         continue;
       }
 
@@ -872,6 +1052,7 @@ export async function executeAgentResponse(params: {
       if (toolName === 'LIST_CASES') {
         const stageSlugRaw = typeof (args as any).stageSlug === 'string' ? (args as any).stageSlug : '';
         const stageSlug = stageSlugRaw ? normalizeStageSlug(stageSlugRaw) : '';
+        const queryRaw = typeof (args as any).query === 'string' ? (args as any).query.trim() : '';
         const assignedToMe = Boolean((args as any).assignedToMe);
         const statusRaw = typeof (args as any).status === 'string' ? String((args as any).status).toUpperCase() : '';
         const status = statusRaw && ['NEW', 'OPEN', 'CLOSED'].includes(statusRaw) ? statusRaw : null;
@@ -892,22 +1073,48 @@ export async function executeAgentResponse(params: {
             contact: true,
             program: { select: { id: true, slug: true, name: true } },
           },
-          orderBy: { updatedAt: 'desc' },
-          take: limit,
+          orderBy: { createdAt: 'desc' },
+          take: queryRaw ? Math.max(limit * 4, 50) : limit,
         });
+
+        const query = normalizeForNameChecks(queryRaw);
+        const filtered = query
+          ? cases.filter((c: any) => {
+              const hay = normalizeForNameChecks(
+                [
+                  c.id,
+                  c.contact?.displayName,
+                  c.contact?.candidateName,
+                  c.contact?.candidateNameManual,
+                  c.contact?.phone,
+                  c.contact?.waId,
+                  c.contact?.comuna,
+                  c.contact?.ciudad,
+                  c.contact?.region,
+                  c.conversationStage,
+                ]
+                  .filter(Boolean)
+                  .join(' '),
+              );
+              return hay.includes(query);
+            })
+          : cases;
+
+        const finalCases = filtered.slice(0, limit);
 
         results.push({
           ok: true,
           details: {
             toolName,
             result: {
-              cases: cases.map((c: any) => ({
+              cases: finalCases.map((c: any) => ({
                 id: c.id,
                 stage: c.conversationStage,
                 status: c.status,
                 assignedToId: c.assignedToId || null,
                 program: c.program ? { id: c.program.id, slug: c.program.slug, name: c.program.name } : null,
                 contactDisplay: getContactDisplayName(c.contact),
+                createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : null,
                 updatedAt: c.updatedAt ? new Date(c.updatedAt).toISOString() : null,
               })),
             },
@@ -919,7 +1126,11 @@ export async function executeAgentResponse(params: {
       if (toolName === 'GET_CASE_SUMMARY') {
         const conversationIdArgRaw =
           typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
-        const conversationIdArg = conversationIdArgRaw || relatedConversationIdFromRun || '';
+        const conversationIdArg = await resolveCaseConversationId({
+          workspaceId: baseConversation.workspaceId,
+          ref: conversationIdArgRaw,
+          relatedConversationId: relatedConversationIdFromRun || null,
+        });
         if (!conversationIdArg) {
           results.push({
             ok: false,
@@ -982,7 +1193,11 @@ export async function executeAgentResponse(params: {
       if (toolName === 'ADD_NOTE') {
         const conversationIdArgRaw =
           typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
-        const conversationIdArg = conversationIdArgRaw || relatedConversationIdFromRun || '';
+        const conversationIdArg = await resolveCaseConversationId({
+          workspaceId: baseConversation.workspaceId,
+          ref: conversationIdArgRaw,
+          relatedConversationId: relatedConversationIdFromRun || null,
+        });
         const textArg = typeof (args as any).text === 'string' ? (args as any).text.trim() : '';
         if (!conversationIdArg || !textArg) {
           results.push({ ok: false, details: { error: 'conversationId y text requeridos', toolName } });
@@ -1019,7 +1234,11 @@ export async function executeAgentResponse(params: {
       if (toolName === 'SET_STAGE') {
         const conversationIdArgRaw =
           typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
-        const conversationIdArg = conversationIdArgRaw || relatedConversationIdFromRun || '';
+        const conversationIdArg = await resolveCaseConversationId({
+          workspaceId: baseConversation.workspaceId,
+          ref: conversationIdArgRaw,
+          relatedConversationId: relatedConversationIdFromRun || null,
+        });
         const stageArg = typeof (args as any).stageSlug === 'string' ? (args as any).stageSlug.trim() : '';
         const reasonArg = typeof (args as any).reason === 'string' ? (args as any).reason.trim() : '';
         if (!conversationIdArg || !stageArg) {
@@ -1095,7 +1314,11 @@ export async function executeAgentResponse(params: {
       if (toolName === 'SEND_CUSTOMER_MESSAGE') {
         const conversationIdArgRaw =
           typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
-        const conversationIdArg = conversationIdArgRaw || relatedConversationIdFromRun || '';
+        const conversationIdArg = await resolveCaseConversationId({
+          workspaceId: baseConversation.workspaceId,
+          ref: conversationIdArgRaw,
+          relatedConversationId: relatedConversationIdFromRun || null,
+        });
         const textArg = typeof (args as any).text === 'string' ? (args as any).text.trim() : '';
         if (!conversationIdArg || !textArg) {
           results.push({
@@ -1128,17 +1351,117 @@ export async function executeAgentResponse(params: {
 
         const window = await computeWhatsAppWindowStatusStrict(customerConversation.id).catch(() => 'OUTSIDE_24H' as WhatsAppWindowStatus);
         if (window === 'OUTSIDE_24H') {
+          const fallback = await buildOutside24hTemplateFallback({
+            conversation: customerConversation,
+            preferredText: textArg,
+          }).catch(() => null);
+          if (!fallback?.templateName) {
+            await logOutbound({
+              workspaceId: baseConversation.workspaceId,
+              conversationId: customerConversation.id,
+              agentRunId: params.agentRunId,
+              type: 'SESSION_TEXT',
+              templateName: null,
+              dedupeKey,
+              textHash: payloadHash,
+              blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+            });
+            results.push({ ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+            continue;
+          }
+          dedupeKey = `${dedupeKey}:outside24h_template`;
+          payloadHash = stableHash(`TEMPLATE:${fallback.templateName}:${serializeJson(fallback.templateVars)}`);
+
+          const blockReason = await shouldBlockOutbound({
+            conversationId: customerConversation.id,
+            dedupeKey,
+            textHash: payloadHash,
+            currentStageChangedAt: (customerConversation as any)?.stageChangedAt
+              ? new Date((customerConversation as any).stageChangedAt)
+              : null,
+          });
+          if (blockReason) {
+            await logOutbound({
+              workspaceId: baseConversation.workspaceId,
+              conversationId: customerConversation.id,
+              agentRunId: params.agentRunId,
+              type: 'TEMPLATE',
+              templateName: fallback.templateName,
+              dedupeKey,
+              textHash: payloadHash,
+              blockedReason: blockReason,
+            });
+            results.push({ ok: true, blocked: true, blockedReason: blockReason });
+            continue;
+          }
+
+          const toWaId =
+            customerContact.waId || customerContact.phone || (params.transportMode === 'NULL' ? 'sandbox' : null);
+          if (!toWaId) {
+            results.push({ ok: false, details: { error: 'missing_contact_waid', toolName } });
+            continue;
+          }
+
+          const safetyBlock = safeOutboundBlockedReason({ toWaId, config });
+          if (safetyBlock) {
+            await logOutbound({
+              workspaceId: baseConversation.workspaceId,
+              conversationId: customerConversation.id,
+              agentRunId: params.agentRunId,
+              type: 'TEMPLATE',
+              templateName: fallback.templateName,
+              dedupeKey,
+              textHash: payloadHash,
+              blockedReason: safetyBlock,
+            });
+            results.push({ ok: true, blocked: true, blockedReason: safetyBlock });
+            continue;
+          }
+
+          let sendResult: SendResult = { success: true, messageId: `null-${Date.now()}` };
+          if (params.transportMode === 'REAL') {
+            const phoneNumberId = customerConversation.phoneLine?.waPhoneNumberId || null;
+            sendResult = await sendWhatsAppTemplate(
+              toWaId,
+              fallback.templateName,
+              Object.values(fallback.templateVars),
+              { phoneNumberId },
+            );
+          }
+          await prisma.message.create({
+            data: {
+              conversationId: customerConversation.id,
+              direction: 'OUTBOUND',
+              text: `[TEMPLATE] ${fallback.templateName}`,
+              rawPayload: serializeJson({
+                system: true,
+                toolName,
+                staffActor: { userId: staffActor.userId, email: staffActor.email, role: staffActor.role },
+                agentRunId: params.agentRunId,
+                sendResult,
+                templateVars: fallback.templateVars,
+                fallbackFromOutside24h: true,
+              }),
+              timestamp: new Date(),
+              read: true,
+            },
+          });
+          await prisma.conversation.update({ where: { id: customerConversation.id }, data: { updatedAt: new Date() } }).catch(() => {});
           await logOutbound({
             workspaceId: baseConversation.workspaceId,
             conversationId: customerConversation.id,
             agentRunId: params.agentRunId,
-            type: 'SESSION_TEXT',
-            templateName: null,
+            type: 'TEMPLATE',
+            templateName: fallback.templateName,
             dedupeKey,
             textHash: payloadHash,
-            blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE',
+            blockedReason: sendResult.success ? null : `SEND_FAILED:${sendResult.error || 'unknown'}`,
+            waMessageId: sendResult.messageId || null,
           });
-          results.push({ ok: true, blocked: true, blockedReason: 'OUTSIDE_24H_REQUIRES_TEMPLATE' });
+          results.push({
+            ok: true,
+            details: { toolName, result: { sendResult, fallbackFromOutside24h: true, templateName: fallback.templateName } },
+          });
           continue;
         }
 

@@ -1853,25 +1853,28 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
               <h2>Plantillas WhatsApp</h2>
               <form onSubmit={handleSaveTemplates} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <label>
-                  <div>Template entrevista (nombre aprobado)</div>
+                  <div>templateConfirmacionEntrevistaName (nombre aprobado)</div>
                   <input
                     type="text"
                     value={templateInterviewInvite}
                     onChange={e => setTemplateInterviewInvite(e.target.value)}
-                    placeholder="ej: entrevista_confirmacion_1"
+                    placeholder="ej: enviorapido_confirma_entrevista_v1"
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   />
                 </label>
                 <label>
-                  <div>Template seguimiento general</div>
+                  <div>templatePrimerContactoName (nombre aprobado)</div>
                   <input
                     type="text"
                     value={templateGeneralFollowup}
                     onChange={e => setTemplateGeneralFollowup(e.target.value)}
-                    placeholder="ej: postulacion_completar_1"
+                    placeholder="ej: enviorapido_postulacion_inicio_v1"
                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #ccc' }}
                   />
                 </label>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  Estos templates se usan automáticamente cuando un mensaje cae fuera de ventana 24h.
+                </div>
                 <label>
                   <div>Idioma plantilla (language code)</div>
                   <input
