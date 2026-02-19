@@ -856,6 +856,24 @@ export async function runAgent(event: AgentEvent): Promise<{
 
     let safetyIterations = 0;
     let invalidAttempts = 0;
+    let downgradedModelOnValidation = false;
+    const tryDowngradeModelForValidation = (validationType: 'INVALID_SCHEMA' | 'INVALID_SEMANTICS'): boolean => {
+      if (downgradedModelOnValidation) return false;
+      const nextModel = fallbackModels.find((m) => String(m || '').trim() && m !== activeModel);
+      if (!nextModel) return false;
+      downgradedModelOnValidation = true;
+      activeModel = nextModel;
+      invalidAttempts = 0;
+      messages.push({
+        role: 'user',
+        content: serializeJson({
+          error: validationType,
+          instruction:
+            'Reintento con modelo fallback. Devuelve SOLO un JSON válido de comandos que cumpla estrictamente el schema.',
+        }),
+      });
+      return true;
+    };
     while (safetyIterations < 6) {
       safetyIterations += 1;
       const completionResult = await createChatCompletionWithModelFallback(
@@ -942,6 +960,9 @@ export async function runAgent(event: AgentEvent): Promise<{
           });
           continue;
         }
+        if (tryDowngradeModelForValidation('INVALID_SCHEMA')) {
+          continue;
+        }
         const fallback = buildFallbackResponse('INVALID_SCHEMA');
         await prisma.agentRunLog.update({
           where: { id: runLog.id },
@@ -997,6 +1018,9 @@ export async function runAgent(event: AgentEvent): Promise<{
                 'En SEND_MESSAGE: si type=SESSION_TEXT debes incluir "text". Si type=TEMPLATE debes incluir "templateName" (y variables si aplica).',
             }),
           });
+          continue;
+        }
+        if (tryDowngradeModelForValidation('INVALID_SEMANTICS')) {
           continue;
         }
         const fallback = buildFallbackResponse('INVALID_SEMANTICS');
