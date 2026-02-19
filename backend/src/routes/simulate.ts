@@ -4630,7 +4630,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             .catch(() => null);
           const contact = await prisma.contact
             .create({
-              data: { workspaceId: wsId, displayName: 'Demo Repeated', waId: `scenario-repeat-${Date.now()}`, archivedAt: null } as any,
+              data: { workspaceId: wsId, displayName: 'Demo Repeated', waId: '56994830202', archivedAt: null } as any,
               select: { id: true },
             })
             .catch(() => null);

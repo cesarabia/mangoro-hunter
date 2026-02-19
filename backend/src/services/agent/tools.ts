@@ -64,14 +64,17 @@ function titleCase(value: string): string {
 
 function findCommune(normalized: string): string | null {
   const hay = stripAccents(normalized).toLowerCase();
-  for (const raw of RM_COMMUNES) {
+  const matches = RM_COMMUNES.filter((raw) => {
     const needle = stripAccents(raw).toLowerCase();
-    if (!needle) continue;
-    if (hay.includes(needle)) {
-      return titleCase(raw);
-    }
-  }
-  return null;
+    return Boolean(needle) && hay.includes(needle);
+  });
+  if (matches.length === 0) return null;
+  const ordered = [...matches].sort((a, b) => b.length - a.length);
+  const hasSpecific = ordered.some((m) => stripAccents(m).toLowerCase() !== 'santiago');
+  const chosen = hasSpecific
+    ? ordered.find((m) => stripAccents(m).toLowerCase() !== 'santiago') || ordered[0]
+    : ordered[0];
+  return titleCase(chosen);
 }
 
 export function resolveLocation(text: string, country = 'CL'): ResolvedLocation {
