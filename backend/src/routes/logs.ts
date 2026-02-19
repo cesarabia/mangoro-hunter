@@ -157,6 +157,48 @@ export async function registerLogRoutes(app: FastifyInstance) {
     }));
   });
 
+  app.get('/ai-usage', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
+
+    const limitRaw = (request.query as any)?.limit;
+    const limit = typeof limitRaw === 'string' ? parseInt(limitRaw, 10) : 50;
+    const take = Number.isFinite(limit) && limit > 0 && limit <= 200 ? limit : 50;
+
+    const logs = await prisma.aiUsageLog.findMany({
+      where: { workspaceId: access.workspaceId },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        createdAt: true,
+        actor: true,
+        conversationId: true,
+        programId: true,
+        model: true,
+        modelRequested: true as any,
+        modelResolved: true as any,
+        inputTokens: true,
+        outputTokens: true,
+        totalTokens: true,
+      } as any,
+    });
+
+    return logs.map((l: any) => ({
+      id: l.id,
+      createdAt: l.createdAt.toISOString(),
+      actor: l.actor,
+      conversationId: l.conversationId || null,
+      programId: l.programId || null,
+      model: l.model,
+      modelRequested: l.modelRequested || null,
+      modelResolved: l.modelResolved || null,
+      inputTokens: l.inputTokens || 0,
+      outputTokens: l.outputTokens || 0,
+      totalTokens: l.totalTokens || 0,
+    }));
+  });
+
   app.get('/copilot-runs', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     if (!isWorkspaceAdmin(request, access)) return reply.code(403).send({ error: 'Forbidden' });
