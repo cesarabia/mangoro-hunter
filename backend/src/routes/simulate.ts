@@ -4629,8 +4629,10 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             })
             .catch(() => null);
           const contact = await prisma.contact
-            .create({
-              data: { workspaceId: wsId, displayName: 'Demo Repeated', waId: '56994830202', archivedAt: null } as any,
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: '56994830202' } } as any,
+              create: { workspaceId: wsId, displayName: 'Demo Repeated', waId: '56994830202', archivedAt: null } as any,
+              update: { displayName: 'Demo Repeated', archivedAt: null } as any,
               select: { id: true },
             })
             .catch(() => null);
