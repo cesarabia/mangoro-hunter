@@ -87,6 +87,33 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     return !isSuspiciousCandidateName(value);
   };
 
+  const pickTemplateContactName = (contact: any): string | null => {
+    if (!contact) return null;
+    const candidates = [
+      contact?.candidateNameManual,
+      contact?.candidateName,
+      contact?.displayName,
+      contact?.name,
+    ]
+      .map((v: any) => (typeof v === 'string' ? v.trim() : ''))
+      .filter(Boolean);
+
+    for (const value of candidates) {
+      const lower = value.toLowerCase();
+      if (
+        lower.includes('ejecutivo') ||
+        lower.includes('ventas') ||
+        lower.includes('terreno') ||
+        lower.includes('postul') ||
+        lower.includes('informaci')
+      ) {
+        continue;
+      }
+      return value;
+    }
+    return null;
+  };
+
   async function logSystemMessage(conversationId: string, text: string, rawPayload?: any) {
     await prisma.message.create({
       data: {
@@ -932,7 +959,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden' });
     }
     const { id } = request.params as { id: string };
-    const body = request.body as { templateName?: string; variables?: string[] };
+    const body = request.body as { templateName?: string; variables?: string[]; templateLanguageCode?: string | null };
     if (!body.templateName) {
       return reply.code(400).send({ error: 'templateName es obligatorio' });
     }
@@ -953,12 +980,17 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const finalVariables = resolveTemplateVariables(body.templateName, body.variables, templates, {
       interviewDay: conversation.interviewDay,
       interviewTime: conversation.interviewTime,
-      interviewLocation: conversation.interviewLocation
+      interviewLocation: conversation.interviewLocation,
+      candidateName: pickTemplateContactName(conversation.contact),
     });
 
     const sendResult = await sendWhatsAppTemplate(conversation.contact.waId, body.templateName, finalVariables, {
       phoneNumberId: conversation.phoneLine?.waPhoneNumberId || null,
       enforceSafeMode: false,
+      languageCode:
+        typeof body.templateLanguageCode === 'string' && body.templateLanguageCode.trim()
+          ? body.templateLanguageCode.trim()
+          : null,
     });
     if (!sendResult.success) {
       return reply.code(502).send({ error: sendResult.error || 'Falló el envío de plantilla' });

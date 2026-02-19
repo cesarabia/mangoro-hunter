@@ -62,6 +62,33 @@ function normalizeManualName(value?: string | null): string | null {
   return cleaned;
 }
 
+function pickTemplateContactName(contact: any, manualName: string | null): string | null {
+  const candidates = [
+    manualName,
+    contact?.candidateNameManual,
+    contact?.candidateName,
+    contact?.displayName,
+    contact?.name,
+  ]
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter(Boolean);
+
+  for (const value of candidates) {
+    const lower = value.toLowerCase();
+    if (
+      lower.includes('ejecutivo') ||
+      lower.includes('ventas') ||
+      lower.includes('terreno') ||
+      lower.includes('postul') ||
+      lower.includes('informaci')
+    ) {
+      continue;
+    }
+    return value;
+  }
+  return null;
+}
+
 export async function createConversationAndMaybeSend(
   params: CreateAndSendParams
 ): Promise<CreateAndSendResult> {
@@ -156,7 +183,8 @@ export async function createConversationAndMaybeSend(
     const finalVariables = resolveTemplateVariables(templateName, params.variables, templates, {
       interviewDay: conversation.interviewDay,
       interviewTime: conversation.interviewTime,
-      interviewLocation: conversation.interviewLocation
+      interviewLocation: conversation.interviewLocation,
+      candidateName: pickTemplateContactName(contact, manualName),
     });
 
     sendResult = await sendWhatsAppTemplate(waId, templateName, finalVariables, {

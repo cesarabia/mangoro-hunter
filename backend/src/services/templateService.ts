@@ -119,6 +119,7 @@ export function resolveTemplateVariables(
     interviewTime?: string | null;
     interviewLocation?: string | null;
     jobTitle?: string | null;
+    candidateName?: string | null;
   }
 ): string[] {
   const normalized =
@@ -127,11 +128,18 @@ export function resolveTemplateVariables(
       : [];
 
   if (templateName === (templates.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP)) {
+    const isLegacyRecruitTemplate =
+      String(templateName || '').trim().toLowerCase() ===
+      String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase();
+    const candidateName = String(conversationOverrides?.candidateName || '').trim();
     const v1 =
       normalized[0] ||
+      (isLegacyRecruitTemplate ? '' : candidateName) ||
       conversationOverrides?.jobTitle ||
       templates.defaultJobTitle ||
-      DEFAULT_JOB_TITLE;
+      DEFAULT_JOB_TITLE ||
+      candidateName ||
+      'Postulante';
     return [v1];
   }
 

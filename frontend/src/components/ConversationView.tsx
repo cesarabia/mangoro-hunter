@@ -1310,7 +1310,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         {downloadError && <div style={{ color: '#b93800', fontSize: 13 }}>{downloadError}</div>}
         {safeModeActionStatus && <div style={{ color: '#1a7f37', fontSize: 13 }}>{safeModeActionStatus}</div>}
         {safeModeActionError && <div style={{ color: '#b93800', fontSize: 13 }}>{safeModeActionError}</div>}
-        {hasConversation && !isAdmin && !within24h && (
+        {hasConversation && !isAdmin && (
           <>
             {requiredTemplate ? (
               <>
