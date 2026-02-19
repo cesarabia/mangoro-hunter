@@ -89,14 +89,16 @@ export function resolveLocation(text: string, country = 'CL'): ResolvedLocation 
 
   let ciudad: string | null = null;
   if (hasSantiago) ciudad = 'Santiago';
-  if (!ciudad && comuna && region === 'Región Metropolitana') ciudad = 'Santiago';
+  const comunaIsRm = Boolean(comuna && RM_COMMUNES.some((c) => stripAccents(c).toLowerCase() === stripAccents(comuna).toLowerCase()));
+  const normalizedRegion = region || (comunaIsRm ? 'Región Metropolitana' : null);
+  if (!ciudad && comunaIsRm) ciudad = 'Santiago';
 
-  if (!comuna && !ciudad && !region) {
+  if (!comuna && !ciudad && !normalizedRegion) {
     return { comuna: null, ciudad: null, region: null, country: 'CL', confidence: 0, normalized };
   }
 
   const confidence = comuna ? 0.9 : ciudad ? 0.7 : 0.5;
-  return { comuna, ciudad, region, country: 'CL', confidence, normalized };
+  return { comuna, ciudad, region: normalizedRegion, country: 'CL', confidence, normalized };
 }
 
 export function normalizeRut(rutRaw: string): string | null {

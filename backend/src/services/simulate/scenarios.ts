@@ -100,6 +100,12 @@ export type ScenarioStep = {
       workspaceId?: string;
       slug?: string;
     };
+    clientLocationFreeText?: {
+      workspaceId?: string;
+    };
+    clientRepeatedMessagesNoCannedRepeat?: {
+      workspaceId?: string;
+    };
     interviewScheduleConflict?: {
       workspaceId?: string;
     };
@@ -592,6 +598,47 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check interview schedule conflict',
         expect: { interviewScheduleConflict: { workspaceId: 'scenario-interview-conflict' } },
+      },
+    ],
+  },
+  {
+    id: 'client_location_free_text',
+    name: 'CLIENT: ubicación en texto libre',
+    description:
+      'Valida que entradas libres como “Pudahuel”, “Santiago, Pudahuel” y “Providencia” se interpreten como ubicación sin forzar formato rígido.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check client location free text',
+        expect: { clientLocationFreeText: { workspaceId: 'scenario-client-location-free-text' } },
+      },
+    ],
+  },
+  {
+    id: 'client_repeated_messages_no_canned_repeat',
+    name: 'CLIENT: mensajes seguidos sin repetición enlatada',
+    description:
+      'Valida que múltiples respuestas iguales no queden en loop textual exacto y evita formato rígido/menús 1-2.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check client repeated no canned repeat',
+        expect: {
+          clientRepeatedMessagesNoCannedRepeat: { workspaceId: 'scenario-client-repeated-no-canned' },
+        },
+      },
+    ],
+  },
+  {
+    id: 'staff_cases_new_includes_new_intake',
+    name: 'STAFF: casos nuevos incluye NEW_INTAKE',
+    description:
+      'Valida que “casos nuevos” incluya conversaciones reales en etapa inicial (NEW_INTAKE/NUEVO equivalentes).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff cases new includes intake',
+        expect: { staffClientsNewUsesListCases: { workspaceId: 'scenario-staff-cases-new-intake' } },
       },
     ],
   },

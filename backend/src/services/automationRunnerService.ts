@@ -492,11 +492,11 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
     normalized === 'nuevos' ||
     normalized === 'mis casos'
   ) {
-    return { type: 'LIST_CASES', args: { stageSlug: 'NEW_INTAKE', assignedToMe: true, limit: 10 } };
+    return { type: 'LIST_CASES', args: { stageSlug: 'NEW_INTAKE', assignedToMe: false, limit: 10 } };
   }
   const buscarMatch = raw.match(/^\s*buscar\s+(.+)\s*$/i);
   if (buscarMatch?.[1]) {
-    return { type: 'LIST_CASES', args: { assignedToMe: true, limit: 10, query: buscarMatch[1].trim() } };
+    return { type: 'LIST_CASES', args: { assignedToMe: false, limit: 10, query: buscarMatch[1].trim() } };
   }
   const resumenMatch = raw.match(/^\s*resumen\s+([a-zA-Z0-9\-_]+)\s*$/i);
   if (resumenMatch?.[1]) {
@@ -532,7 +532,8 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
   }
   if (command.type === 'LIST_CASES') {
     const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
-    if (cases.length === 0) return 'No encontré casos para ese filtro. Prueba “buscar <nombre/comuna/id>”.';
+    if (cases.length === 0)
+      return 'No encontré casos nuevos en este momento. Puedes intentar “buscar <nombre/comuna/id>” o revisar Inbox con filtro Nuevo.';
     const lines = cases.slice(0, 10).map((c: any) => {
       const idShort = String(c?.id || '').slice(0, 8);
       const name = String(c?.contactDisplay || 'Caso');

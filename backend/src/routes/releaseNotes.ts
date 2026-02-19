@@ -181,6 +181,7 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'stage_notify_whatsapp_fallback_inapp',
       // V2.2: Staff WhatsApp (tools + reply-to + templates + requireAvailability)
       'staff_clients_new_uses_list_cases',
+      'staff_cases_new_includes_new_intake',
       'staff_cases_new_ok',
       'staff_inbox_list_cases',
       'staff_notification_template_variables',
@@ -188,6 +189,8 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'ssclinical_notification_requires_availability',
       'interview_schedule_conflict',
       'template_outside_24h_first_contact',
+      'client_location_free_text',
+      'client_repeated_messages_no_canned_repeat',
       // V2.3: Multi-persona (staff/partner) + templates determinísticos + availability gating
       'staff_mode_routing',
       'staff_menu_switch_program',

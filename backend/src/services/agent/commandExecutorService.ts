@@ -3,7 +3,7 @@ import { prisma } from '../../db/client';
 import { serializeJson } from '../../utils/json';
 import { AgentCommand, AgentResponse } from './commandSchema';
 import { computeOutboundBlockReason } from './guardrails';
-import { stableHash, stripAccents } from './tools';
+import { resolveLocation, stableHash, stripAccents } from './tools';
 import { sendWhatsAppTemplate, sendWhatsAppText, SendResult } from '../whatsappMessageService';
 import { attemptScheduleInterview, formatInterviewExactAddress } from '../interviewSchedulerService';
 import { getEffectiveOutboundAllowlist, getOutboundPolicy, getSystemConfig } from '../configService';
@@ -32,6 +32,18 @@ function safeJsonParse(value: string | null | undefined): any {
   } catch {
     return null;
   }
+}
+
+function extractInboundTextFromRunContext(agentRunContext: any): string {
+  if (!agentRunContext || typeof agentRunContext !== 'object') return '';
+  const direct = String((agentRunContext as any).inboundText || '').trim();
+  if (direct) return direct;
+  const ev = (agentRunContext as any).event;
+  if (ev && typeof ev === 'object') {
+    const fromEvent = String((ev as any).inboundText || '').trim();
+    if (fromEvent) return fromEvent;
+  }
+  return '';
 }
 
 type StaffActor = {
@@ -294,40 +306,40 @@ function buildLoopBreakerQuestion(params: { field: string; contact: any }): stri
 
   if (params.field === 'candidateName') {
     if (candidateName) {
-      return `Confirmación rápida: ¿Tu nombre es ${candidateName}?\n1) Sí\n2) No (escríbelo completo)`;
+      return `Solo para confirmar: ¿tu nombre es ${candidateName}? Si no, escríbelo completo.`;
     }
     return 'Para avanzar necesito tu nombre y apellido (escríbelo en una sola línea).';
   }
   if (params.field === 'location') {
     if (comuna) {
-      return `Confirmación rápida: ¿Tu comuna es ${comuna}?\n1) Sí\n2) No (escríbela)`;
+      return `Solo para confirmar: ¿tu comuna es ${comuna}? Si no, dime tu comuna o ciudad en texto libre.`;
     }
     if (ciudad) {
-      return `Confirmación rápida: ¿Tu ciudad es ${ciudad}?\n1) Sí\n2) No (escríbela)`;
+      return `Solo para confirmar: ¿tu ciudad es ${ciudad}? Si no, indícame comuna o ciudad en texto libre.`;
     }
-    return 'Para avanzar necesito tu comuna y ciudad (Chile). Responde así: Comuna: ___, Ciudad: ___.';
+    return 'Para avanzar necesito tu comuna o ciudad (Chile). Puedes escribirla en texto libre, por ejemplo: Pudahuel o Providencia.';
   }
   if (params.field === 'rut') {
     if (rut) {
-      return `Confirmación rápida: ¿Tu RUT es ${rut}?\n1) Sí\n2) No (escríbelo)`;
+      return `Solo para confirmar: ¿tu RUT es ${rut}? Si no, escríbelo nuevamente.`;
     }
     return 'Para avanzar necesito tu RUT (ej: 12.345.678-9).';
   }
   if (params.field === 'email') {
     if (email) {
-      return `Confirmación rápida: ¿Tu email es ${email}?\n1) Sí\n2) No (escríbelo)`;
+      return `Solo para confirmar: ¿tu email es ${email}? Si no, escríbelo nuevamente.`;
     }
     return '¿Me indicas tu email? (opcional; si no tienes, escribe “no tengo”).';
   }
   if (params.field === 'experience') {
     if (experienceYears !== null) {
-      return `Confirmación rápida: ¿Tienes ${experienceYears} años de experiencia?\n1) Sí\n2) No (cuéntame años y rubros)`;
+      return `Solo para confirmar: ¿tienes ${experienceYears} años de experiencia? Si no, cuéntame años y rubros.`;
     }
     return '¿Cuánta experiencia tienes en ventas? (años y rubros; si hiciste terreno, indícalo).';
   }
   if (params.field === 'availability') {
     if (availabilityText) {
-      return `Confirmación rápida: ¿Tu disponibilidad es “${availabilityText}”?\n1) Sí\n2) No (indícala)`;
+      return `Solo para confirmar: ¿tu disponibilidad es “${availabilityText}”? Si no, indícala de nuevo.`;
     }
     return '¿Cuál es tu disponibilidad para empezar?';
   }
@@ -441,6 +453,7 @@ async function resolveOutboundWithAntiLoopFallback(params: {
   dedupeKey: string;
   text: string;
   currentStageChangedAt?: Date | null;
+  forceVariantOnSameText?: boolean;
 }): Promise<{
   text: string;
   dedupeKey: string;
@@ -457,7 +470,8 @@ async function resolveOutboundWithAntiLoopFallback(params: {
     textHash,
     currentStageChangedAt: params.currentStageChangedAt || null,
   });
-  if (blockReason !== 'ANTI_LOOP_SAME_TEXT' || !text) {
+  const mustAttemptVariant = blockReason === 'ANTI_LOOP_SAME_TEXT' || Boolean(params.forceVariantOnSameText);
+  if (!mustAttemptVariant || !text) {
     return { text, dedupeKey, textHash, blockReason, fallbackApplied: false };
   }
 
@@ -503,6 +517,7 @@ export async function executeAgentResponse(params: {
     })
     .catch(() => null);
   const agentRunContext = safeJsonParse(agentRun?.inputContextJson || null);
+  const inboundTextFromRunContext = extractInboundTextFromRunContext(agentRunContext);
   const relatedConversationIdFromRun = (() => {
     if (!agentRunContext || typeof agentRunContext !== 'object') return null;
     if (typeof (agentRunContext as any).sourceConversationId === 'string') {
@@ -573,6 +588,18 @@ export async function executeAgentResponse(params: {
       }
 
       const patch: Record<string, any> = { ...cmd.patch };
+      const locationMissing =
+        !String(patch.comuna || '').trim() &&
+        !String(patch.ciudad || '').trim() &&
+        !String(patch.region || '').trim();
+      if (locationMissing && inboundTextFromRunContext) {
+        const resolved = resolveLocation(inboundTextFromRunContext, 'CL');
+        if (resolved.confidence >= 0.6) {
+          if (resolved.comuna && !String(patch.comuna || '').trim()) patch.comuna = resolved.comuna;
+          if (resolved.ciudad && !String(patch.ciudad || '').trim()) patch.ciudad = resolved.ciudad;
+          if (resolved.region && !String(patch.region || '').trim()) patch.region = resolved.region;
+        }
+      }
       if (patch.candidateName) {
         const manual = String((contact as any).candidateNameManual || '').trim();
         if (manual) {
@@ -875,6 +902,38 @@ export async function executeAgentResponse(params: {
           ? new Date((baseConversation as any).stageChangedAt)
           : null,
       });
+      if (cmd.type === 'SESSION_TEXT' && !blockReason && String(effectiveText || '').trim()) {
+        const repeatedRecently = await prisma.outboundMessageLog.findFirst({
+          where: {
+            conversationId: baseConversation.id,
+            blockedReason: null,
+            textHash: payloadHash,
+            createdAt: { gte: new Date(Date.now() - 120_000) },
+          },
+          select: { id: true },
+        });
+        if (repeatedRecently?.id) {
+          const fallback = await resolveOutboundWithAntiLoopFallback({
+            conversationId: baseConversation.id,
+            dedupeKey: effectiveDedupeKey,
+            text: effectiveText,
+            currentStageChangedAt: (baseConversation as any)?.stageChangedAt
+              ? new Date((baseConversation as any).stageChangedAt)
+              : null,
+            forceVariantOnSameText: true,
+          });
+          if (!fallback.blockReason && fallback.fallbackApplied) {
+            effectiveText = fallback.text;
+            effectiveDedupeKey = fallback.dedupeKey;
+            payloadHash = fallback.textHash;
+            guardrailOverride = {
+              ...(guardrailOverride || {}),
+              type: 'ANTI_LOOP_TEXT_VARIANT',
+              sourceReason: 'RECENT_SAME_TEXT',
+            };
+          }
+        }
+      }
       if (cmd.type === 'SESSION_TEXT' && blockReason === 'ANTI_LOOP_SAME_TEXT' && String(effectiveText || '').trim()) {
         const fallback = await resolveOutboundWithAntiLoopFallback({
           conversationId: baseConversation.id,
@@ -1060,6 +1119,12 @@ export async function executeAgentResponse(params: {
       if (toolName === 'LIST_CASES') {
         const stageSlugRaw = typeof (args as any).stageSlug === 'string' ? (args as any).stageSlug : '';
         const stageSlug = stageSlugRaw ? normalizeStageSlug(stageSlugRaw) : '';
+        const stageSlugSet =
+          stageSlug === 'NEW_INTAKE'
+            ? ['NEW_INTAKE', 'NUEVO', 'SCREENING', 'INFO', 'WAITING_CANDIDATE']
+            : stageSlug
+              ? [stageSlug]
+              : [];
         const queryRaw = typeof (args as any).query === 'string' ? (args as any).query.trim() : '';
         const assignedToMe = Boolean((args as any).assignedToMe);
         const statusRaw = typeof (args as any).status === 'string' ? String((args as any).status).toUpperCase() : '';
@@ -1074,7 +1139,11 @@ export async function executeAgentResponse(params: {
             isAdmin: false,
             conversationKind: 'CLIENT',
             ...(status ? { status } : {}),
-            ...(stageSlug ? { conversationStage: stageSlug } : {}),
+            ...(stageSlugSet.length > 1
+              ? ({ conversationStage: { in: stageSlugSet } } as any)
+              : stageSlugSet.length === 1
+                ? ({ conversationStage: stageSlugSet[0] } as any)
+                : {}),
             ...(assignedToMe ? { assignedToId: staffActor.userId } : {}),
           } as any,
           include: {
@@ -1496,6 +1565,33 @@ export async function executeAgentResponse(params: {
             ? new Date((customerConversation as any).stageChangedAt)
             : null,
         });
+        if (!blockReason && String(effectiveText || '').trim()) {
+          const repeatedRecently = await prisma.outboundMessageLog.findFirst({
+            where: {
+              conversationId: customerConversation.id,
+              blockedReason: null,
+              textHash: payloadHash,
+              createdAt: { gte: new Date(Date.now() - 120_000) },
+            },
+            select: { id: true },
+          });
+          if (repeatedRecently?.id) {
+            const fallback = await resolveOutboundWithAntiLoopFallback({
+              conversationId: customerConversation.id,
+              dedupeKey,
+              text: effectiveText,
+              currentStageChangedAt: (customerConversation as any)?.stageChangedAt
+                ? new Date((customerConversation as any).stageChangedAt)
+                : null,
+              forceVariantOnSameText: true,
+            });
+            if (!fallback.blockReason && fallback.fallbackApplied) {
+              dedupeKey = fallback.dedupeKey;
+              payloadHash = fallback.textHash;
+              effectiveText = fallback.text;
+            }
+          }
+        }
         if (blockReason === 'ANTI_LOOP_SAME_TEXT') {
           const fallback = await resolveOutboundWithAntiLoopFallback({
             conversationId: customerConversation.id,

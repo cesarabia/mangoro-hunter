@@ -4425,6 +4425,359 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         }
       }
 
+      const clientLocationFreeText = (step.expect as any)?.clientLocationFreeText;
+      if (clientLocationFreeText && typeof clientLocationFreeText === 'object') {
+        const wsId =
+          String((clientLocationFreeText as any)?.workspaceId || 'scenario-client-location-free-text').trim() ||
+          'scenario-client-location-free-text';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'clientLocationFreeText: userId missing' });
+        } else {
+          const lineId = `scenario-client-loc-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Client Location Free Text', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Client Location Free Text', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Client Location (temp)',
+                phoneE164: null,
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const contact = await prisma.contact
+            .create({
+              data: {
+                workspaceId: wsId,
+                displayName: 'Demo Cliente',
+                waId: `scenario-client-loc-${Date.now()}`,
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const convo =
+            phoneLine?.id && contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      contactId: contact.id,
+                      status: 'OPEN',
+                      channel: 'sandbox',
+                      isAdmin: false,
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'NEW_INTAKE',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+          if (!contact?.id || !convo?.id) {
+            assertions.push({ ok: false, message: 'clientLocationFreeText: setup incompleto' });
+          } else {
+            const samples = [
+              { text: 'Pudahuel', expectedComuna: 'pudahuel' },
+              { text: 'Santiago, Pudahuel', expectedComuna: 'pudahuel' },
+              { text: 'Providencia', expectedComuna: 'providencia' },
+            ];
+            for (const sample of samples) {
+              await prisma.contact
+                .update({
+                  where: { id: contact.id },
+                  data: { comuna: null, ciudad: null, region: null } as any,
+                })
+                .catch(() => {});
+              await prisma.message
+                .create({
+                  data: {
+                    conversationId: convo.id,
+                    direction: 'INBOUND',
+                    text: sample.text,
+                    rawPayload: JSON.stringify({ simulated: true, scenario: 'client_location_free_text' }),
+                    timestamp: new Date(),
+                    read: true,
+                  },
+                })
+                .catch(() => null);
+              const run = await prisma.agentRunLog
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    conversationId: convo.id,
+                    phoneLineId: phoneLine?.id || null,
+                    eventType: 'INBOUND_MESSAGE',
+                    status: 'RUNNING',
+                    inputContextJson: JSON.stringify({ event: { inboundText: sample.text } }),
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null);
+              if (!run?.id) {
+                assertions.push({ ok: false, message: `clientLocationFreeText: no se pudo crear run (${sample.text})` });
+                continue;
+              }
+              await executeAgentResponse({
+                app,
+                workspaceId: wsId,
+                agentRunId: run.id,
+                response: {
+                  agent: 'scenario_client_location',
+                  version: 1,
+                  commands: [
+                    {
+                      command: 'UPSERT_PROFILE_FIELDS',
+                      contactId: contact.id,
+                      patch: {},
+                    } as any,
+                  ],
+                } as any,
+                transportMode: 'NULL',
+              }).catch(() => null);
+
+              const updated = await prisma.contact
+                .findUnique({
+                  where: { id: contact.id },
+                  select: { comuna: true, ciudad: true, region: true },
+                })
+                .catch(() => null);
+              const comunaNorm = normalizeForContains(String((updated as any)?.comuna || ''));
+              const comunaOk = comunaNorm.includes(sample.expectedComuna);
+              assertions.push({
+                ok: comunaOk,
+                message: comunaOk
+                  ? `clientLocationFreeText: ${sample.text} -> comuna=${String((updated as any)?.comuna || '')}`
+                  : `clientLocationFreeText: ${sample.text} no mapeó comuna (got ${String((updated as any)?.comuna || '—')})`,
+              });
+            }
+          }
+
+          // Cleanup: archive-only.
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      const clientRepeatedMessagesNoCannedRepeat = (step.expect as any)?.clientRepeatedMessagesNoCannedRepeat;
+      if (clientRepeatedMessagesNoCannedRepeat && typeof clientRepeatedMessagesNoCannedRepeat === 'object') {
+        const wsId =
+          String((clientRepeatedMessagesNoCannedRepeat as any)?.workspaceId || 'scenario-client-repeated-no-canned')
+            .trim() || 'scenario-client-repeated-no-canned';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'clientRepeatedMessagesNoCannedRepeat: userId missing' });
+        } else {
+          const lineId = `scenario-client-repeat-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Client Repeated No Canned', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Client Repeated No Canned', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+          const phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Client Repeat (temp)',
+                phoneE164: null,
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const contact = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, displayName: 'Demo Repeated', waId: `scenario-repeat-${Date.now()}`, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const convo =
+            phoneLine?.id && contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      contactId: contact.id,
+                      status: 'OPEN',
+                      channel: 'sandbox',
+                      isAdmin: false,
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'NEW_INTAKE',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+          if (!convo?.id) {
+            assertions.push({ ok: false, message: 'clientRepeatedMessagesNoCannedRepeat: setup incompleto' });
+          } else {
+            await prisma.conversationAskedField
+              .upsert({
+                where: { conversationId_field: { conversationId: convo.id, field: 'location' } },
+                create: {
+                  conversationId: convo.id,
+                  field: 'location',
+                  askCount: 3,
+                  lastAskedAt: now,
+                  lastAskedHash: 'scenario-location-loop',
+                  updatedAt: now,
+                } as any,
+                update: { askCount: 3, lastAskedAt: now, lastAskedHash: 'scenario-location-loop', updatedAt: now } as any,
+              })
+              .catch(() => {});
+
+            const inboundBurst = ['hola', 'hola otra vez', 'pudahuel'];
+            const outboundTexts: string[] = [];
+            const blockedReasons: string[] = [];
+            for (let i = 0; i < inboundBurst.length; i += 1) {
+              const inboundText = inboundBurst[i];
+              await prisma.message
+                .create({
+                  data: {
+                    conversationId: convo.id,
+                    direction: 'INBOUND',
+                    text: inboundText,
+                    rawPayload: JSON.stringify({ simulated: true, scenario: 'client_repeated_messages_no_canned_repeat' }),
+                    timestamp: new Date(Date.now() + i * 1000),
+                    read: true,
+                  },
+                })
+                .catch(() => null);
+              const run = await prisma.agentRunLog
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    conversationId: convo.id,
+                    phoneLineId: phoneLine?.id || null,
+                    eventType: 'INBOUND_MESSAGE',
+                    status: 'RUNNING',
+                    inputContextJson: JSON.stringify({ event: { inboundText } }),
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null);
+              if (!run?.id) continue;
+              await executeAgentResponse({
+                app,
+                workspaceId: wsId,
+                agentRunId: run.id,
+                response: {
+                  agent: 'scenario_client_repeat',
+                  version: 1,
+                  commands: [
+                    {
+                      command: 'SEND_MESSAGE',
+                      conversationId: convo.id,
+                      channel: 'WHATSAPP',
+                      type: 'SESSION_TEXT',
+                      text: 'Para avanzar necesito tu comuna y ciudad.',
+                      dedupeKey: `scenario-repeat-${i + 1}`,
+                    } as any,
+                  ],
+                } as any,
+                transportMode: 'NULL',
+              }).catch(() => null);
+
+              const lastMsg = await prisma.message
+                .findFirst({
+                  where: { conversationId: convo.id, direction: 'OUTBOUND' },
+                  orderBy: { timestamp: 'desc' },
+                  select: { text: true, transcriptText: true },
+                })
+                .catch(() => null);
+              outboundTexts.push(String(lastMsg?.transcriptText || lastMsg?.text || '').trim());
+              const lastLog = await prisma.outboundMessageLog
+                .findFirst({
+                  where: { conversationId: convo.id },
+                  orderBy: { createdAt: 'desc' },
+                  select: { blockedReason: true },
+                })
+                .catch(() => null);
+              blockedReasons.push(String(lastLog?.blockedReason || ''));
+            }
+
+            const uniqueCount = new Set(outboundTexts.filter(Boolean)).size;
+            assertions.push({
+              ok: uniqueCount >= 2,
+              message:
+                uniqueCount >= 2
+                  ? `clientRepeatedMessagesNoCannedRepeat: variantes OK (${uniqueCount} textos distintos)`
+                  : 'clientRepeatedMessagesNoCannedRepeat: respuestas idénticas repetidas',
+            });
+            const noRigidTemplate = outboundTexts.every((t) => {
+              const n = normalizeForContains(t);
+              return !n.includes('responde asi') && !n.includes('1)') && !n.includes('2)');
+            });
+            assertions.push({
+              ok: noRigidTemplate,
+              message: noRigidTemplate
+                ? 'clientRepeatedMessagesNoCannedRepeat: sin formato rígido/menú 1-2'
+                : `clientRepeatedMessagesNoCannedRepeat: detectado formato rígido (${outboundTexts.join(' | ')})`,
+            });
+            const noSilentAntiLoop = blockedReasons.every((r) => !String(r || '').includes('ANTI_LOOP_SAME_TEXT'));
+            assertions.push({
+              ok: noSilentAntiLoop,
+              message: noSilentAntiLoop
+                ? 'clientRepeatedMessagesNoCannedRepeat: sin bloqueo ANTI_LOOP_SAME_TEXT'
+                : `clientRepeatedMessagesNoCannedRepeat: bloqueo detectado (${blockedReasons.join(' | ')})`,
+            });
+          }
+
+          // Cleanup: archive-only.
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
       const stepOk = assertions.every((a) => a.ok);
       ok = ok && stepOk;
       stepResults.push({

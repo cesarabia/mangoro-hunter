@@ -20,7 +20,7 @@ test('resolveLocation handles separators like "/" and keeps accents in canonical
   const out = resolveLocation('Santiago/Ñuñoa');
   assert.deepEqual(
     { comuna: out.comuna, ciudad: out.ciudad, region: out.region, country: out.country },
-    { comuna: 'Ñuñoa', ciudad: 'Santiago', region: null, country: 'CL' },
+    { comuna: 'Ñuñoa', ciudad: 'Santiago', region: 'Región Metropolitana', country: 'CL' },
   );
   assert.equal(out.confidence, 0.9);
 });
