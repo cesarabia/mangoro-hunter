@@ -43,6 +43,14 @@ function inferConfiguredTemplateLanguage(templateName: string, globalLanguage: s
   const key = String(templateName || '').trim().toLowerCase();
   if (!key) return normalizedGlobal;
 
+  // Explicit language overrides for known Envío Rápido templates.
+  if (key === 'enviorapido_postulacion_inicio_v1' || key === 'enviorapido_confirma_entrevista_v1') {
+    return 'es';
+  }
+  if (key === 'enviorapido_recontacto_operativo_v1') {
+    return 'es_CL';
+  }
+
   // Legacy internal defaults were created in es_CL.
   const isLegacyDefault =
     key === String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase() ||
