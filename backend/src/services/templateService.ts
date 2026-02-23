@@ -126,10 +126,15 @@ export function resolveTemplateVariables(
     Array.isArray(providedVariables) && providedVariables.length > 0
       ? providedVariables.map(value => (typeof value === 'string' ? value.trim() : '')).filter(Boolean)
       : [];
+  const templateKey = String(templateName || '').trim().toLowerCase();
 
-  if (templateName === (templates.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP)) {
+  if (
+    templateName === (templates.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP) ||
+    templateKey === 'enviorapido_postulacion_inicio_v1' ||
+    templateKey === 'enviorapido_recontacto_operativo_v1'
+  ) {
     const isLegacyRecruitTemplate =
-      String(templateName || '').trim().toLowerCase() ===
+      templateKey ===
       String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase();
     const candidateName = String(conversationOverrides?.candidateName || '').trim();
     const v1 = isLegacyRecruitTemplate

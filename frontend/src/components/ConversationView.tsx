@@ -118,7 +118,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [templateVariables, setTemplateVariables] = useState<string[]>([]);
   const [templatePanelOpen, setTemplatePanelOpen] = useState(false);
   const [templateCatalogOptions, setTemplateCatalogOptions] = useState<
-    Array<{ name: string; category?: string | null; language?: string | null; status?: string | null; source?: string | null }>
+    Array<{ name: string; category?: string | null; language?: string | null; status?: string | null; source?: string | null; variableCount?: number | null }>
   >([]);
   const [templateCatalogLoading, setTemplateCatalogLoading] = useState(false);
   const [templateCatalogError, setTemplateCatalogError] = useState<string | null>(null);
@@ -600,13 +600,28 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     (opt) => String(opt?.name || '').trim() === String(templateNameForSend || '').trim()
   );
   const templateVariableCount = (() => {
+    const fromOption = Number(selectedTemplateOption?.variableCount);
+    if (Number.isFinite(fromOption) && fromOption > 0) return Math.floor(fromOption);
     const selected = String(templateNameForSend || '').trim();
     if (!selected) return 0;
     const selectedLower = selected.toLowerCase();
     const recruitDefault = String(templateGeneralFollowup || '').trim();
     const interviewDefault = String(templateInterviewInvite || '').trim();
-    if (selectedLower === 'postulacion_completar_1' || (recruitDefault && selected === recruitDefault)) return 1;
-    if (selectedLower === 'entrevista_confirmacion_1' || (interviewDefault && selected === interviewDefault)) return 3;
+    if (
+      selectedLower === 'postulacion_completar_1' ||
+      selectedLower === 'enviorapido_postulacion_inicio_v1' ||
+      selectedLower === 'enviorapido_recontacto_operativo_v1' ||
+      (recruitDefault && selected === recruitDefault)
+    ) {
+      return 1;
+    }
+    if (
+      selectedLower === 'entrevista_confirmacion_1' ||
+      selectedLower === 'enviorapido_confirma_entrevista_v1' ||
+      (interviewDefault && selected === interviewDefault)
+    ) {
+      return 3;
+    }
     return 0;
   })();
   const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF'; label: string }> = [
@@ -714,20 +729,23 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     }
     const recruitDefault = String(templateGeneralFollowup || '').trim();
     const interviewDefault = String(templateInterviewInvite || '').trim();
+    const fallbackName =
+      String(conversation?.contact?.candidateNameManual || '').trim() ||
+      String(conversation?.contact?.candidateName || '').trim() ||
+      String(conversation?.contact?.displayName || '').trim() ||
+      'Postulante';
     if (
       templateNameForSend === 'postulacion_completar_1' ||
+      templateNameForSend === 'enviorapido_postulacion_inicio_v1' ||
+      templateNameForSend === 'enviorapido_recontacto_operativo_v1' ||
       (recruitDefault && templateNameForSend === recruitDefault)
     ) {
-      const fallbackName =
-        String(conversation?.contact?.candidateNameManual || '').trim() ||
-        String(conversation?.contact?.candidateName || '').trim() ||
-        String(conversation?.contact?.displayName || '').trim() ||
-        'Postulante';
       setTemplateVariables([fallbackName]);
       return;
     }
     if (
       templateNameForSend === 'entrevista_confirmacion_1' ||
+      templateNameForSend === 'enviorapido_confirma_entrevista_v1' ||
       (interviewDefault && templateNameForSend === interviewDefault)
     ) {
       setTemplateVariables([
@@ -735,6 +753,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         conversation?.interviewTime || templateConfig.defaultInterviewTime || '',
         conversation?.interviewLocation || templateConfig.defaultInterviewLocation || ''
       ]);
+      return;
+    }
+    if (templateVariableCount === 1) {
+      setTemplateVariables([fallbackName]);
       return;
     }
     setTemplateVariables(Array.from({ length: templateVariableCount }, () => ''));

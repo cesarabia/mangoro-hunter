@@ -12,6 +12,7 @@ export type TemplateCatalogEntry = {
   category: string | null;
   language: string | null;
   status: string | null;
+  variableCount: number;
   source: 'META' | 'CONFIG';
 };
 
@@ -79,8 +80,55 @@ function upsertTemplate(entries: Map<string, TemplateCatalogEntry>, next: Templa
     category: next.category || existing.category,
     language: next.language || existing.language,
     status: next.status || existing.status,
+    variableCount:
+      next.source === 'META'
+        ? next.variableCount
+        : Number.isFinite(existing.variableCount) && existing.variableCount > 0
+          ? existing.variableCount
+          : next.variableCount,
     source: existing.source === 'META' || next.source === 'META' ? 'META' : 'CONFIG',
   });
+}
+
+function inferConfiguredTemplateVariableCount(
+  templateName: string,
+  defaults: { recruit: string; interview: string }
+): number {
+  const key = String(templateName || '').trim().toLowerCase();
+  if (!key) return 0;
+  const recruitDefaultKey = String(defaults.recruit || '').trim().toLowerCase();
+  const interviewDefaultKey = String(defaults.interview || '').trim().toLowerCase();
+  if (
+    key === String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase() ||
+    key === recruitDefaultKey ||
+    key === 'enviorapido_postulacion_inicio_v1' ||
+    key === 'enviorapido_recontacto_operativo_v1'
+  ) {
+    return 1;
+  }
+  if (
+    key === String(DEFAULT_TEMPLATE_INTERVIEW_INVITE || '').trim().toLowerCase() ||
+    key === interviewDefaultKey ||
+    key === 'enviorapido_confirma_entrevista_v1'
+  ) {
+    return 3;
+  }
+  return 0;
+}
+
+function inferMetaTemplateVariableCount(row: any): number {
+  const components = Array.isArray((row as any)?.components) ? ((row as any).components as any[]) : [];
+  let maxIdx = 0;
+  for (const component of components) {
+    const text = String((component as any)?.text || '');
+    if (!text) continue;
+    const matches = text.matchAll(/{{\s*(\d+)\s*}}/g);
+    for (const m of matches) {
+      const parsed = Number.parseInt(String(m?.[1] || ''), 10);
+      if (Number.isFinite(parsed) && parsed > maxIdx) maxIdx = parsed;
+    }
+  }
+  return Math.max(0, maxIdx);
 }
 
 async function fetchMetaTemplates(args: {
@@ -91,7 +139,7 @@ async function fetchMetaTemplates(args: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
-    const url = `${args.baseUrl.replace(/\/+$/, '')}/${args.wabaId}/message_templates?limit=200&fields=name,status,category,language`;
+    const url = `${args.baseUrl.replace(/\/+$/, '')}/${args.wabaId}/message_templates?limit=200&fields=name,status,category,language,components`;
     const res = await fetch(url, {
       method: 'GET',
       headers: {
@@ -222,6 +270,7 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
       category: null,
       language: inferConfiguredTemplateLanguage(name, normalizeNullable((config as any)?.templateLanguageCode)),
       status: 'CONFIGURADA',
+      variableCount: inferConfiguredTemplateVariableCount(name, defaults),
       source: 'CONFIG',
     });
   }
@@ -283,6 +332,7 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
           category: normalizeNullable((row as any)?.category),
           language,
           status: normalizeNullable((row as any)?.status),
+          variableCount: inferMetaTemplateVariableCount(row),
           source: 'META',
         });
       }
