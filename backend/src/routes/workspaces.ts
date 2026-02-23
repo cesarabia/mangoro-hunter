@@ -41,6 +41,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         isSandbox: true,
         templateRecruitmentStartName: true as any,
         templateInterviewConfirmationName: true as any,
+        templateAdditionalNamesJson: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -63,6 +64,15 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       isSandbox: Boolean(workspace.isSandbox),
       templateRecruitmentStartName: String((workspace as any).templateRecruitmentStartName || '').trim() || null,
       templateInterviewConfirmationName: String((workspace as any).templateInterviewConfirmationName || '').trim() || null,
+      templateAdditionalNames: (() => {
+        try {
+          const raw = String((workspace as any).templateAdditionalNamesJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)).filter(Boolean) : [];
+        } catch {
+          return [];
+        }
+      })(),
       ssclinicalNurseLeaderEmail: (workspace as any).ssclinicalNurseLeaderEmail || null,
       staffDefaultProgramId: (workspace as any).staffDefaultProgramId || null,
       clientDefaultProgramId: (workspace as any).clientDefaultProgramId || null,
@@ -118,6 +128,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const body = request.body as {
       templateRecruitmentStartName?: string | null;
       templateInterviewConfirmationName?: string | null;
+      templateAdditionalNames?: string[] | null;
       ssclinicalNurseLeaderEmail?: string | null;
       staffDefaultProgramId?: string | null;
       clientDefaultProgramId?: string | null;
@@ -131,6 +142,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     };
     const hasRecruitTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateRecruitmentStartName');
     const hasInterviewTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateInterviewConfirmationName');
+    const hasAdditionalTemplates = Object.prototype.hasOwnProperty.call(body || {}, 'templateAdditionalNames');
     const hasEmail = Object.prototype.hasOwnProperty.call(body || {}, 'ssclinicalNurseLeaderEmail');
     const hasStaffProgram = Object.prototype.hasOwnProperty.call(body || {}, 'staffDefaultProgramId');
     const hasClientProgram = Object.prototype.hasOwnProperty.call(body || {}, 'clientDefaultProgramId');
@@ -144,6 +156,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     if (
       !hasRecruitTemplate &&
       !hasInterviewTemplate &&
+      !hasAdditionalTemplates &&
       !hasEmail &&
       !hasStaffProgram &&
       !hasClientProgram &&
@@ -191,6 +204,28 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       nextInterviewTemplateName.length > 120
     ) {
       return reply.code(400).send({ error: '"templateInterviewConfirmationName" es demasiado largo (max 120).' });
+    }
+
+    const normalizeTemplateList = (value: unknown): string[] => {
+      if (!Array.isArray(value)) return [];
+      const out: string[] = [];
+      for (const item of value) {
+        const name = String(item || '').trim();
+        if (!name) continue;
+        if (name.length > 120) {
+          throw new Error('"templateAdditionalNames" contiene un nombre demasiado largo (max 120).');
+        }
+        if (!out.includes(name)) out.push(name);
+      }
+      return out;
+    };
+    let nextAdditionalTemplateNames: string[] | null = null;
+    if (hasAdditionalTemplates) {
+      try {
+        nextAdditionalTemplateNames = normalizeTemplateList(body?.templateAdditionalNames);
+      } catch (err: any) {
+        return reply.code(400).send({ error: err?.message || 'templateAdditionalNames inválido.' });
+      }
     }
 
     const staffProgramRaw = body?.staffDefaultProgramId;
@@ -246,6 +281,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         archivedAt: true,
         templateRecruitmentStartName: true as any,
         templateInterviewConfirmationName: true as any,
+        templateAdditionalNamesJson: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -301,6 +337,14 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
                 typeof interviewTemplateRaw === 'string' ? nextInterviewTemplateName || null : null,
             }
           : {}),
+        ...(hasAdditionalTemplates
+          ? {
+              templateAdditionalNamesJson:
+                nextAdditionalTemplateNames && nextAdditionalTemplateNames.length > 0
+                  ? serializeJson(nextAdditionalTemplateNames)
+                  : null,
+            }
+          : {}),
         ...(hasEmail ? { ssclinicalNurseLeaderEmail: typeof emailRaw === 'string' ? nextEmail || null : null } : {}),
         ...(hasStaffProgram ? { staffDefaultProgramId: typeof staffProgramRaw === 'string' ? nextStaffProgramId || null : null } : {}),
         ...(hasClientProgram ? { clientDefaultProgramId: typeof clientProgramRaw === 'string' ? nextClientProgramId || null : null } : {}),
@@ -317,6 +361,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         id: true,
         templateRecruitmentStartName: true as any,
         templateInterviewConfirmationName: true as any,
+        templateAdditionalNamesJson: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -358,7 +403,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         .catch(() => {});
     }
 
-    if (hasRecruitTemplate || hasInterviewTemplate) {
+    if (hasRecruitTemplate || hasInterviewTemplate || hasAdditionalTemplates) {
       await prisma.configChangeLog
         .create({
           data: {
@@ -368,10 +413,12 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
             beforeJson: serializeJson({
               templateRecruitmentStartName: (existing as any).templateRecruitmentStartName || null,
               templateInterviewConfirmationName: (existing as any).templateInterviewConfirmationName || null,
+              templateAdditionalNamesJson: (existing as any).templateAdditionalNamesJson || null,
             }),
             afterJson: serializeJson({
               templateRecruitmentStartName: (updated as any).templateRecruitmentStartName || null,
               templateInterviewConfirmationName: (updated as any).templateInterviewConfirmationName || null,
+              templateAdditionalNamesJson: (updated as any).templateAdditionalNamesJson || null,
             }),
           },
         })
@@ -414,6 +461,15 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       ok: true,
       templateRecruitmentStartName: String((updated as any).templateRecruitmentStartName || '').trim() || null,
       templateInterviewConfirmationName: String((updated as any).templateInterviewConfirmationName || '').trim() || null,
+      templateAdditionalNames: (() => {
+        try {
+          const raw = String((updated as any).templateAdditionalNamesJson || '').trim();
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed.map((v) => String(v)).filter(Boolean) : [];
+        } catch {
+          return [];
+        }
+      })(),
       ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null,
       staffDefaultProgramId: (updated as any).staffDefaultProgramId || null,
       clientDefaultProgramId: (updated as any).clientDefaultProgramId || null,

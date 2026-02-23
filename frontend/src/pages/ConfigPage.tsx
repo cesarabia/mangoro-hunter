@@ -128,6 +128,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [ssclinicalNurseLeaderError, setSsclinicalNurseLeaderError] = useState<string | null>(null);
   const [templateRecruitDefaultDraft, setTemplateRecruitDefaultDraft] = useState<string>('');
   const [templateInterviewDefaultDraft, setTemplateInterviewDefaultDraft] = useState<string>('');
+  const [templateAdditionalNamesDraft, setTemplateAdditionalNamesDraft] = useState<string>('');
   const [templateDefaultsSaving, setTemplateDefaultsSaving] = useState(false);
   const [templateDefaultsStatus, setTemplateDefaultsStatus] = useState<string | null>(null);
   const [templateDefaultsError, setTemplateDefaultsError] = useState<string | null>(null);
@@ -353,6 +354,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setTemplateInterviewDefaultDraft(
         typeof data?.templateInterviewConfirmationName === 'string' ? data.templateInterviewConfirmationName : '',
       );
+      setTemplateAdditionalNamesDraft(
+        Array.isArray(data?.templateAdditionalNames)
+          ? data.templateAdditionalNames
+              .map((v: any) => String(v || '').trim())
+              .filter(Boolean)
+              .join('\n')
+          : '',
+      );
       const staffProgramId = typeof data?.staffDefaultProgramId === 'string' ? data.staffDefaultProgramId : '';
       setStaffDefaultProgramIdDraft(staffProgramId || '');
       const clientProgramId = typeof data?.clientDefaultProgramId === 'string' ? data.clientDefaultProgramId : '';
@@ -428,15 +437,32 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     try {
       const recruit = templateRecruitDefaultDraft.trim();
       const interview = templateInterviewDefaultDraft.trim();
+      const additional = Array.from(
+        new Set(
+          templateAdditionalNamesDraft
+            .split(/[\n,]+/g)
+            .map((value) => value.trim())
+            .filter(Boolean),
+        ),
+      );
       const res: any = await apiClient.patch('/api/workspaces/current', {
         templateRecruitmentStartName: recruit.length > 0 ? recruit : null,
         templateInterviewConfirmationName: interview.length > 0 ? interview : null,
+        templateAdditionalNames: additional,
       });
       setTemplateRecruitDefaultDraft(
         typeof res?.templateRecruitmentStartName === 'string' ? res.templateRecruitmentStartName : '',
       );
       setTemplateInterviewDefaultDraft(
         typeof res?.templateInterviewConfirmationName === 'string' ? res.templateInterviewConfirmationName : '',
+      );
+      setTemplateAdditionalNamesDraft(
+        Array.isArray(res?.templateAdditionalNames)
+          ? res.templateAdditionalNames
+              .map((v: any) => String(v || '').trim())
+              .filter(Boolean)
+              .join('\n')
+          : additional.join('\n'),
       );
       setTemplateDefaultsStatus('Guardado.');
       await loadWorkspaceDetails();
@@ -2360,6 +2386,19 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     ))}
                   </select>
                 </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Plantillas adicionales del workspace (una por línea)
+                  <textarea
+                    value={templateAdditionalNamesDraft}
+                    onChange={(e) => setTemplateAdditionalNamesDraft(e.target.value)}
+                    placeholder="Ej:\nenviorapido_recontacto_operativo_v1"
+                    rows={4}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc', fontFamily: 'monospace', fontSize: 12 }}
+                  />
+                  <span style={{ fontSize: 11, color: '#777' }}>
+                    Estas plantillas se agregan al catálogo seleccionable incluso cuando Meta no sincroniza.
+                  </span>
+                </label>
               </div>
               <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button
@@ -2440,6 +2479,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   <b>{String(workspaceDetails?.templateInterviewConfirmationName || '—')}</b>
                 </div>
               </div>
+              {Array.isArray(workspaceDetails?.templateAdditionalNames) && workspaceDetails.templateAdditionalNames.length > 0 ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                  Adicionales actuales:{' '}
+                  <b>{workspaceDetails.templateAdditionalNames.map((v: any) => String(v)).join(', ')}</b>
+                </div>
+              ) : null}
               {templateDefaultsStatus ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{templateDefaultsStatus}</div>
               ) : null}

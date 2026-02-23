@@ -54,6 +54,7 @@ model Workspace {
   isSandbox   Boolean       @default(false)
   templateRecruitmentStartName String?
   templateInterviewConfirmationName String?
+  templateAdditionalNamesJson String?
   ssclinicalNurseLeaderEmail String?
   staffDefaultProgram Program? @relation("WorkspaceStaffDefaultProgram", fields: [staffDefaultProgramId], references: [id])
   staffDefaultProgramId String?

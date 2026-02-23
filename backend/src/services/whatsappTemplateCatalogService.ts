@@ -171,6 +171,7 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
           archivedAt: true,
           templateRecruitmentStartName: true as any,
           templateInterviewConfirmationName: true as any,
+          templateAdditionalNamesJson: true as any,
         } as any,
       })
       .catch(() => null),
@@ -194,6 +195,15 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
     defaults.interview,
     normalizeName((workspace as any)?.templateRecruitmentStartName),
     normalizeName((workspace as any)?.templateInterviewConfirmationName),
+    ...(() => {
+      try {
+        const raw = String((workspace as any)?.templateAdditionalNamesJson || '').trim();
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.map((v) => normalizeName(v)).filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    })(),
     normalizeName((config as any)?.templateGeneralFollowup),
     normalizeName((config as any)?.templateInterviewInvite),
   ].filter(Boolean);
