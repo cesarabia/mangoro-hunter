@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify';
+import fs from 'node:fs';
+import path from 'node:path';
 import { prisma } from '../db/client';
-import { sendWhatsAppText, sendWhatsAppTemplate } from '../services/whatsappMessageService';
+import { sendWhatsAppAttachment, sendWhatsAppText, sendWhatsAppTemplate } from '../services/whatsappMessageService';
 import { serializeJson } from '../utils/json';
 import { createConversationAndMaybeSend } from '../services/conversationCreateService';
 import { loadTemplateConfig, resolveTemplateVariables } from '../services/templateService';
@@ -76,6 +78,41 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const trimmed = value.trim().replace(/\s+/g, ' ');
     if (!trimmed) return null;
     return trimmed;
+  };
+
+  const decodeBase64Payload = (value: unknown): Buffer | null => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const cleaned = trimmed.includes('base64,') ? trimmed.split('base64,').pop() || '' : trimmed;
+    if (!cleaned) return null;
+    try {
+      const buff = Buffer.from(cleaned, 'base64');
+      return buff.length > 0 ? buff : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const sanitizeFilename = (input: unknown): string => {
+    const raw = String(input || '').trim();
+    const base = raw ? path.basename(raw) : 'adjunto';
+    const normalized = base.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+/, '').slice(0, 120);
+    return normalized || 'adjunto';
+  };
+
+  const isSupportedAttachmentMime = (mimeType: string): boolean => {
+    const mime = String(mimeType || '').trim().toLowerCase();
+    if (!mime) return false;
+    if (mime.startsWith('image/')) return true;
+    return [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/plain',
+    ].includes(mime);
   };
 
   const isValidManualName = (value: string): boolean => {
@@ -701,6 +738,135 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
     return { message, sendResult };
   });
+
+  app.post(
+    '/:id/messages/attachment',
+    { preValidation: [app.authenticate], bodyLimit: 25_000_000 } as any,
+    async (request, reply) => {
+      const access = await resolveWorkspaceAccess(request);
+      const { id } = request.params as { id: string };
+      const body = request.body as {
+        fileName?: string;
+        mimeType?: string;
+        dataBase64?: string;
+        caption?: string | null;
+      };
+      const userId = (request as any)?.user?.userId ? String((request as any).user.userId) : null;
+
+      const conversation = await prisma.conversation.findFirst({
+        where: { id, workspaceId: access.workspaceId },
+        include: { contact: true, phoneLine: true },
+      });
+      if (!conversation || !conversation.contact.waId) {
+        return reply.code(400).send({ error: 'Conversation or waId not found' });
+      }
+      if (canSeeOnlyAssigned(access, userId) && String(conversation.assignedToId || '') !== String(userId)) {
+        return reply.code(403).send({ error: 'Forbidden' });
+      }
+      const role = String(access.role || '').toUpperCase();
+      const canSend =
+        isWorkspaceAdmin(request, access) ||
+        (role === 'MEMBER' && Boolean(userId) && String(conversation.assignedToId || '') === String(userId));
+      if (!canSend) return reply.code(403).send({ error: 'Forbidden' });
+      if (conversation.contact.noContact) {
+        return reply.code(403).send({ error: 'Contacto marcado como NO_CONTACTAR. Reactívalo antes de enviar.' });
+      }
+
+      if (!conversation.isAdmin) {
+        const lastInbound = await prisma.message.findFirst({
+          where: { conversationId: id, direction: 'INBOUND' },
+          orderBy: { timestamp: 'desc' },
+        });
+        const within = isWithin24Hours(lastInbound?.timestamp, WINDOW_MS);
+        if (!within) return reply.code(409).send({ error: 'Fuera de ventana 24h. Debes usar plantilla.' });
+      }
+
+      const mimeType = String(body?.mimeType || '').trim().toLowerCase();
+      const fileName = sanitizeFilename(body?.fileName);
+      const caption = typeof body?.caption === 'string' ? body.caption.trim() : '';
+      const fileBuffer = decodeBase64Payload(body?.dataBase64);
+      if (!fileBuffer) return reply.code(400).send({ error: 'Archivo inválido (base64 vacío o corrupto).' });
+      if (!mimeType) return reply.code(400).send({ error: 'mimeType es obligatorio.' });
+      if (!isSupportedAttachmentMime(mimeType)) {
+        return reply.code(400).send({ error: `Tipo de archivo no soportado (${mimeType}).` });
+      }
+      if (fileBuffer.length > 20 * 1024 * 1024) {
+        return reply.code(400).send({ error: 'Archivo demasiado grande (máx 20MB).' });
+      }
+
+      const mediaType = mimeType.startsWith('image/') ? 'image' : 'document';
+      const baseUploadsDir = path.resolve(process.cwd(), 'uploads', 'outbound', conversation.id);
+      fs.mkdirSync(baseUploadsDir, { recursive: true });
+      const storedFileName = `${Date.now()}-${fileName}`;
+      const absolutePath = path.join(baseUploadsDir, storedFileName);
+      fs.writeFileSync(absolutePath, fileBuffer);
+      const relativePath = path.relative(process.cwd(), absolutePath).replace(/\\/g, '/');
+
+      const sendResultRaw = await sendWhatsAppAttachment(
+        conversation.contact.waId,
+        { buffer: fileBuffer, mimeType, filename: fileName, caption: caption || null },
+        {
+          phoneNumberId: conversation.phoneLine?.waPhoneNumberId || null,
+          enforceSafeMode: false,
+        },
+      ).catch((err) => ({
+        success: false,
+        error: err instanceof Error ? err.message : 'Unknown error',
+      }));
+
+      const sendResult = {
+        success: sendResultRaw.success,
+        messageId: 'messageId' in sendResultRaw ? sendResultRaw.messageId ?? null : null,
+        mediaId: 'mediaId' in sendResultRaw ? sendResultRaw.mediaId ?? null : null,
+        error: 'error' in sendResultRaw ? sendResultRaw.error ?? null : null,
+      };
+
+      if (!sendResult.success) {
+        app.log.warn(
+          { conversationId: conversation.id, error: sendResult.error, fileName, mimeType },
+          'WhatsApp attachment send failed',
+        );
+      }
+
+      const messageText = caption || `[ADJUNTO] ${fileName}`;
+      const message = await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          direction: 'OUTBOUND',
+          text: messageText,
+          mediaType,
+          mediaMime: mimeType,
+          mediaPath: relativePath,
+          rawPayload: serializeJson({
+            sendResult,
+            attachment: { fileName, mimeType, mediaType, sizeBytes: fileBuffer.length },
+          }),
+          timestamp: new Date(),
+          read: true,
+        },
+      });
+
+      try {
+        await prisma.outboundMessageLog.create({
+          data: {
+            workspaceId: conversation.workspaceId,
+            conversationId: conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_ATTACHMENT',
+            templateName: null,
+            dedupeKey: `manual_attachment:${message.id}`,
+            textHash: stableHash(`ATTACHMENT:${fileName}:${mimeType}:${fileBuffer.length}`),
+            blockedReason: sendResult.success ? null : sendResult.error || 'SEND_FAILED',
+            waMessageId: sendResult.messageId || null,
+          } as any,
+        });
+      } catch (err) {
+        app.log.warn({ err, conversationId: conversation.id }, 'Failed to write OutboundMessageLog for manual attachment send');
+      }
+
+      return { message, sendResult };
+    },
+  );
 
   app.post('/:id/mark-read', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);

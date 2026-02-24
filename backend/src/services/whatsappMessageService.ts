@@ -13,6 +13,7 @@ import { normalizeWhatsAppId } from '../utils/whatsapp';
 export interface SendResult {
   success: boolean;
   messageId?: string;
+  mediaId?: string;
   error?: string;
 }
 
@@ -235,4 +236,123 @@ export async function sendWhatsAppTemplate(
   }
 
   return { success: false, error: lastError };
+}
+
+function normalizeAttachmentType(mimeType: string): 'image' | 'document' {
+  return mimeType.toLowerCase().startsWith('image/') ? 'image' : 'document';
+}
+
+async function uploadWhatsAppMedia(args: {
+  phoneNumberId: string;
+  token: string;
+  baseUrl: string;
+  buffer: Buffer;
+  mimeType: string;
+  filename: string;
+}): Promise<{ ok: true; mediaId: string } | { ok: false; error: string }> {
+  const url = `${args.baseUrl.replace(/\/$/, '')}/${args.phoneNumberId}/media`;
+  try {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    const blob = new Blob([new Uint8Array(args.buffer)], { type: args.mimeType || 'application/octet-stream' });
+    form.append('file', blob, args.filename || 'adjunto');
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${args.token}`,
+      },
+      body: form as any,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, error: text || `HTTP ${res.status}` };
+    }
+    const data = (await res.json()) as any;
+    const mediaId = String(data?.id || '').trim();
+    if (!mediaId) return { ok: false, error: 'Meta no devolvió media id' };
+    return { ok: true, mediaId };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'upload_failed' };
+  }
+}
+
+export async function sendWhatsAppAttachment(
+  toWaId: string,
+  file: { buffer: Buffer; mimeType: string; filename: string; caption?: string | null },
+  options?: { phoneNumberId?: string | null; enforceSafeMode?: boolean }
+): Promise<SendResult> {
+  const config = await getSystemConfig();
+
+  if (options?.enforceSafeMode !== false) {
+    const safe = checkSafeOutbound(toWaId, config);
+    if (!safe.allowed) {
+      const policy = getOutboundPolicy(config);
+      return {
+        success: false,
+        error: `SAFE_OUTBOUND_BLOCKED:${policy}:${safe.reason || 'BLOCKED'}`,
+      };
+    }
+  }
+
+  const phoneNumberId = options?.phoneNumberId || config.whatsappPhoneId;
+  if (!config?.whatsappToken || !phoneNumberId) {
+    return { success: false, error: 'WhatsApp Cloud API no está configurado (phone_number_id / token faltan)' };
+  }
+
+  const mimeType = String(file?.mimeType || '').trim().toLowerCase() || 'application/octet-stream';
+  const filename = String(file?.filename || '').trim() || 'adjunto';
+  if (!file?.buffer || !Buffer.isBuffer(file.buffer) || file.buffer.length <= 0) {
+    return { success: false, error: 'Archivo inválido o vacío' };
+  }
+  if (file.buffer.length > 20 * 1024 * 1024) {
+    return { success: false, error: 'Archivo demasiado grande (máx 20MB)' };
+  }
+
+  const baseUrl = (config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL).replace(/\/$/, '');
+  const uploaded = await uploadWhatsAppMedia({
+    phoneNumberId,
+    token: config.whatsappToken,
+    baseUrl,
+    buffer: file.buffer,
+    mimeType,
+    filename,
+  });
+  if (!uploaded.ok) return { success: false, error: uploaded.error };
+
+  const type = normalizeAttachmentType(mimeType);
+  const caption = normalizeEscapedWhitespace(String(file?.caption || '').trim());
+  const body: any = {
+    messaging_product: 'whatsapp',
+    to: toWaId,
+    type,
+    [type]: {
+      id: uploaded.mediaId,
+    },
+  };
+  if (caption) body[type].caption = caption;
+  if (type === 'document' && filename) body.document.filename = filename;
+
+  try {
+    const res = await fetch(`${baseUrl}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.whatsappToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const errorText = await res.text();
+      return { success: false, error: errorText || `HTTP ${res.status}` };
+    }
+    const data = (await res.json()) as any;
+    return {
+      success: true,
+      mediaId: uploaded.mediaId,
+      messageId: data?.messages?.[0]?.id || undefined,
+    };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+  }
 }

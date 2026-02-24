@@ -11,6 +11,17 @@ interface ConversationViewProps {
   onDraftChange: (value: string) => void;
 }
 
+const fileToBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      resolve(result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('No se pudo leer el archivo.'));
+    reader.readAsDataURL(file);
+  });
+
 const safeParseJson = (value: any) => {
   if (!value || typeof value !== 'string') return null;
   try {
@@ -110,6 +121,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const isPartner = conversationKind === 'PARTNER';
   const isClientConversation = !isAdmin && !isStaff && !isPartner;
   const [loadingSend, setLoadingSend] = useState(false);
+  const [loadingAttachmentSend, setLoadingAttachmentSend] = useState(false);
   const [loadingAi, setLoadingAi] = useState(false);
   const [modeSaving, setModeSaving] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -123,6 +135,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [templateCatalogLoading, setTemplateCatalogLoading] = useState(false);
   const [templateCatalogError, setTemplateCatalogError] = useState<string | null>(null);
   const [selectedTemplateName, setSelectedTemplateName] = useState('');
+  const [pendingAttachment, setPendingAttachment] = useState<File | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const previousCountRef = useRef(0);
@@ -169,6 +182,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [assignmentSaving, setAssignmentSaving] = useState(false);
   const [assignmentError, setAssignmentError] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const handleResize = () => setIsNarrow(window.innerWidth < MOBILE_BREAKPOINT);
@@ -382,6 +396,60 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setSendError(err.message || 'No se pudo enviar el mensaje');
     } finally {
       setLoadingSend(false);
+    }
+  };
+
+  useEffect(() => {
+    setPendingAttachment(null);
+  }, [conversation?.id]);
+
+  const handlePickAttachment = () => {
+    attachmentInputRef.current?.click();
+  };
+
+  const handleAttachmentChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] || null;
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) {
+      setSendError('Archivo demasiado grande (máx 20MB).');
+      event.target.value = '';
+      return;
+    }
+    setPendingAttachment(file);
+    setSendError(null);
+    event.target.value = '';
+  };
+
+  const handleSendAttachment = async () => {
+    if (!conversation || !pendingAttachment) return;
+    setLoadingAttachmentSend(true);
+    setSendError(null);
+    try {
+      const dataBase64 = await fileToBase64(pendingAttachment);
+      const caption = String(draftText || '').trim();
+      const result = await apiClient.post(`/api/conversations/${conversation.id}/messages/attachment`, {
+        fileName: pendingAttachment.name,
+        mimeType: pendingAttachment.type || 'application/octet-stream',
+        dataBase64,
+        caption: caption || null,
+      });
+      if (result?.sendResult && !result.sendResult.success) {
+        const errText = result.sendResult.error || 'Error desconocido';
+        setSendError(`Adjunto guardado, pero el envío a WhatsApp falló: ${errText}`);
+        if (String(errText).includes('SAFE_OUTBOUND_BLOCKED')) {
+          setSafeModeBlockedReason(String(errText));
+          setSafeModeTargetWaId(String(conversation?.contact?.waId || '').trim() || null);
+          setSafeModeModalOpen(true);
+        }
+      } else {
+        setPendingAttachment(null);
+        if (caption) onDraftChange('');
+      }
+      onMessageSent();
+    } catch (err: any) {
+      setSendError(err?.message || 'No se pudo enviar el adjunto');
+    } finally {
+      setLoadingAttachmentSend(false);
     }
   };
 
@@ -1401,6 +1469,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
           </div>
         )}
         <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            ref={attachmentInputRef}
+            type="file"
+            style={{ display: 'none' }}
+            onChange={handleAttachmentChange}
+          />
           <textarea
             ref={composerRef}
             style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc', minHeight: isNarrow ? 44 : 40 }}
@@ -1408,6 +1482,15 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
             onChange={e => onDraftChange(e.target.value)}
             placeholder="Escribe una respuesta..."
           />
+          <button
+            type="button"
+            onClick={handlePickAttachment}
+            disabled={!hasConversation || loadingAttachmentSend || loadingSend}
+            style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#fff' }}
+            title="Adjuntar archivo"
+          >
+            📎
+          </button>
           <button
             onClick={handleSuggest}
             disabled={!hasConversation || loadingAi || (isManualMode && !(draftText || '').trim())}
@@ -1423,6 +1506,49 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
             {loadingSend ? 'Enviando...' : 'Enviar'}
           </button>
         </div>
+        {pendingAttachment ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              border: '1px solid #e5e5e5',
+              borderRadius: 8,
+              padding: '8px 10px',
+              background: '#fcfcfc',
+            }}
+          >
+            <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 12, color: '#555' }}>Adjunto listo</span>
+              <span style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {pendingAttachment.name}
+              </span>
+              <span style={{ fontSize: 11, color: '#777' }}>
+                {(pendingAttachment.size / 1024 / 1024).toFixed(2)} MB
+                {draftText.trim() ? ' · Se enviará con el texto escrito como caption.' : ''}
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => setPendingAttachment(null)}
+                disabled={loadingAttachmentSend}
+                style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+              >
+                Quitar
+              </button>
+              <button
+                type="button"
+                onClick={handleSendAttachment}
+                disabled={loadingAttachmentSend || (!within24h && !isAdmin)}
+                style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+              >
+                {loadingAttachmentSend ? 'Enviando adjunto…' : 'Enviar adjunto'}
+              </button>
+            </div>
+          </div>
+        ) : null}
         {sendError && <div style={{ color: '#b93800', fontSize: 13 }}>{sendError}</div>}
         {downloadError && <div style={{ color: '#b93800', fontSize: 13 }}>{downloadError}</div>}
         {safeModeActionStatus && <div style={{ color: '#1a7f37', fontSize: 13 }}>{safeModeActionStatus}</div>}
