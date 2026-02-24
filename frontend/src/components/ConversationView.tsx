@@ -415,6 +415,22 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       event.target.value = '';
       return;
     }
+    const mime = String(file.type || '').toLowerCase();
+    if (mime.startsWith('video/') && file.size > 16 * 1024 * 1024) {
+      setSendError('WhatsApp limita videos a 16MB. Comprime el video o usa otro canal.');
+      event.target.value = '';
+      return;
+    }
+    if (mime.startsWith('audio/') && file.size > 16 * 1024 * 1024) {
+      setSendError('WhatsApp limita audio a 16MB.');
+      event.target.value = '';
+      return;
+    }
+    if (mime.startsWith('image/') && file.size > 5 * 1024 * 1024) {
+      setSendError('WhatsApp limita imágenes a 5MB.');
+      event.target.value = '';
+      return;
+    }
     setPendingAttachment(file);
     setSendError(null);
     event.target.value = '';

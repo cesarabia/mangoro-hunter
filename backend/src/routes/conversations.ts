@@ -116,6 +116,48 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     ].includes(mime);
   };
 
+  const getAttachmentSizeLimitError = (mimeType: string, sizeBytes: number): string | null => {
+    const mime = String(mimeType || '').toLowerCase();
+    if (sizeBytes > 100 * 1024 * 1024) {
+      return 'Archivo demasiado grande (máx 100MB).';
+    }
+    if (mime.startsWith('video/') && sizeBytes > 16 * 1024 * 1024) {
+      return 'WhatsApp limita videos a 16MB. Comprime el video o envíalo por otro canal.';
+    }
+    if (mime.startsWith('audio/') && sizeBytes > 16 * 1024 * 1024) {
+      return 'WhatsApp limita audio a 16MB.';
+    }
+    if (mime.startsWith('image/') && sizeBytes > 5 * 1024 * 1024) {
+      return 'WhatsApp limita imágenes a 5MB.';
+    }
+    return null;
+  };
+
+  const humanizeAttachmentSendError = (rawError: unknown): string => {
+    const raw = String(rawError || '').trim();
+    if (!raw) return 'No se pudo enviar el adjunto a WhatsApp.';
+    if (raw.startsWith('SAFE_OUTBOUND_BLOCKED:')) return raw;
+    if (raw.includes('WHATSAPP_VIDEO_TOO_LARGE_16MB')) {
+      return 'WhatsApp limita videos a 16MB. Comprime el video o envíalo por otro canal.';
+    }
+    const low = raw.toLowerCase();
+    if (low.includes('archivo demasiado grande')) {
+      return 'WhatsApp rechazó el archivo por tamaño. Videos: 16MB máximo.';
+    }
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(raw) as any;
+        const details = String(parsed?.error?.error_data?.details || '').trim();
+        if (details) return details;
+        const message = String(parsed?.error?.message || '').trim();
+        if (message) return message;
+      } catch {
+        // ignore
+      }
+    }
+    return raw;
+  };
+
   const isValidManualName = (value: string): boolean => {
     if (!value) return false;
     if (value.length < 2 || value.length > 60) return false;
@@ -792,8 +834,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       if (!isSupportedAttachmentMime(mimeType)) {
         return reply.code(400).send({ error: `Tipo de archivo no soportado (${mimeType}).` });
       }
-      if (fileBuffer.length > 100 * 1024 * 1024) {
-        return reply.code(400).send({ error: 'Archivo demasiado grande (máx 100MB).' });
+      const sizeError = getAttachmentSizeLimitError(mimeType, fileBuffer.length);
+      if (sizeError) {
+        return reply.code(400).send({ error: sizeError });
       }
 
       const mediaType = (() => {
@@ -802,12 +845,6 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         if (mimeType.startsWith('audio/')) return 'audio';
         return 'document';
       })();
-      const baseUploadsDir = path.resolve(process.cwd(), 'uploads', 'outbound', conversation.id);
-      fs.mkdirSync(baseUploadsDir, { recursive: true });
-      const storedFileName = `${Date.now()}-${fileName}`;
-      const absolutePath = path.join(baseUploadsDir, storedFileName);
-      fs.writeFileSync(absolutePath, fileBuffer);
-      const relativePath = path.relative(process.cwd(), absolutePath).replace(/\\/g, '/');
 
       const sendResultRaw = await sendWhatsAppAttachment(
         conversation.contact.waId,
@@ -833,7 +870,32 @@ export async function registerConversationRoutes(app: FastifyInstance) {
           { conversationId: conversation.id, error: sendResult.error, fileName, mimeType },
           'WhatsApp attachment send failed',
         );
+        try {
+          await prisma.outboundMessageLog.create({
+            data: {
+              workspaceId: conversation.workspaceId,
+              conversationId: conversation.id,
+              channel: 'WHATSAPP',
+              type: 'SESSION_ATTACHMENT',
+              templateName: null,
+              dedupeKey: `manual_attachment_failed:${conversation.id}:${Date.now()}`,
+              textHash: stableHash(`ATTACHMENT_FAIL:${fileName}:${mimeType}:${fileBuffer.length}`),
+              blockedReason: sendResult.error || 'SEND_FAILED',
+              waMessageId: null,
+            } as any,
+          });
+        } catch (err) {
+          app.log.warn({ err, conversationId: conversation.id }, 'Failed to write OutboundMessageLog for manual attachment failure');
+        }
+        return reply.code(502).send({ error: humanizeAttachmentSendError(sendResult.error) });
       }
+
+      const baseUploadsDir = path.resolve(process.cwd(), 'uploads', 'outbound', conversation.id);
+      fs.mkdirSync(baseUploadsDir, { recursive: true });
+      const storedFileName = `${Date.now()}-${fileName}`;
+      const absolutePath = path.join(baseUploadsDir, storedFileName);
+      fs.writeFileSync(absolutePath, fileBuffer);
+      const relativePath = path.relative(process.cwd(), absolutePath).replace(/\\/g, '/');
 
       const messageText = caption || `[ADJUNTO] ${fileName}`;
       const message = await prisma.message.create({
