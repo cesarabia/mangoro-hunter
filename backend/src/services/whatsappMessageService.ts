@@ -238,8 +238,12 @@ export async function sendWhatsAppTemplate(
   return { success: false, error: lastError };
 }
 
-function normalizeAttachmentType(mimeType: string): 'image' | 'document' {
-  return mimeType.toLowerCase().startsWith('image/') ? 'image' : 'document';
+function normalizeAttachmentType(mimeType: string): 'image' | 'document' | 'video' | 'audio' {
+  const low = mimeType.toLowerCase();
+  if (low.startsWith('image/')) return 'image';
+  if (low.startsWith('video/')) return 'video';
+  if (low.startsWith('audio/')) return 'audio';
+  return 'document';
 }
 
 async function uploadWhatsAppMedia(args: {
@@ -330,7 +334,7 @@ export async function sendWhatsAppAttachment(
       id: uploaded.mediaId,
     },
   };
-  if (caption) body[type].caption = caption;
+  if (caption && (type === 'image' || type === 'video' || type === 'document')) body[type].caption = caption;
   if (type === 'document' && filename) body.document.filename = filename;
 
   try {

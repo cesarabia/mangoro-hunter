@@ -105,6 +105,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const mime = String(mimeType || '').trim().toLowerCase();
     if (!mime) return false;
     if (mime.startsWith('image/')) return true;
+    if (mime === 'video/mp4') return true;
     return [
       'application/pdf',
       'application/msword',
@@ -795,7 +796,12 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: 'Archivo demasiado grande (máx 100MB).' });
       }
 
-      const mediaType = mimeType.startsWith('image/') ? 'image' : 'document';
+      const mediaType = (() => {
+        if (mimeType.startsWith('image/')) return 'image';
+        if (mimeType.startsWith('video/')) return 'video';
+        if (mimeType.startsWith('audio/')) return 'audio';
+        return 'document';
+      })();
       const baseUploadsDir = path.resolve(process.cwd(), 'uploads', 'outbound', conversation.id);
       fs.mkdirSync(baseUploadsDir, { recursive: true });
       const storedFileName = `${Date.now()}-${fileName}`;
