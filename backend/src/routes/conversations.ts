@@ -741,7 +741,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
   app.post(
     '/:id/messages/attachment',
-    { preValidation: [app.authenticate], bodyLimit: 25_000_000 } as any,
+    // Base64 in JSON increases payload size; allow enough headroom for 100MB files.
+    { preValidation: [app.authenticate], bodyLimit: 150_000_000 } as any,
     async (request, reply) => {
       const access = await resolveWorkspaceAccess(request);
       const { id } = request.params as { id: string };
@@ -790,8 +791,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       if (!isSupportedAttachmentMime(mimeType)) {
         return reply.code(400).send({ error: `Tipo de archivo no soportado (${mimeType}).` });
       }
-      if (fileBuffer.length > 20 * 1024 * 1024) {
-        return reply.code(400).send({ error: 'Archivo demasiado grande (máx 20MB).' });
+      if (fileBuffer.length > 100 * 1024 * 1024) {
+        return reply.code(400).send({ error: 'Archivo demasiado grande (máx 100MB).' });
       }
 
       const mediaType = mimeType.startsWith('image/') ? 'image' : 'document';

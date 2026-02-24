@@ -410,8 +410,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const handleAttachmentChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] || null;
     if (!file) return;
-    if (file.size > 20 * 1024 * 1024) {
-      setSendError('Archivo demasiado grande (máx 20MB).');
+    if (file.size > 100 * 1024 * 1024) {
+      setSendError('Archivo demasiado grande (máx 100MB).');
       event.target.value = '';
       return;
     }

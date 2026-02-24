@@ -305,8 +305,8 @@ export async function sendWhatsAppAttachment(
   if (!file?.buffer || !Buffer.isBuffer(file.buffer) || file.buffer.length <= 0) {
     return { success: false, error: 'Archivo inválido o vacío' };
   }
-  if (file.buffer.length > 20 * 1024 * 1024) {
-    return { success: false, error: 'Archivo demasiado grande (máx 20MB)' };
+  if (file.buffer.length > 100 * 1024 * 1024) {
+    return { success: false, error: 'Archivo demasiado grande (máx 100MB)' };
   }
 
   const baseUrl = (config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL).replace(/\/$/, '');
