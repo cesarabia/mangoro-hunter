@@ -124,6 +124,9 @@ export type ScenarioStep = {
     interviewScheduleConflict?: {
       workspaceId?: string;
     };
+    staffInterviewSlots20minConfirmTemplate?: {
+      workspaceId?: string;
+    };
     workspaceCreationWizardGates?: {
       workspaceId?: string;
       template?: string;
@@ -613,6 +616,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check interview schedule conflict',
         expect: { interviewScheduleConflict: { workspaceId: 'scenario-interview-conflict' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_interview_slots_20min_confirm_template',
+    name: 'Staff: agenda 20min + confirmar entrevista con plantilla',
+    description:
+      'Valida comandos staff para slots/agendar/reagendar/cancelar/confirmar, con ventana 10:00–13:00 en bloques de 20 min y sin doble booking.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff interview slots 20min confirm template',
+        expect: { staffInterviewSlots20minConfirmTemplate: { workspaceId: 'scenario-staff-interview-20min' } },
       },
     ],
   },

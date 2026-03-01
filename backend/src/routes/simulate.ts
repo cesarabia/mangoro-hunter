@@ -2655,6 +2655,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const staffErrorTransparent = (step.expect as any)?.staffErrorTransparent;
       const latencyTimeoutBehavior = (step.expect as any)?.latencyTimeoutBehavior;
       const interviewScheduleConflict = (step.expect as any)?.interviewScheduleConflict;
+      const staffInterviewSlots20minConfirmTemplate = (step.expect as any)?.staffInterviewSlots20minConfirmTemplate;
       if (interviewScheduleConflict && typeof interviewScheduleConflict === 'object') {
         const wsId = String((interviewScheduleConflict as any)?.workspaceId || 'scenario-interview-conflict').trim() || 'scenario-interview-conflict';
         const now = new Date();
@@ -2769,6 +2770,165 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             message: conflict
               ? 'interviewScheduleConflict: segundo intento detecta conflicto y propone alternativas'
               : 'interviewScheduleConflict: faltó conflicto/alternativas',
+          });
+        }
+
+        await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        await prisma.phoneLine.updateMany({ where: { workspaceId: wsId, id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+      }
+
+      if (staffInterviewSlots20minConfirmTemplate && typeof staffInterviewSlots20minConfirmTemplate === 'object') {
+        const wsId =
+          String((staffInterviewSlots20minConfirmTemplate as any)?.workspaceId || 'scenario-staff-interview-20min').trim() ||
+          'scenario-staff-interview-20min';
+        const now = new Date();
+        await prisma.workspace
+          .upsert({
+            where: { id: wsId },
+            create: { id: wsId, name: 'Scenario Staff Interview 20min', isSandbox: true, archivedAt: null } as any,
+            update: { name: 'Scenario Staff Interview 20min', isSandbox: true, archivedAt: null } as any,
+          })
+          .catch(() => {});
+        const lineId = `scenario-staff-interview-line-${Date.now()}`;
+        const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+        const line = await prisma.phoneLine
+          .create({
+            data: {
+              id: lineId,
+              workspaceId: wsId,
+              alias: 'Scenario Staff Interview (temp)',
+              waPhoneNumberId,
+              isActive: true,
+              archivedAt: null,
+              needsAttention: false,
+            } as any,
+            select: { id: true },
+          })
+          .catch(() => null);
+        const contactA = await prisma.contact
+          .create({
+            data: {
+              workspaceId: wsId,
+              displayName: 'Staff Agenda A',
+              archivedAt: null,
+            } as any,
+            select: { id: true },
+          })
+          .catch(() => null);
+        const contactB = await prisma.contact
+          .create({
+            data: {
+              workspaceId: wsId,
+              displayName: 'Staff Agenda B',
+              archivedAt: null,
+            } as any,
+            select: { id: true },
+          })
+          .catch(() => null);
+        const convA =
+          line?.id && contactA?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: line.id,
+                    contactId: contactA.id,
+                    status: 'OPEN',
+                    channel: 'sandbox',
+                    conversationKind: 'CLIENT',
+                    conversationStage: 'INTERVIEW_PENDING',
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+        const convB =
+          line?.id && contactB?.id
+            ? await prisma.conversation
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    phoneLineId: line.id,
+                    contactId: contactB.id,
+                    status: 'OPEN',
+                    channel: 'sandbox',
+                    conversationKind: 'CLIENT',
+                    conversationStage: 'INTERVIEW_PENDING',
+                    archivedAt: null,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+
+        if (!convA?.id || !convB?.id || !contactA?.id || !contactB?.id) {
+          assertions.push({ ok: false, message: 'staffInterviewSlots20minConfirmTemplate: setup incompleto' });
+        } else {
+          const cfg = await getSystemConfig();
+          const scheduleCfg: any = {
+            ...cfg,
+            interviewTimezone: String((cfg as any)?.interviewTimezone || 'America/Santiago'),
+            interviewSlotMinutes: 20,
+            defaultInterviewLocation: 'Providencia',
+            interviewWeeklyAvailability: JSON.stringify({
+              lunes: [{ start: '10:00', end: '13:00' }],
+              martes: [{ start: '10:00', end: '13:00' }],
+              miércoles: [{ start: '10:00', end: '13:00' }],
+              jueves: [{ start: '10:00', end: '13:00' }],
+              viernes: [{ start: '10:00', end: '13:00' }],
+              sábado: [{ start: '10:00', end: '13:00' }],
+              domingo: [{ start: '10:00', end: '13:00' }],
+            }),
+          };
+          const probe = await attemptScheduleInterview({
+            conversationId: convA.id,
+            contactId: contactA.id,
+            day: null,
+            time: null,
+            location: 'Providencia',
+            config: scheduleCfg,
+          }).catch(() => ({ ok: false, alternatives: [] } as any));
+          const firstAlt =
+            !(probe as any)?.ok && Array.isArray((probe as any)?.alternatives) ? (probe as any).alternatives[0] : null;
+          const day = typeof firstAlt?.day === 'string' ? String(firstAlt.day) : 'martes';
+          const time = typeof firstAlt?.time === 'string' ? String(firstAlt.time) : '10:00';
+          const minuteAligned = Number(time.split(':')[1] || '0') % 20 === 0;
+          assertions.push({
+            ok: minuteAligned,
+            message: minuteAligned
+              ? `staffInterviewSlots20minConfirmTemplate: slot ${time} alineado a 20 min`
+              : `staffInterviewSlots20minConfirmTemplate: slot ${time} NO alineado a 20 min`,
+          });
+          const first = await attemptScheduleInterview({
+            conversationId: convA.id,
+            contactId: contactA.id,
+            day,
+            time,
+            location: 'Providencia',
+            config: scheduleCfg,
+          }).catch(() => ({ ok: false } as any));
+          const second = await attemptScheduleInterview({
+            conversationId: convB.id,
+            contactId: contactB.id,
+            day,
+            time,
+            location: 'Providencia',
+            config: scheduleCfg,
+          }).catch(() => ({ ok: false } as any));
+          assertions.push({
+            ok: Boolean((first as any)?.ok),
+            message: (first as any)?.ok
+              ? 'staffInterviewSlots20minConfirmTemplate: primera reserva OK'
+              : 'staffInterviewSlots20minConfirmTemplate: primera reserva falló',
+          });
+          const conflict = !(second as any)?.ok && Array.isArray((second as any)?.alternatives) && (second as any).alternatives.length > 0;
+          assertions.push({
+            ok: conflict,
+            message: conflict
+              ? 'staffInterviewSlots20minConfirmTemplate: evita doble booking y propone alternativas'
+              : 'staffInterviewSlots20minConfirmTemplate: faltó detectar conflicto/alternativas',
           });
         }
 

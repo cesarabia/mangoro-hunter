@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { DateTime } from 'luxon';
 import { prisma } from '../db/client';
 import { serializeJson } from '../utils/json';
 import { executeAgentResponse, ExecutorTransportMode } from './agent/commandExecutorService';
@@ -16,6 +17,13 @@ import { deriveCandidateStatusFromConversation, upsertCandidateAndCase } from '.
 import { listWorkspaceTemplateCatalog } from './whatsappTemplateCatalogService';
 import { sendWhatsAppTemplate } from './whatsappMessageService';
 import { normalizeChilePhoneE164 } from '../utils/phone';
+import {
+  attemptScheduleInterview,
+  confirmActiveReservation,
+  formatSlotHuman,
+  releaseActiveReservation,
+  resolveInterviewSlotFromDayTime,
+} from './interviewSchedulerService';
 
 type ProgramSummary = { id: string; name: string; slug: string };
 
@@ -725,6 +733,7 @@ type StaffRouterCommand =
   | { type: 'PENDING_COUNTS'; args: {} }
   | { type: 'HELP'; args: {} }
   | { type: 'LIST_DRAFTS'; args: {} }
+  | { type: 'LIST_SLOTS'; args: { dayToken: string } }
   | {
       type: 'LIST_CASES';
       args: { stageSlug?: string; assignedToMe: boolean; limit: number; query?: string; includeSummary?: boolean };
@@ -733,6 +742,10 @@ type StaffRouterCommand =
   | { type: 'SET_STAGE'; args: { ref: string; stageSlug: string; reason?: string } }
   | { type: 'ADD_NOTE'; args: { ref: string; text: string } }
   | { type: 'SEND_CUSTOMER_MESSAGE'; args: { ref: string; text: string } }
+  | { type: 'SCHEDULE_INTERVIEW'; args: { ref: string; dayToken: string; time: string } }
+  | { type: 'RESCHEDULE_INTERVIEW'; args: { ref: string; dayToken: string; time: string } }
+  | { type: 'CANCEL_INTERVIEW'; args: { ref: string } }
+  | { type: 'CONFIRM_INTERVIEW'; args: { ref: string } }
   | {
       type: 'CREATE_CANDIDATE';
       args: {
@@ -776,6 +789,11 @@ const STAFF_COMMAND_HELP_TEXT = [
   '• crear candidato <telefono> | <nombre> | <rol> | <canal> | <comuna>',
   '• mover <telefono|id> a <stage>',
   '• nota <telefono|id> <texto>',
+  '• slots mañana',
+  '• agendar <telefono|id> mañana HH:MM',
+  '• reagendar <telefono|id> mañana HH:MM',
+  '• cancelar entrevista <telefono|id>',
+  '• confirmar entrevista <telefono|id>',
   '• plantilla <telefono|caseId> <templateName>',
   '• alta <telefono> | <nombre> | <rol> | <canal> | <comuna> | plantilla=<templateName>',
   '• bulk contactado <telefonos separados por espacio/coma>',
@@ -783,6 +801,160 @@ const STAFF_COMMAND_HELP_TEXT = [
   '• ENVIAR <id> | EDITAR <id>: <texto> | CANCELAR <id>',
   '• ayuda',
 ].join('\n');
+
+const STAFF_INTERVIEW_LOCATION_LABEL = 'Providencia';
+const STAFF_INTERVIEW_EXACT_ADDRESS = 'Av. Salvador 1574, Providencia';
+const STAFF_INTERVIEW_SLOT_MINUTES = 20;
+const STAFF_INTERVIEW_WINDOW_START_MINUTES = 10 * 60;
+const STAFF_INTERVIEW_WINDOW_END_MINUTES = 13 * 60;
+
+const DAY_TOKEN_TO_WEEKDAY: Record<string, number> = {
+  lunes: 1,
+  martes: 2,
+  miercoles: 3,
+  miércoles: 3,
+  jueves: 4,
+  viernes: 5,
+  sabado: 6,
+  sábado: 6,
+  domingo: 7,
+};
+
+function minutesToClock(minutes: number): string {
+  const hh = Math.floor(minutes / 60)
+    .toString()
+    .padStart(2, '0');
+  const mm = Math.floor(minutes % 60)
+    .toString()
+    .padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function normalizeInterviewTime(raw: string): string | null {
+  const trimmed = String(raw || '').trim();
+  const m = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function buildStaffInterviewScheduleConfig(baseConfig: any): any {
+  const tz = String((baseConfig as any)?.interviewTimezone || 'America/Santiago').trim() || 'America/Santiago';
+  const weekly = {
+    lunes: [{ start: '10:00', end: '13:00' }],
+    martes: [{ start: '10:00', end: '13:00' }],
+    miércoles: [{ start: '10:00', end: '13:00' }],
+    jueves: [{ start: '10:00', end: '13:00' }],
+    viernes: [{ start: '10:00', end: '13:00' }],
+    sábado: [{ start: '10:00', end: '13:00' }],
+    domingo: [{ start: '10:00', end: '13:00' }],
+  };
+  const locations = [
+    {
+      label: STAFF_INTERVIEW_LOCATION_LABEL,
+      exactAddress: STAFF_INTERVIEW_EXACT_ADDRESS,
+      instructions: 'Comparte dirección exacta solo cuando la entrevista esté confirmada.',
+    },
+  ];
+  return {
+    ...baseConfig,
+    interviewTimezone: tz,
+    interviewSlotMinutes: STAFF_INTERVIEW_SLOT_MINUTES,
+    defaultInterviewLocation: STAFF_INTERVIEW_LOCATION_LABEL,
+    interviewWeeklyAvailability: JSON.stringify(weekly),
+    interviewLocations: JSON.stringify(locations),
+  };
+}
+
+function normalizeWeekdayLabelEs(value: string): string {
+  const low = normalizeLoose(value);
+  if (low === 'miercoles') return 'Miércoles';
+  if (low === 'sabado') return 'Sábado';
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+}
+
+function resolveDayTokenToWeekdayLabel(dayToken: string, timezone: string): string | null {
+  const token = normalizeLoose(dayToken || '');
+  const now = DateTime.now().setZone(timezone || 'America/Santiago');
+  if (!token || token === 'manana' || token === 'mañana') {
+    return normalizeWeekdayLabelEs(now.plus({ days: 1 }).setLocale('es-CL').toFormat('cccc'));
+  }
+  if (token === 'hoy') {
+    return normalizeWeekdayLabelEs(now.setLocale('es-CL').toFormat('cccc'));
+  }
+  const weekday = DAY_TOKEN_TO_WEEKDAY[token];
+  if (!weekday) return null;
+  const daysAhead = (weekday - now.weekday + 7) % 7;
+  const target = now.plus({ days: daysAhead === 0 ? 7 : daysAhead });
+  return normalizeWeekdayLabelEs(target.setLocale('es-CL').toFormat('cccc'));
+}
+
+async function computeStaffDaySlots(params: {
+  config: any;
+  dayLabelEs: string;
+  location: string;
+}): Promise<{
+  slots: Array<{ time: string; startAtIso: string; busy: boolean }>;
+}> {
+  const slotTimes: string[] = [];
+  for (
+    let minute = STAFF_INTERVIEW_WINDOW_START_MINUTES;
+    minute + STAFF_INTERVIEW_SLOT_MINUTES <= STAFF_INTERVIEW_WINDOW_END_MINUTES;
+    minute += STAFF_INTERVIEW_SLOT_MINUTES
+  ) {
+    slotTimes.push(minutesToClock(minute));
+  }
+
+  const resolved: Array<{ time: string; startAt: Date }>= [];
+  for (const time of slotTimes) {
+    const attempt = resolveInterviewSlotFromDayTime({
+      day: params.dayLabelEs,
+      time,
+      location: params.location,
+      config: params.config,
+      now: new Date(),
+    });
+    if (!attempt.ok) continue;
+    resolved.push({ time, startAt: attempt.slot.startAt });
+  }
+  const startAtList = resolved.map((r) => r.startAt);
+  const [busyReservations, busyBlocks] = await prisma.$transaction([
+    prisma.interviewReservation.findMany({
+      where: {
+        startAt: { in: startAtList },
+        location: params.location,
+        activeKey: 'ACTIVE',
+      },
+      select: { startAt: true },
+    }),
+    prisma.interviewSlotBlock.findMany({
+      where: {
+        startAt: { in: startAtList },
+        location: params.location,
+        archivedAt: null,
+      },
+      select: { startAt: true },
+    }),
+  ]);
+  const busySet = new Set<string>([
+    ...busyReservations.map((r) => new Date(r.startAt).toISOString()),
+    ...busyBlocks.map((b) => new Date(b.startAt).toISOString()),
+  ]);
+
+  return {
+    slots: resolved.map((item) => {
+      const iso = item.startAt.toISOString();
+      return {
+        time: item.time,
+        startAtIso: iso,
+        busy: busySet.has(iso),
+      };
+    }),
+  };
+}
 
 function parseBulkRefs(raw: string): string[] {
   const tokens = String(raw || '')
@@ -813,6 +985,11 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
 
   if (normalized === 'pendientes' || normalized === '/pendientes' || normalized === 'mis pendientes') {
     return { type: 'PENDING_COUNTS', args: {} };
+  }
+  const slotsMatch = raw.match(/^\s*slots(?:\s+(.+))?\s*$/i);
+  if (slotsMatch) {
+    const dayToken = String(slotsMatch[1] || 'mañana').trim() || 'mañana';
+    return { type: 'LIST_SLOTS', args: { dayToken } };
   }
 
   if (
@@ -935,6 +1112,40 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
     return {
       type: 'SEND_CUSTOMER_MESSAGE',
       args: { ref: sendMatch[1].trim(), text: sendMatch[2].trim() },
+    };
+  }
+  const agendarMatch = raw.match(/^\s*agendar\s+(.+?)\s+(.+?)\s+(\d{1,2}:\d{2})\s*$/i);
+  if (agendarMatch?.[1] && agendarMatch?.[2] && agendarMatch?.[3]) {
+    const normalizedTime = normalizeInterviewTime(agendarMatch[3]);
+    if (normalizedTime) {
+      return {
+        type: 'SCHEDULE_INTERVIEW',
+        args: { ref: agendarMatch[1].trim(), dayToken: agendarMatch[2].trim(), time: normalizedTime },
+      };
+    }
+  }
+  const reagendarMatch = raw.match(/^\s*reagendar\s+(.+?)\s+(.+?)\s+(\d{1,2}:\d{2})\s*$/i);
+  if (reagendarMatch?.[1] && reagendarMatch?.[2] && reagendarMatch?.[3]) {
+    const normalizedTime = normalizeInterviewTime(reagendarMatch[3]);
+    if (normalizedTime) {
+      return {
+        type: 'RESCHEDULE_INTERVIEW',
+        args: { ref: reagendarMatch[1].trim(), dayToken: reagendarMatch[2].trim(), time: normalizedTime },
+      };
+    }
+  }
+  const cancelInterviewMatch = raw.match(/^\s*cancelar\s+entrevista\s+(.+)\s*$/i);
+  if (cancelInterviewMatch?.[1]) {
+    return {
+      type: 'CANCEL_INTERVIEW',
+      args: { ref: cancelInterviewMatch[1].trim() },
+    };
+  }
+  const confirmInterviewMatch = raw.match(/^\s*confirmar\s+entrevista\s+(.+)\s*$/i);
+  if (confirmInterviewMatch?.[1]) {
+    return {
+      type: 'CONFIRM_INTERVIEW',
+      args: { ref: confirmInterviewMatch[1].trim() },
     };
   }
 
@@ -1180,6 +1391,12 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
     if (command.type === 'BULK_CONTACTADO') {
       return `No pude ejecutar el bulk (${toolError}).`;
     }
+    if (command.type === 'LIST_SLOTS' || command.type === 'SCHEDULE_INTERVIEW' || command.type === 'RESCHEDULE_INTERVIEW') {
+      return `No pude revisar la agenda (${toolError}). Intenta de nuevo con "slots mañana" o ajusta el horario.`;
+    }
+    if (command.type === 'CANCEL_INTERVIEW' || command.type === 'CONFIRM_INTERVIEW') {
+      return `No pude actualizar la entrevista (${toolError}).`;
+    }
     return `No pude consultar eso ahora (${toolError}). Intenta de nuevo en unos segundos y lo revisamos.`;
   }
   if (command.type === 'PENDING_COUNTS') {
@@ -1197,6 +1414,22 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
       `• Descartado: ${descartado}`,
       `• Total: ${total}`,
     ].join('\n');
+  }
+  if (command.type === 'LIST_SLOTS') {
+    const slots = Array.isArray(toolResult?.slots) ? toolResult.slots : [];
+    const day = String(toolResult?.day || '').trim();
+    const location = String(toolResult?.location || STAFF_INTERVIEW_LOCATION_LABEL).trim();
+    if (slots.length === 0) {
+      return `No encontré disponibilidad para ${day || 'ese día'} en ${location}. Prueba con "slots hoy" o "slots mañana".`;
+    }
+    const available = slots.filter((s: any) => !Boolean(s?.busy)).map((s: any) => String(s?.time || '').trim()).filter(Boolean);
+    const busy = slots.filter((s: any) => Boolean(s?.busy)).map((s: any) => String(s?.time || '').trim()).filter(Boolean);
+    const lines: string[] = [];
+    lines.push(`Disponibilidad ${day || ''} (${location}, 20 min):`);
+    lines.push(available.length > 0 ? `• Libres: ${available.join(', ')}` : '• Libres: sin cupos');
+    if (busy.length > 0) lines.push(`• Ocupados: ${busy.join(', ')}`);
+    lines.push('Comando: agendar <telefono|id> mañana HH:MM');
+    return lines.join('\n');
   }
   if (command.type === 'LIST_CASES') {
     const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
@@ -1278,6 +1511,34 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
     const ok = Boolean(toolResult?.sendResult?.success ?? true);
     if (ok) return 'Listo, mensaje enviado al candidato.';
     return `No pude enviar el mensaje (${String(toolResult?.sendResult?.error || 'error desconocido')}).`;
+  }
+  if (command.type === 'SCHEDULE_INTERVIEW' || command.type === 'RESCHEDULE_INTERVIEW') {
+    const ok = Boolean(toolResult?.ok);
+    if (!ok) {
+      const msg = String(toolResult?.message || toolError || 'No se pudo agendar');
+      const alternatives = Array.isArray(toolResult?.alternatives) ? toolResult.alternatives : [];
+      const altText =
+        alternatives.length > 0
+          ? `\nOpciones sugeridas:\n${alternatives
+              .map((a: any) => `- ${String(a?.day || '').trim()} ${String(a?.time || '').trim()} (${String(a?.location || STAFF_INTERVIEW_LOCATION_LABEL).trim()})`)
+              .join('\n')}`
+          : '';
+      return `${msg}${altText}`;
+    }
+    const slot = toolResult?.slot || {};
+    const action = command.type === 'RESCHEDULE_INTERVIEW' ? 'reagendada' : 'agendada';
+    return `Listo, entrevista ${action} en HOLD para ${String(slot.day || '').trim()} ${String(slot.time || '').trim()} (${String(slot.location || STAFF_INTERVIEW_LOCATION_LABEL).trim()}).\nSiguiente paso: "confirmar entrevista ${String(toolResult?.refHint || '').trim() || '<id>'}" para enviar plantilla.`;
+  }
+  if (command.type === 'CANCEL_INTERVIEW') {
+    if (Boolean(toolResult?.released)) return 'Listo, entrevista cancelada y liberé el cupo en Agenda.';
+    return 'No había una entrevista activa para cancelar en ese caso.';
+  }
+  if (command.type === 'CONFIRM_INTERVIEW') {
+    const templateSent = Boolean(toolResult?.templateSent);
+    if (templateSent) {
+      return `Listo, entrevista confirmada y plantilla enviada (${String(toolResult?.templateName || 'enviorapido_confirma_entrevista_v1')}).`;
+    }
+    return `Entrevista confirmada, pero no pude enviar la plantilla (${String(toolResult?.templateError || 'error desconocido')}).`;
   }
   if (command.type === 'CREATE_CANDIDATE') {
     const created = Boolean(toolResult?.createdConversation || toolResult?.createdContact);
@@ -1384,11 +1645,21 @@ async function maybeHandleStaffDeterministicRouter(params: {
           ? ({ command: 'HELP' } as any)
           : command.type === 'LIST_DRAFTS'
             ? ({ command: 'LIST_DRAFTS' } as any)
-            : command.type === 'SEND_TEMPLATE'
-              ? ({ command: 'SEND_TEMPLATE', ...(command.args as any) } as any)
-              : command.type === 'CREATE_CANDIDATE_AND_TEMPLATE'
-                ? ({ command: 'CREATE_CANDIDATE_AND_TEMPLATE', ...(command.args as any) } as any)
-                : command.type === 'BULK_CONTACTADO'
+            : command.type === 'LIST_SLOTS'
+              ? ({ command: 'LIST_SLOTS', ...(command.args as any) } as any)
+              : command.type === 'SCHEDULE_INTERVIEW'
+                ? ({ command: 'SCHEDULE_INTERVIEW', ...(command.args as any) } as any)
+                : command.type === 'RESCHEDULE_INTERVIEW'
+                  ? ({ command: 'RESCHEDULE_INTERVIEW', ...(command.args as any) } as any)
+                  : command.type === 'CANCEL_INTERVIEW'
+                    ? ({ command: 'CANCEL_INTERVIEW', ...(command.args as any) } as any)
+                    : command.type === 'CONFIRM_INTERVIEW'
+                      ? ({ command: 'CONFIRM_INTERVIEW', ...(command.args as any) } as any)
+              : command.type === 'SEND_TEMPLATE'
+                ? ({ command: 'SEND_TEMPLATE', ...(command.args as any) } as any)
+                : command.type === 'CREATE_CANDIDATE_AND_TEMPLATE'
+                  ? ({ command: 'CREATE_CANDIDATE_AND_TEMPLATE', ...(command.args as any) } as any)
+                  : command.type === 'BULK_CONTACTADO'
                   ? ({ command: 'BULK_CONTACTADO', ...(command.args as any) } as any)
                   : command.type === 'PENDING_COUNTS'
                     ? ({ command: 'PENDING_COUNTS' } as any)
@@ -1524,6 +1795,415 @@ async function maybeHandleStaffDeterministicRouter(params: {
           .update({
             where: { id: toolRun.id },
             data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'LIST_SLOTS') {
+      try {
+        const baseConfig = await getSystemConfig();
+        const scheduleConfig = buildStaffInterviewScheduleConfig(baseConfig);
+        const timezone = String((scheduleConfig as any).interviewTimezone || 'America/Santiago').trim() || 'America/Santiago';
+        const dayLabel = resolveDayTokenToWeekdayLabel(command.args.dayToken, timezone);
+        if (!dayLabel) throw new Error('No pude interpretar el día. Usa hoy, mañana o un día de semana.');
+        const slotData = await computeStaffDaySlots({
+          config: scheduleConfig,
+          dayLabelEs: dayLabel,
+          location: STAFF_INTERVIEW_LOCATION_LABEL,
+        });
+        toolResult = {
+          ok: true,
+          details: {
+            toolName: 'LIST_SLOTS',
+            result: {
+              day: dayLabel,
+              location: STAFF_INTERVIEW_LOCATION_LABEL,
+              slots: slotData.slots,
+            },
+          },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({
+                result: { day: dayLabel, location: STAFF_INTERVIEW_LOCATION_LABEL, slots: slotData.slots },
+              }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo listar slots';
+        toolResult = { ok: false, details: { toolName: 'LIST_SLOTS', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'SCHEDULE_INTERVIEW' || command.type === 'RESCHEDULE_INTERVIEW') {
+      try {
+        const targetConversation = await resolveConversationByRefForStaff({
+          workspaceId: params.workspaceId,
+          ref: command.args.ref,
+        });
+        if (!targetConversation?.id) throw new Error(`No encontré el caso "${command.args.ref}"`);
+        const convo = await prisma.conversation.findFirst({
+          where: { id: targetConversation.id, workspaceId: params.workspaceId },
+          include: { contact: true },
+        });
+        if (!convo?.id) throw new Error('No encontré la conversación objetivo');
+
+        const baseConfig = await getSystemConfig();
+        const scheduleConfig = buildStaffInterviewScheduleConfig(baseConfig);
+        const timezone = String((scheduleConfig as any).interviewTimezone || 'America/Santiago').trim() || 'America/Santiago';
+        const dayLabel = resolveDayTokenToWeekdayLabel(command.args.dayToken, timezone);
+        if (!dayLabel) throw new Error('No pude interpretar el día. Usa hoy, mañana o un día de semana.');
+
+        const attempt = await attemptScheduleInterview({
+          conversationId: convo.id,
+          contactId: convo.contactId,
+          day: dayLabel,
+          time: command.args.time,
+          location: STAFF_INTERVIEW_LOCATION_LABEL,
+          config: scheduleConfig as any,
+        });
+        if (!attempt.ok) {
+          toolResult = {
+            ok: true,
+            details: {
+              toolName: command.type,
+              result: {
+                ok: false,
+                reason: attempt.reason,
+                message: attempt.message,
+                alternatives: attempt.alternatives.map((a) => ({
+                  day: a.day,
+                  time: a.time,
+                  location: a.location,
+                })),
+              },
+            },
+          };
+          await prisma.agentRunLog
+            .update({
+              where: { id: toolRun.id },
+              data: {
+                status: 'SUCCESS',
+                resultsJson: serializeJson({
+                  result: {
+                    ok: false,
+                    reason: attempt.reason,
+                    message: attempt.message,
+                    alternatives: attempt.alternatives.map((a) => ({
+                      day: a.day,
+                      time: a.time,
+                      location: a.location,
+                    })),
+                  },
+                }),
+              },
+            })
+            .catch(() => {});
+        } else {
+          const now = new Date();
+          await prisma.conversation.update({
+            where: { id: convo.id },
+            data: {
+              status: 'OPEN',
+              conversationStage: 'INTERVIEW_PENDING',
+              stageChangedAt: now,
+              stageReason: command.type === 'RESCHEDULE_INTERVIEW' ? 'staff_reagenda_entrevista' : 'staff_agenda_entrevista',
+              interviewDay: attempt.slot.day,
+              interviewTime: attempt.slot.time,
+              interviewLocation: attempt.slot.location,
+              interviewStatus: 'PENDING',
+              aiMode: 'INTERVIEW',
+              updatedAt: now,
+            } as any,
+          });
+          await createSystemConversationNote(
+            convo.id,
+            command.type === 'RESCHEDULE_INTERVIEW'
+              ? `🔁 Entrevista reagendada (HOLD): ${formatSlotHuman(attempt.slot)}.`
+              : `🗓️ Entrevista agendada (HOLD): ${formatSlotHuman(attempt.slot)}.`,
+            {
+              source: 'staff_command_schedule',
+              reservationId: attempt.reservationId,
+              kind: attempt.kind,
+            },
+          );
+          toolResult = {
+            ok: true,
+            details: {
+              toolName: command.type,
+              result: {
+                ok: true,
+                refHint: convo.id.slice(0, 8),
+                reservationId: attempt.reservationId,
+                kind: attempt.kind,
+                slot: {
+                  day: attempt.slot.day,
+                  time: attempt.slot.time,
+                  location: attempt.slot.location,
+                },
+              },
+            },
+          };
+          await prisma.agentRunLog
+            .update({
+              where: { id: toolRun.id },
+              data: {
+                status: 'SUCCESS',
+                resultsJson: serializeJson({
+                  result: {
+                    ok: true,
+                    conversationId: convo.id,
+                    refHint: convo.id.slice(0, 8),
+                    reservationId: attempt.reservationId,
+                    kind: attempt.kind,
+                    slot: {
+                      day: attempt.slot.day,
+                      time: attempt.slot.time,
+                      location: attempt.slot.location,
+                    },
+                  },
+                }),
+              },
+            })
+            .catch(() => {});
+        }
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo agendar entrevista';
+        toolResult = { ok: false, details: { toolName: command.type, error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'CANCEL_INTERVIEW') {
+      try {
+        const targetConversation = await resolveConversationByRefForStaff({
+          workspaceId: params.workspaceId,
+          ref: command.args.ref,
+        });
+        if (!targetConversation?.id) throw new Error(`No encontré el caso "${command.args.ref}"`);
+        const convo = await prisma.conversation.findFirst({
+          where: { id: targetConversation.id, workspaceId: params.workspaceId },
+          select: { id: true, interviewDay: true, interviewTime: true, interviewLocation: true },
+        });
+        if (!convo?.id) throw new Error('No encontré la conversación objetivo');
+        const release = await releaseActiveReservation({ conversationId: convo.id, status: 'CANCELLED' });
+        await prisma.conversation.update({
+          where: { id: convo.id },
+          data: {
+            status: 'OPEN',
+            conversationStage: 'INTERVIEW_PENDING',
+            stageChangedAt: new Date(),
+            stageReason: 'staff_cancel_interview',
+            interviewStatus: 'CANCELLED',
+            updatedAt: new Date(),
+          } as any,
+        });
+        await createSystemConversationNote(
+          convo.id,
+          release.released
+            ? '❌ Entrevista cancelada y cupo liberado.'
+            : '❌ Entrevista marcada como cancelada (no había reserva activa).',
+          {
+            source: 'staff_command_cancel_interview',
+            reservationId: release.reservationId,
+          },
+        );
+        toolResult = {
+          ok: true,
+          details: { toolName: 'CANCEL_INTERVIEW', result: { released: release.released, reservationId: release.reservationId } },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: { released: release.released, reservationId: release.reservationId } }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo cancelar entrevista';
+        toolResult = { ok: false, details: { toolName: 'CANCEL_INTERVIEW', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'CONFIRM_INTERVIEW') {
+      try {
+        const refId = stableHash(`staff_confirm_interview:${params.workspaceId}:${params.conversation.id}:${Date.now()}`).slice(0, 8);
+        const targetConversation = await resolveConversationByRefForStaff({
+          workspaceId: params.workspaceId,
+          ref: command.args.ref,
+        });
+        if (!targetConversation?.id) throw new Error(`No encontré el caso "${command.args.ref}"`);
+        const convo = await prisma.conversation.findFirst({
+          where: { id: targetConversation.id, workspaceId: params.workspaceId },
+          include: { contact: true, phoneLine: true },
+        });
+        if (!convo?.id || !convo.contact?.waId) throw new Error('El caso no tiene WhatsApp válido');
+        if (convo.contact.noContact) throw new Error('El contacto está en NO_CONTACTAR');
+
+        const reservationUpdate = await confirmActiveReservation(convo.id);
+        const scheduleConfig = buildStaffInterviewScheduleConfig(await getSystemConfig());
+        const normalizedLocation =
+          String(convo.interviewLocation || '').trim() || STAFF_INTERVIEW_LOCATION_LABEL;
+        const exactLocation =
+          normalizedLocation.toLowerCase().includes('salvador')
+            ? normalizedLocation
+            : STAFF_INTERVIEW_EXACT_ADDRESS;
+        await prisma.conversation.update({
+          where: { id: convo.id },
+          data: {
+            status: 'OPEN',
+            conversationStage: 'INTERVIEW_SCHEDULED',
+            stageChangedAt: new Date(),
+            stageReason: 'staff_confirm_interview',
+            interviewStatus: 'CONFIRMED',
+            interviewLocation: exactLocation,
+            updatedAt: new Date(),
+          } as any,
+        });
+
+        const templateName = 'enviorapido_confirma_entrevista_v1';
+        const catalog = await listWorkspaceTemplatesForStaff(params.workspaceId);
+        if (!catalog.namesLower.has(templateName.toLowerCase())) {
+          throw new Error(`Plantilla "${templateName}" no existe en catálogo. ${shortTemplateList(catalog.entries)}`);
+        }
+
+        const templatesCfg = await loadTemplateConfig(undefined, params.workspaceId).catch(() => null as any);
+        const finalVariables = resolveTemplateVariables(templateName, undefined, templatesCfg || undefined, {
+          interviewDay: String(convo.interviewDay || '').trim() || null,
+          interviewTime: String(convo.interviewTime || '').trim() || null,
+          interviewLocation: exactLocation,
+          candidateName:
+            convo.contact?.candidateNameManual ||
+            convo.contact?.candidateName ||
+            convo.contact?.displayName ||
+            convo.contact?.name ||
+            convo.contact?.waId ||
+            '',
+        });
+
+        const sendResult = await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
+          phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
+          enforceSafeMode: false,
+          languageCode: null,
+        });
+        if (!sendResult.success) {
+          await prisma.outboundMessageLog
+            .create({
+              data: {
+                workspaceId: params.workspaceId,
+                conversationId: convo.id,
+                relatedConversationId: convo.id,
+                agentRunId: toolRun.id,
+                channel: 'WHATSAPP',
+                type: 'TEMPLATE',
+                templateName,
+                dedupeKey: `manual_staff_confirm_template_failed:${convo.id}:${Date.now()}`,
+                textHash: stableHash(`TEMPLATE:${templateName}:${serializeJson(finalVariables || [])}`),
+                blockedReason: `SEND_FAILED:${String(sendResult.error || 'unknown')}`,
+                waMessageId: null,
+              } as any,
+            })
+            .catch(() => {});
+          throw new Error(`ref ${refId} · ${String(sendResult.error || 'Falló proveedor WhatsApp')}`);
+        }
+
+        await prisma.message.create({
+          data: {
+            conversationId: convo.id,
+            direction: 'OUTBOUND',
+            text: `[TEMPLATE] ${templateName}`,
+            rawPayload: serializeJson({
+              template: templateName,
+              variables: finalVariables || [],
+              sendResult,
+              source: 'staff_command_confirm_interview',
+            }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+
+        await prisma.outboundMessageLog
+          .create({
+            data: {
+              workspaceId: params.workspaceId,
+              conversationId: convo.id,
+              relatedConversationId: convo.id,
+              agentRunId: toolRun.id,
+              channel: 'WHATSAPP',
+              type: 'TEMPLATE',
+              templateName,
+              dedupeKey: `manual_staff_confirm_template:${convo.id}:${Date.now()}`,
+              textHash: stableHash(`TEMPLATE:${templateName}:${serializeJson(finalVariables || [])}`),
+              blockedReason: null,
+              waMessageId: sendResult.messageId || null,
+            } as any,
+          })
+          .catch(() => {});
+
+        await createSystemConversationNote(
+          convo.id,
+          `✅ Entrevista confirmada. Dirección exacta enviada: ${STAFF_INTERVIEW_EXACT_ADDRESS}.`,
+          {
+            source: 'staff_command_confirm_interview',
+            reservationId: reservationUpdate.reservationId,
+            templateName,
+          },
+        );
+
+        toolResult = {
+          ok: true,
+          details: {
+            toolName: 'CONFIRM_INTERVIEW',
+            result: {
+              templateSent: true,
+              templateName,
+              reservationId: reservationUpdate.reservationId,
+            },
+          },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({
+                result: {
+                  templateSent: true,
+                  templateName,
+                  reservationId: reservationUpdate.reservationId,
+                },
+              }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errText = err instanceof Error ? err.message : 'No se pudo confirmar entrevista';
+        toolResult = { ok: false, details: { toolName: 'CONFIRM_INTERVIEW', error: errText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'ERROR',
+              error: errText,
+              resultsJson: serializeJson({ error: errText }),
+            },
           })
           .catch(() => {});
       }
