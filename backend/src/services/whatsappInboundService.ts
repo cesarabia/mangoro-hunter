@@ -2264,6 +2264,8 @@ function normalizeStage(raw: string | null | undefined): WorkflowStage {
   return hit || "NEW_INTAKE";
 }
 
+const STICKY_MESSAGE_STAGE_SET = new Set<string>(["REJECTED", "INTERVIEW_SCHEDULED"]);
+
 async function applyRecruitmentWorkflowRules(
   app: FastifyInstance,
   conversationId: string,
@@ -2278,6 +2280,10 @@ async function applyRecruitmentWorkflowRules(
   });
   if (!convo || convo.isAdmin) return;
   if (String(convo.conversationStage || "").toUpperCase() === "ARCHIVED") return;
+  if (STICKY_MESSAGE_STAGE_SET.has(String(convo.conversationStage || "").toUpperCase())) {
+    // Sticky stage guardrail: receiving/sending messages must not move closed/scheduled pipeline stages automatically.
+    return;
+  }
   if ((convo.aiMode || "RECRUIT") !== "RECRUIT") return;
 
   const inboundMessages = (convo.messages || []).filter((m) => m.direction === "INBOUND");

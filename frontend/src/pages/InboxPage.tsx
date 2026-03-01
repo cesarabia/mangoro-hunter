@@ -487,6 +487,7 @@ export const InboxPage: React.FC<Props> = ({
               selectedId={selectedId}
               onSelect={handleSelect}
               fullWidth
+              mode={mode}
             />
           )
         ) : (
@@ -495,6 +496,7 @@ export const InboxPage: React.FC<Props> = ({
               conversations={conversations}
               selectedId={selectedId}
               onSelect={handleSelect}
+              mode={mode}
             />
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               {selectedConversation && !selectedConversation.isAdmin && (

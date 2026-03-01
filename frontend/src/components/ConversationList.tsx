@@ -5,6 +5,7 @@ interface ConversationListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   fullWidth?: boolean;
+  mode?: 'INBOX' | 'INACTIVE';
 }
 
 const statusLabels: Record<string, string> = {
@@ -45,16 +46,80 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   selectedId,
   onSelect,
   fullWidth = false,
+  mode = 'INBOX',
 }) => {
-  const [filter, setFilter] = useState<'ALL' | 'NEW' | 'OPEN' | 'CLOSED'>('ALL');
+  type StageViewKey =
+    | 'NEW_INTAKE'
+    | 'SCREENING'
+    | 'INTERVIEW_PENDING'
+    | 'INTERVIEW_SCHEDULED'
+    | 'HIRED_DRIVER'
+    | 'REJECTED'
+    | 'STALE_NO_RESPONSE'
+    | 'PROSPECTS_NO_MESSAGES';
+  const [stageView, setStageView] = useState<StageViewKey>(mode === 'INACTIVE' ? 'STALE_NO_RESPONSE' : 'NEW_INTAKE');
   const [query, setQuery] = useState('');
+
+  const normalizeStage = (conversation: any): StageViewKey | string => {
+    const raw = String(conversation?.conversationStage || conversation?.stage || '').trim().toUpperCase();
+    if (!raw || raw === 'NUEVO') return 'NEW_INTAKE';
+    if (raw === 'WAITING_CANDIDATE' || raw === 'INFO') return 'SCREENING';
+    if (raw === 'AGENDADO' || raw === 'CONFIRMED') return 'INTERVIEW_SCHEDULED';
+    if (raw === 'DESCARTADO') return 'REJECTED';
+    return raw;
+  };
+
+  const stageLabel = (stage: string): string => {
+    const key = String(stage || '').trim().toUpperCase();
+    const map: Record<string, string> = {
+      NEW_INTAKE: 'Nuevo',
+      SCREENING: 'Screening',
+      INTERVIEW_PENDING: 'Entrevista pendiente',
+      INTERVIEW_SCHEDULED: 'Entrevista agendada',
+      HIRED_DRIVER: 'Contratado',
+      REJECTED: 'Rechazado',
+      STALE_NO_RESPONSE: 'Sin respuesta',
+    };
+    return map[key] || key || 'Sin stage';
+  };
+
+  const stageViews: Array<{ key: StageViewKey; label: string }> = [
+    { key: 'NEW_INTAKE', label: 'Nuevos' },
+    { key: 'SCREENING', label: 'Screening' },
+    { key: 'INTERVIEW_PENDING', label: 'Entrevista pendiente' },
+    { key: 'INTERVIEW_SCHEDULED', label: 'Entrevista agendada' },
+    { key: 'HIRED_DRIVER', label: 'Contratados' },
+    { key: 'REJECTED', label: 'Rechazados' },
+    { key: 'STALE_NO_RESPONSE', label: 'Sin respuesta' },
+    { key: 'PROSPECTS_NO_MESSAGES', label: 'Prospectos (sin mensajes)' },
+  ];
+
+  const countByView = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const view of stageViews) counts[view.key] = 0;
+    for (const c of conversations) {
+      const hasMessages = Array.isArray(c?.messages) && c.messages.length > 0;
+      const st = normalizeStage(c);
+      if (!hasMessages) counts.PROSPECTS_NO_MESSAGES += 1;
+      if (counts[st] !== undefined) counts[st] += 1;
+    }
+    return counts;
+  }, [conversations]);
+
   const filteredConversations = useMemo(() => {
-    const byStatus = filter === 'ALL' ? conversations : conversations.filter(c => c.status === filter);
+    const byStage = conversations.filter((c: any) => {
+      const hasMessages = Array.isArray(c?.messages) && c.messages.length > 0;
+      if (stageView === 'PROSPECTS_NO_MESSAGES') return !hasMessages;
+      if (!hasMessages) return false; // ocultar sin mensajes por defecto
+      return normalizeStage(c) === stageView;
+    });
     const needle = String(query || '').trim().toLowerCase();
-    if (!needle) return byStatus;
-    return byStatus.filter((c: any) => {
+    if (!needle) return byStage;
+    return byStage.filter((c: any) => {
       const hay = [
         c?.id,
+        c?.conversationStage,
+        c?.stage,
         c?.contact?.waId,
         c?.contact?.phone,
         c?.contact?.candidateName,
@@ -66,14 +131,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         .join(' ');
       return hay.includes(needle);
     });
-  }, [conversations, filter, query]);
-
-  const filters: Array<{ key: 'ALL' | 'NEW' | 'OPEN' | 'CLOSED'; label: string }> = [
-    { key: 'ALL', label: 'Todos' },
-    { key: 'NEW', label: 'Nuevos' },
-    { key: 'OPEN', label: 'En seguimiento' },
-    { key: 'CLOSED', label: 'Cerrados' }
-  ];
+  }, [conversations, stageView, query]);
 
   return (
     <div
@@ -91,21 +149,37 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         <h2 style={{ margin: 0 }}>Conversaciones</h2>
       </div>
       <div style={{ padding: '8px 12px', borderBottom: '1px solid #f2f2f2', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {filters.map(item => (
+        {stageViews.map(item => (
           <button
             key={item.key}
-            onClick={() => setFilter(item.key)}
+            onClick={() => setStageView(item.key)}
             style={{
               padding: '4px 10px',
               borderRadius: 999,
-              border: filter === item.key ? '1px solid #111' : '1px solid #dcdcdc',
-              background: filter === item.key ? '#111' : '#fff',
-              color: filter === item.key ? '#fff' : '#333',
+              border: stageView === item.key ? '1px solid #111' : '1px solid #dcdcdc',
+              background: stageView === item.key ? '#111' : '#fff',
+              color: stageView === item.key ? '#fff' : '#333',
               fontSize: 12,
-              cursor: 'pointer'
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
             }}
           >
             {item.label}
+            <span
+              style={{
+                fontSize: 11,
+                borderRadius: 999,
+                padding: '0 6px',
+                background: stageView === item.key ? 'rgba(255,255,255,0.2)' : '#f3f3f3',
+                color: stageView === item.key ? '#fff' : '#444',
+                minWidth: 16,
+                textAlign: 'center',
+              }}
+            >
+              {countByView[item.key] || 0}
+            </span>
           </button>
         ))}
       </div>
@@ -119,7 +193,11 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       </div>
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {filteredConversations.length === 0 && (
-          <div style={{ padding: '16px', color: '#777', fontSize: 13 }}>No hay conversaciones en este estado.</div>
+          <div style={{ padding: '16px', color: '#777', fontSize: 13 }}>
+            {stageView === 'PROSPECTS_NO_MESSAGES'
+              ? 'No hay prospectos sin mensajes.'
+              : 'No hay conversaciones en este stage.'}
+          </div>
         )}
         {filteredConversations.map(c => {
           const lastMessage = c.messages?.[0];
@@ -145,6 +223,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           const showStatus = !isAdmin;
           const noContact = Boolean(c.contact?.noContact);
           const programName = c.program?.name ? String(c.program.name) : '';
+          const stage = String(normalizeStage(c));
+          const stageText = stageLabel(stage);
           return (
             <div
               key={c.id}
@@ -231,6 +311,21 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                       {programName}
                     </span>
                   ) : null}
+                  <span
+                    title={`Stage: ${stage}`}
+                    style={{
+                      background: '#f9f0ff',
+                      border: '1px solid #d3adf7',
+                      color: '#531dab',
+                      borderRadius: 999,
+                      fontSize: 11,
+                      padding: '2px 8px',
+                      marginRight: 6,
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {stageText}
+                  </span>
                   <span
                     style={{
                       background: statusStyle.background,
