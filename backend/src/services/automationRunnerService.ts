@@ -12,7 +12,10 @@ import { resolveWorkspaceProgramForKind } from './programRoutingService';
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from './templateService';
 import { getAdminWaIdAllowlist, getSystemConfig } from './configService';
 import { ensureAdminConversation, sendAdminReply } from './adminConversationService';
-import { upsertCandidateAndCase } from './candidateService';
+import { deriveCandidateStatusFromConversation, upsertCandidateAndCase } from './candidateService';
+import { listWorkspaceTemplateCatalog } from './whatsappTemplateCatalogService';
+import { sendWhatsAppTemplate } from './whatsappMessageService';
+import { normalizeChilePhoneE164 } from '../utils/phone';
 
 type ProgramSummary = { id: string; name: string; slug: string };
 
@@ -720,6 +723,8 @@ async function maybeHandleProgramSelection(params: {
 
 type StaffRouterCommand =
   | { type: 'PENDING_COUNTS'; args: {} }
+  | { type: 'HELP'; args: {} }
+  | { type: 'LIST_DRAFTS'; args: {} }
   | {
       type: 'LIST_CASES';
       args: { stageSlug?: string; assignedToMe: boolean; limit: number; query?: string; includeSummary?: boolean };
@@ -738,12 +743,73 @@ type StaffRouterCommand =
         comuna?: string;
         ciudad?: string;
       };
+    }
+  | {
+      type: 'SEND_TEMPLATE';
+      args: {
+        ref: string;
+        templateName: string;
+      };
+    }
+  | {
+      type: 'CREATE_CANDIDATE_AND_TEMPLATE';
+      args: {
+        phoneE164: string;
+        name?: string;
+        role?: string;
+        channel?: string;
+        comuna?: string;
+        ciudad?: string;
+        templateName: string;
+      };
+    }
+  | {
+      type: 'BULK_CONTACTADO';
+      args: { refs: string[] };
     };
+
+const STAFF_COMMAND_HELP_TEXT = [
+  'Comandos:',
+  '• pendientes',
+  '• listar nuevos N',
+  '• buscar <telefono|nombre>',
+  '• crear candidato <telefono> | <nombre> | <rol> | <canal> | <comuna>',
+  '• mover <telefono|id> a <stage>',
+  '• nota <telefono|id> <texto>',
+  '• plantilla <telefono|caseId> <templateName>',
+  '• alta <telefono> | <nombre> | <rol> | <canal> | <comuna> | plantilla=<templateName>',
+  '• bulk contactado <telefonos separados por espacio/coma>',
+  '• borradores',
+  '• ENVIAR <id> | EDITAR <id>: <texto> | CANCELAR <id>',
+  '• ayuda',
+].join('\n');
+
+function parseBulkRefs(raw: string): string[] {
+  const tokens = String(raw || '')
+    .split(/[\s,\n;]+/g)
+    .map((t) => String(t || '').trim())
+    .filter(Boolean);
+  const out: string[] = [];
+  for (const token of tokens) {
+    const normalizedPhone = normalizeWhatsAppId(token) || normalizeWhatsAppId(normalizeChilePhoneE164(token) || '');
+    const candidate = normalizedPhone || token;
+    if (!candidate) continue;
+    if (!out.includes(candidate)) out.push(candidate);
+  }
+  return out;
+}
 
 function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null {
   const raw = String(inboundText || '').trim();
   if (!raw) return null;
   const normalized = normalizeLoose(raw);
+
+  if (normalized === 'ayuda' || normalized === '/ayuda' || normalized === 'help' || normalized === '/help') {
+    return { type: 'HELP', args: {} };
+  }
+  if (normalized === 'borradores' || normalized === '/borradores' || normalized === 'drafts') {
+    return { type: 'LIST_DRAFTS', args: {} };
+  }
 
   if (normalized === 'pendientes' || normalized === '/pendientes' || normalized === 'mis pendientes') {
     return { type: 'PENDING_COUNTS', args: {} };
@@ -798,9 +864,47 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
       };
     }
   }
+  const altaMatch = raw.match(/^\s*alta\s+(.+)\s*$/i);
+  if (altaMatch?.[1]) {
+    const parts = altaMatch[1]
+      .split('|')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const phoneE164 = String(parts[0] || '').trim();
+    if (phoneE164) {
+      const templatePart = parts.find((p) => /^plantilla\s*=\s*/i.test(p));
+      const templateName = templatePart ? String(templatePart.replace(/^plantilla\s*=\s*/i, '') || '').trim() : '';
+      if (templateName) {
+        return {
+          type: 'CREATE_CANDIDATE_AND_TEMPLATE',
+          args: {
+            phoneE164,
+            name: String(parts[1] || '').trim() || undefined,
+            role: String(parts[2] || '').trim() || undefined,
+            channel: String(parts[3] || '').trim() || undefined,
+            comuna: String(parts[4] || '').trim() || undefined,
+            ciudad: String(parts[5] || '').trim() || undefined,
+            templateName,
+          },
+        };
+      }
+    }
+  }
   const buscarMatch = raw.match(/^\s*buscar\s+(.+)\s*$/i);
   if (buscarMatch?.[1]) {
     return { type: 'LIST_CASES', args: { assignedToMe: false, limit: 10, query: buscarMatch[1].trim() } };
+  }
+  const bulkContactadoMatch = raw.match(/^\s*bulk\s+contactad[oa]\s+(.+)\s*$/i);
+  if (bulkContactadoMatch?.[1]) {
+    const refs = parseBulkRefs(bulkContactadoMatch[1]);
+    if (refs.length > 0) return { type: 'BULK_CONTACTADO', args: { refs } };
+  }
+  const templateMatch = raw.match(/^\s*plantilla\s+(.+?)\s+([a-zA-Z0-9_\-.]+)\s*$/i);
+  if (templateMatch?.[1] && templateMatch?.[2]) {
+    return {
+      type: 'SEND_TEMPLATE',
+      args: { ref: String(templateMatch[1] || '').trim(), templateName: String(templateMatch[2] || '').trim() },
+    };
   }
   const resumenMatch = raw.match(/^\s*resumen\s+(.+)\s*$/i);
   if (resumenMatch?.[1]) {
@@ -855,15 +959,226 @@ function classifyCandidateBucket(stageRaw: string, statusRaw: string): 'NUEVO' |
   return 'NUEVO';
 }
 
+async function resolveConversationByRefForStaff(params: {
+  workspaceId: string;
+  ref: string;
+}): Promise<{ id: string; contactId: string; phoneLineId: string | null } | null> {
+  const rawRef = String(params.ref || '').trim();
+  if (!rawRef) return null;
+
+  const directId = await prisma.conversation.findFirst({
+    where: {
+      workspaceId: params.workspaceId,
+      archivedAt: null,
+      isAdmin: false,
+      OR: [{ id: rawRef }, { id: { startsWith: rawRef } }],
+    } as any,
+    select: { id: true, contactId: true, phoneLineId: true },
+    orderBy: { updatedAt: 'desc' },
+  });
+  if (directId?.id) return directId;
+
+  const normalizedPhone = normalizeWhatsAppId(rawRef) || normalizeWhatsAppId(normalizeChilePhoneE164(rawRef) || '');
+  if (normalizedPhone) {
+    const byPhone = await prisma.conversation.findFirst({
+      where: {
+        workspaceId: params.workspaceId,
+        archivedAt: null,
+        isAdmin: false,
+        contact: {
+          OR: [{ waId: normalizedPhone }, { phone: normalizedPhone }],
+        },
+      } as any,
+      select: { id: true, contactId: true, phoneLineId: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (byPhone?.id) return byPhone;
+  }
+
+  const byName = await prisma.conversation.findMany({
+    where: {
+      workspaceId: params.workspaceId,
+      archivedAt: null,
+      isAdmin: false,
+      contact: {},
+    } as any,
+    select: {
+      id: true,
+      contactId: true,
+      phoneLineId: true,
+      updatedAt: true,
+      contact: {
+        select: {
+          candidateNameManual: true,
+          candidateName: true,
+          displayName: true,
+          name: true,
+        },
+      },
+    },
+    take: 100,
+    orderBy: { updatedAt: 'desc' },
+  });
+  const needle = normalizeLoose(rawRef);
+  const ranked = byName
+    .map((row) => {
+      const label = normalizeLoose(
+        String(
+          row?.contact?.candidateNameManual ||
+            row?.contact?.candidateName ||
+            row?.contact?.displayName ||
+            row?.contact?.name ||
+            '',
+        ),
+      );
+      const score = !needle
+        ? 0
+        : label === needle
+          ? 3
+          : label.startsWith(needle)
+            ? 2
+            : label.includes(needle)
+              ? 1
+              : 0;
+      return { row, score };
+    })
+    .filter((it) => it.score > 0)
+    .sort((a, b) => b.score - a.score || new Date((b.row as any).updatedAt).getTime() - new Date((a.row as any).updatedAt).getTime());
+  const best = ranked[0]?.row as any;
+  if (best?.id) return { id: best.id, contactId: best.contactId, phoneLineId: best.phoneLineId || null };
+  return null;
+}
+
+async function listWorkspaceTemplatesForStaff(workspaceId: string): Promise<{
+  entries: Array<{ name: string; category: string | null; language: string | null; status: string | null; source: string }>;
+  namesLower: Set<string>;
+}> {
+  const catalog = await listWorkspaceTemplateCatalog(workspaceId).catch(() => null);
+  const entries = Array.isArray(catalog?.templates)
+    ? catalog.templates.map((t) => ({
+        name: String(t?.name || '').trim(),
+        category: t?.category ? String(t.category) : null,
+        language: t?.language ? String(t.language) : null,
+        status: t?.status ? String(t.status) : null,
+        source: String(t?.source || ''),
+      }))
+    : [];
+  const namesLower = new Set(entries.map((e) => e.name.toLowerCase()).filter(Boolean));
+  return { entries, namesLower };
+}
+
+function shortTemplateList(entries: Array<{ name: string; category: string | null; language: string | null; status: string | null }>): string {
+  if (!entries.length) return 'No hay plantillas disponibles en catálogo.';
+  const top = entries.slice(0, 12).map((t) => {
+    const bits = [t.category, t.language, t.status].filter(Boolean).join(' · ');
+    return `• ${t.name}${bits ? ` (${bits})` : ''}`;
+  });
+  return `Plantillas disponibles:\n${top.join('\n')}`;
+}
+
+async function createSystemConversationNote(conversationId: string, text: string, extra?: any): Promise<void> {
+  await prisma.message
+    .create({
+      data: {
+        conversationId,
+        direction: 'OUTBOUND',
+        text,
+        rawPayload: serializeJson({ system: true, ...(extra || {}) }),
+        timestamp: new Date(),
+        read: true,
+      },
+    })
+    .catch(() => {});
+}
+
+async function applyTemplateAutoStatus(params: {
+  workspaceId: string;
+  conversationId: string;
+  templateName: string;
+}): Promise<{ updatedStage?: string | null; updatedStatus?: string | null; candidateBucket?: string | null }> {
+  const template = String(params.templateName || '').trim().toLowerCase();
+  if (!template) return {};
+  const conversation = await prisma.conversation.findFirst({
+    where: { id: params.conversationId, workspaceId: params.workspaceId },
+    include: { contact: true },
+  });
+  if (!conversation?.id) return {};
+  const now = new Date();
+  const updates: any = { updatedAt: now };
+  let noteText = '';
+  if (template === 'enviorapido_postulacion_inicio_v1') {
+    const derived = deriveCandidateStatusFromConversation(conversation);
+    if (derived.candidateStatus === 'NUEVO') {
+      updates.status = 'OPEN';
+      if (String(conversation.conversationStage || '').toUpperCase() === 'NEW_INTAKE') {
+        updates.conversationStage = 'SCREENING';
+        updates.stageChangedAt = now;
+        updates.stageReason = 'template_inicio_enviada';
+      }
+    }
+    noteText = `📨 Plantilla inicio enviada (${now.toLocaleString('es-CL')}).`;
+  } else if (template === 'enviorapido_confirma_entrevista_v1') {
+    updates.status = 'OPEN';
+    updates.conversationStage = 'INTERVIEW_SCHEDULED';
+    updates.stageChangedAt = now;
+    updates.stageReason = 'template_confirmacion_entrevista';
+    noteText = `📨 Plantilla confirmación entrevista enviada (${now.toLocaleString('es-CL')}).`;
+  } else {
+    noteText = `📨 Plantilla ${template} enviada (${now.toLocaleString('es-CL')}).`;
+  }
+
+  const updated = await prisma.conversation.update({
+    where: { id: conversation.id },
+    data: updates,
+  });
+  await createSystemConversationNote(conversation.id, noteText, {
+    source: 'staff_template_manual',
+    templateName: template,
+  });
+  const derivedNow = deriveCandidateStatusFromConversation(updated);
+  return {
+    updatedStage: String((updated as any)?.conversationStage || ''),
+    updatedStatus: String(updated?.status || ''),
+    candidateBucket: derivedNow.candidateStatus,
+  };
+}
+
+function formatStaffError(ref: string, reason: string): string {
+  const r = String(ref || '').trim() || stableHash(`${Date.now()}:${Math.random()}`).slice(0, 8);
+  const clean = String(reason || 'Error desconocido').replace(/\s+/g, ' ').trim();
+  return `No pude completar la acción (ref ${r}): ${clean}`;
+}
+
 function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any): string {
   const toolResult = toolExecResult?.details?.result || null;
   const toolError = toolExecResult?.details?.error || null;
+  if (command.type === 'HELP') return STAFF_COMMAND_HELP_TEXT;
+  if (command.type === 'LIST_DRAFTS') {
+    const drafts = Array.isArray(toolResult?.drafts) ? toolResult.drafts : [];
+    if (drafts.length === 0) return `No hay borradores pendientes.\n\n${STAFF_COMMAND_HELP_TEXT}`;
+    const lines = drafts.slice(0, 10).map((d: any) => {
+      const idShort = String(d?.id || '').slice(0, 8);
+      const who = String(d?.candidate || d?.waId || 'Candidato');
+      const wa = String(d?.waId || '').trim();
+      return `• ${idShort} · ${who}${wa ? ` (+${wa})` : ''}`;
+    });
+    return [`Borradores pendientes (${drafts.length}):`, ...lines, '', 'Comando: ENVIAR <id> | EDITAR <id>: ... | CANCELAR <id>'].join('\n');
+  }
   if (toolError) {
     if (command.type === 'SET_STAGE' && /stages? validos|stages? válidos|stageSlug desconocido/i.test(String(toolError))) {
       return `No pude mover el caso porque ese stage no existe. ${String(toolError).replace(/^.*?(\| stages? válidos?:?\s*)/i, 'Stages válidos: ')}`;
     }
     if (command.type === 'CREATE_CANDIDATE') {
       return `No pude crear/actualizar ese candidato (${toolError}). Revisa el formato: crear candidato <telefono> | <nombre> | <rol> | <canal> | <comuna>.`;
+    }
+    if (command.type === 'SEND_TEMPLATE') {
+      return `No pude enviar la plantilla (${toolError}). Revisa template/caso y vuelve a intentar.`;
+    }
+    if (command.type === 'CREATE_CANDIDATE_AND_TEMPLATE') {
+      return `No pude completar el alta con plantilla (${toolError}). Revisa formato: alta <telefono> | <nombre> | <rol> | <canal> | <comuna> | plantilla=<templateName>.`;
+    }
+    if (command.type === 'BULK_CONTACTADO') {
+      return `No pude ejecutar el bulk (${toolError}).`;
     }
     return `No pude consultar eso ahora (${toolError}). Intenta de nuevo en unos segundos y lo revisamos.`;
   }
@@ -973,6 +1288,31 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
       ? `Listo, candidato registrado para ${phone}${idShort ? ` (caso ${idShort})` : ''}.`
       : `Listo, actualicé el candidato ${phone}${idShort ? ` y quedó vinculado al caso ${idShort}` : ''}.`;
   }
+  if (command.type === 'SEND_TEMPLATE') {
+    const ok = Boolean(toolResult?.success);
+    if (!ok) return `No pude enviar la plantilla.`;
+    const phone = String(toolResult?.phoneE164 || '').trim();
+    const caseShort = String(toolResult?.conversationId || '').slice(0, 8);
+    const templateName = String(toolResult?.templateName || command.args.templateName || '').trim();
+    return `Listo, enviada plantilla ${templateName} a +${phone}${caseShort ? ` (case ${caseShort})` : ''}.`;
+  }
+  if (command.type === 'CREATE_CANDIDATE_AND_TEMPLATE') {
+    const phone = String(toolResult?.phoneE164 || '').trim();
+    const caseShort = String(toolResult?.conversationId || '').slice(0, 8);
+    const templateName = String(toolResult?.templateName || command.args.templateName || '').trim();
+    return `Listo, alta completada para +${phone}${caseShort ? ` (case ${caseShort})` : ''} y plantilla ${templateName} enviada.`;
+  }
+  if (command.type === 'BULK_CONTACTADO') {
+    const updated = Number(toolResult?.updated || 0);
+    const unchanged = Number(toolResult?.unchanged || 0);
+    const notFound = Number(toolResult?.notFound || 0);
+    return [
+      'Bulk CONTACTADO completado:',
+      `• Actualizados (NUEVO -> CONTACTADO): ${updated}`,
+      `• Sin cambio (ya CONTACTADO/CITADO/DESCARTADO): ${unchanged}`,
+      `• No encontrados: ${notFound}`,
+    ].join('\n');
+  }
   return 'Listo.';
 }
 
@@ -991,27 +1331,82 @@ async function maybeHandleStaffDeterministicRouter(params: {
   const inbound = String(params.inboundText || '').trim();
   if (!inbound) return { handled: false };
   const command = parseStaffRouterCommand(inbound);
-  if (!command) return { handled: false };
+  if (!command) {
+    const helpRun = await prisma.agentRunLog.create({
+      data: {
+        workspaceId: params.workspaceId,
+        conversationId: params.conversation.id,
+        programId: params.conversation.programId || null,
+        phoneLineId: params.conversation.phoneLineId || null,
+        eventType: 'STAFF_COMMAND_ROUTER_HELP',
+        status: 'RUNNING',
+        inputContextJson: serializeJson({
+          inboundMessageId: params.inboundMessageId || null,
+          inboundText: inbound,
+          deterministic: true,
+          reason: 'unrecognized_command',
+        }),
+      },
+    });
+    await executeAgentResponse({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      agentRunId: helpRun.id,
+      response: {
+        agent: 'staff_command_router',
+        version: 1,
+        commands: [
+          {
+            command: 'SEND_MESSAGE',
+            conversationId: params.conversation.id,
+            channel: 'WHATSAPP',
+            type: 'SESSION_TEXT',
+            text: STAFF_COMMAND_HELP_TEXT,
+            dedupeKey: `staff_help:${stableHash(`${params.conversation.id}:${params.inboundMessageId || inbound}:${Date.now()}`).slice(0, 16)}`,
+          } as any,
+        ],
+      } as any,
+      transportMode: params.transportMode,
+    });
+    await prisma.agentRunLog.update({
+      where: { id: helpRun.id },
+      data: {
+        status: 'SUCCESS',
+        resultsJson: serializeJson({ help: true }),
+      },
+    }).catch(() => {});
+    return { handled: true };
+  }
 
   try {
     const runCommand =
-      command.type === 'PENDING_COUNTS'
-        ? ({ command: 'PENDING_COUNTS' } as any)
-        : command.type === 'GET_CASE_SUMMARY'
-        ? ({ command: 'RUN_TOOL', toolName: 'GET_CASE_SUMMARY', args: { conversationId: command.args.ref } } as any)
-        : command.type === 'SET_STAGE'
-          ? ({
-              command: 'RUN_TOOL',
-              toolName: 'SET_STAGE',
-              args: { conversationId: command.args.ref, stageSlug: command.args.stageSlug, reason: command.args.reason },
-            } as any)
-          : command.type === 'ADD_NOTE'
-            ? ({ command: 'RUN_TOOL', toolName: 'ADD_NOTE', args: { conversationId: command.args.ref, text: command.args.text } } as any)
-            : command.type === 'SEND_CUSTOMER_MESSAGE'
-              ? ({ command: 'RUN_TOOL', toolName: 'SEND_CUSTOMER_MESSAGE', args: { conversationId: command.args.ref, text: command.args.text } } as any)
-              : command.type === 'CREATE_CANDIDATE'
-                ? ({ command: 'CREATE_CANDIDATE', ...(command.args as any) } as any)
-                : ({ command: 'RUN_TOOL', toolName: command.type, args: command.args } as any);
+      command.type === 'HELP'
+          ? ({ command: 'HELP' } as any)
+          : command.type === 'LIST_DRAFTS'
+            ? ({ command: 'LIST_DRAFTS' } as any)
+            : command.type === 'SEND_TEMPLATE'
+              ? ({ command: 'SEND_TEMPLATE', ...(command.args as any) } as any)
+              : command.type === 'CREATE_CANDIDATE_AND_TEMPLATE'
+                ? ({ command: 'CREATE_CANDIDATE_AND_TEMPLATE', ...(command.args as any) } as any)
+                : command.type === 'BULK_CONTACTADO'
+                  ? ({ command: 'BULK_CONTACTADO', ...(command.args as any) } as any)
+                  : command.type === 'PENDING_COUNTS'
+                    ? ({ command: 'PENDING_COUNTS' } as any)
+                    : command.type === 'GET_CASE_SUMMARY'
+                      ? ({ command: 'RUN_TOOL', toolName: 'GET_CASE_SUMMARY', args: { conversationId: command.args.ref } } as any)
+                      : command.type === 'SET_STAGE'
+                        ? ({
+                            command: 'RUN_TOOL',
+                            toolName: 'SET_STAGE',
+                            args: { conversationId: command.args.ref, stageSlug: command.args.stageSlug, reason: command.args.reason },
+                          } as any)
+                        : command.type === 'ADD_NOTE'
+                          ? ({ command: 'RUN_TOOL', toolName: 'ADD_NOTE', args: { conversationId: command.args.ref, text: command.args.text } } as any)
+                          : command.type === 'SEND_CUSTOMER_MESSAGE'
+                            ? ({ command: 'RUN_TOOL', toolName: 'SEND_CUSTOMER_MESSAGE', args: { conversationId: command.args.ref, text: command.args.text } } as any)
+                            : command.type === 'CREATE_CANDIDATE'
+                              ? ({ command: 'CREATE_CANDIDATE', ...(command.args as any) } as any)
+                              : ({ command: 'RUN_TOOL', toolName: command.type, args: command.args } as any);
 
     const toolRun = await prisma.agentRunLog.create({
       data: {
@@ -1036,7 +1431,67 @@ async function maybeHandleStaffDeterministicRouter(params: {
     });
 
     let toolResult: any = null;
-    if (command.type === 'PENDING_COUNTS') {
+    if (command.type === 'HELP') {
+      toolResult = { ok: true, details: { toolName: 'HELP', result: { help: true } } };
+      await prisma.agentRunLog
+        .update({
+          where: { id: toolRun.id },
+          data: {
+            status: 'SUCCESS',
+            resultsJson: serializeJson({ result: { help: true } }),
+          },
+        })
+        .catch(() => {});
+    } else if (command.type === 'LIST_DRAFTS') {
+      try {
+        const drafts = await prisma.hybridReplyDraft.findMany({
+          where: {
+            workspaceId: params.workspaceId,
+            status: { in: ['PENDING', 'APPROVED'] },
+          } as any,
+          include: {
+            conversation: {
+              include: {
+                contact: true,
+              },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        });
+        const mapped = drafts.map((d) => ({
+          id: d.id,
+          status: d.status,
+          waId: d.conversation?.contact?.waId || d.conversation?.contact?.phone || null,
+          candidate:
+            d.conversation?.contact?.candidateNameManual ||
+            d.conversation?.contact?.candidateName ||
+            d.conversation?.contact?.displayName ||
+            d.conversation?.contact?.name ||
+            null,
+          createdAt: d.createdAt,
+        }));
+        toolResult = { ok: true, details: { toolName: 'LIST_DRAFTS', result: { drafts: mapped } } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: { count: mapped.length } }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo listar borradores';
+        toolResult = { ok: false, details: { toolName: 'LIST_DRAFTS', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'PENDING_COUNTS') {
       try {
         const rows = await prisma.conversation.findMany({
           where: {
@@ -1102,6 +1557,353 @@ async function maybeHandleStaffDeterministicRouter(params: {
           .update({
             where: { id: toolRun.id },
             data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'SEND_TEMPLATE') {
+      try {
+        const refId = stableHash(`staff_template:${params.workspaceId}:${params.conversation.id}:${Date.now()}`).slice(0, 8);
+        const targetConversation = await resolveConversationByRefForStaff({
+          workspaceId: params.workspaceId,
+          ref: command.args.ref,
+        });
+        if (!targetConversation?.id) {
+          throw new Error(`No encontré el caso "${command.args.ref}"`);
+        }
+        const convo = await prisma.conversation.findFirst({
+          where: { id: targetConversation.id, workspaceId: params.workspaceId },
+          include: { contact: true, phoneLine: true },
+        });
+        if (!convo?.id || !convo.contact?.waId) {
+          throw new Error('El caso no tiene WhatsApp válido');
+        }
+        if (convo.contact.noContact) {
+          throw new Error('El contacto está en NO_CONTACTAR');
+        }
+        const catalog = await listWorkspaceTemplatesForStaff(params.workspaceId);
+        const templateName = String(command.args.templateName || '').trim();
+        if (!catalog.namesLower.has(templateName.toLowerCase())) {
+          throw new Error(`Plantilla "${templateName}" no existe en catálogo. ${shortTemplateList(catalog.entries)}`);
+        }
+
+        const templatesCfg = await loadTemplateConfig(undefined, params.workspaceId).catch(() => null as any);
+        const finalVariables = resolveTemplateVariables(templateName, undefined, templatesCfg || undefined, {
+          interviewDay: (convo as any).interviewDay,
+          interviewTime: (convo as any).interviewTime,
+          interviewLocation: (convo as any).interviewLocation,
+          candidateName:
+            convo.contact?.candidateNameManual ||
+            convo.contact?.candidateName ||
+            convo.contact?.displayName ||
+            convo.contact?.name ||
+            convo.contact?.waId ||
+            '',
+        });
+
+        const sendResult = await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
+          phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
+          enforceSafeMode: false,
+          languageCode: null,
+        });
+        if (!sendResult.success) {
+          await prisma.outboundMessageLog.create({
+            data: {
+              workspaceId: params.workspaceId,
+              conversationId: convo.id,
+              relatedConversationId: convo.id,
+              agentRunId: toolRun.id,
+              channel: 'WHATSAPP',
+              type: 'TEMPLATE',
+              templateName,
+              dedupeKey: `manual_staff_template_failed:${convo.id}:${Date.now()}`,
+              textHash: stableHash(`TEMPLATE:${templateName}:${serializeJson(finalVariables || [])}`),
+              blockedReason: `SEND_FAILED:${String(sendResult.error || 'unknown')}`,
+              waMessageId: null,
+            } as any,
+          }).catch(() => {});
+          throw new Error(`ref ${refId} · ${String(sendResult.error || 'Falló proveedor WhatsApp')}`);
+        }
+
+        await prisma.message.create({
+          data: {
+            conversationId: convo.id,
+            direction: 'OUTBOUND',
+            text: `[TEMPLATE] ${templateName}`,
+            rawPayload: serializeJson({
+              template: templateName,
+              variables: finalVariables || [],
+              sendResult,
+              source: 'staff_command_manual',
+            }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+
+        await prisma.outboundMessageLog.create({
+          data: {
+            workspaceId: params.workspaceId,
+            conversationId: convo.id,
+            relatedConversationId: convo.id,
+            agentRunId: toolRun.id,
+            channel: 'WHATSAPP',
+            type: 'TEMPLATE',
+            templateName,
+            dedupeKey: `manual_staff_template:${convo.id}:${Date.now()}`,
+            textHash: stableHash(`TEMPLATE:${templateName}:${serializeJson(finalVariables || [])}`),
+            blockedReason: null,
+            waMessageId: sendResult.messageId || null,
+          } as any,
+        });
+
+        const statusAfter = await applyTemplateAutoStatus({
+          workspaceId: params.workspaceId,
+          conversationId: convo.id,
+          templateName,
+        });
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({
+                result: {
+                  success: true,
+                  conversationId: convo.id,
+                  phoneE164: convo.contact.waId,
+                  templateName,
+                  statusAfter,
+                  manual: true,
+                },
+              }),
+            },
+          })
+          .catch(() => {});
+        toolResult = {
+          ok: true,
+          details: {
+            toolName: 'SEND_TEMPLATE',
+            result: {
+              success: true,
+              conversationId: convo.id,
+              phoneE164: convo.contact.waId,
+              templateName,
+              statusAfter,
+            },
+          },
+        };
+      } catch (err) {
+        const errText = err instanceof Error ? err.message : 'No se pudo enviar plantilla';
+        toolResult = { ok: false, details: { toolName: 'SEND_TEMPLATE', error: errText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'ERROR',
+              error: errText,
+              resultsJson: serializeJson({ error: errText }),
+            },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'CREATE_CANDIDATE_AND_TEMPLATE') {
+      try {
+        const created = await upsertCandidateAndCase({
+          workspaceId: params.workspaceId,
+          phoneRaw: command.args.phoneE164,
+          name: command.args.name || null,
+          role: command.args.role || null,
+          channel: command.args.channel || null,
+          comuna: command.args.comuna || null,
+          ciudad: command.args.ciudad || null,
+          initialStatus: 'NUEVO',
+          preserveExistingConversationStage: true,
+        });
+
+        const convo = await prisma.conversation.findFirst({
+          where: { id: created.conversationId, workspaceId: params.workspaceId },
+          include: { contact: true, phoneLine: true },
+        });
+        if (!convo?.id || !convo.contact?.waId) {
+          throw new Error('No pude preparar el caso para enviar plantilla');
+        }
+        if (convo.contact.noContact) {
+          throw new Error('El contacto está en NO_CONTACTAR');
+        }
+
+        const catalog = await listWorkspaceTemplatesForStaff(params.workspaceId);
+        const templateName = String(command.args.templateName || '').trim();
+        if (!catalog.namesLower.has(templateName.toLowerCase())) {
+          throw new Error(`Plantilla "${templateName}" no existe en catálogo. ${shortTemplateList(catalog.entries)}`);
+        }
+        const templatesCfg = await loadTemplateConfig(undefined, params.workspaceId).catch(() => null as any);
+        const finalVariables = resolveTemplateVariables(templateName, undefined, templatesCfg || undefined, {
+          interviewDay: (convo as any).interviewDay,
+          interviewTime: (convo as any).interviewTime,
+          interviewLocation: (convo as any).interviewLocation,
+          candidateName:
+            convo.contact?.candidateNameManual ||
+            convo.contact?.candidateName ||
+            convo.contact?.displayName ||
+            convo.contact?.name ||
+            convo.contact?.waId ||
+            '',
+        });
+        const sendResult = await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
+          phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
+          enforceSafeMode: false,
+          languageCode: null,
+        });
+        if (!sendResult.success) {
+          await prisma.outboundMessageLog.create({
+            data: {
+              workspaceId: params.workspaceId,
+              conversationId: convo.id,
+              relatedConversationId: convo.id,
+              agentRunId: toolRun.id,
+              channel: 'WHATSAPP',
+              type: 'TEMPLATE',
+              templateName,
+              dedupeKey: `manual_staff_alta_template_failed:${convo.id}:${Date.now()}`,
+              textHash: stableHash(`TEMPLATE:${templateName}:${serializeJson(finalVariables || [])}`),
+              blockedReason: `SEND_FAILED:${String(sendResult.error || 'unknown')}`,
+              waMessageId: null,
+            } as any,
+          }).catch(() => {});
+          throw new Error(String(sendResult.error || 'Falló envío de plantilla'));
+        }
+
+        await prisma.message.create({
+          data: {
+            conversationId: convo.id,
+            direction: 'OUTBOUND',
+            text: `[TEMPLATE] ${templateName}`,
+            rawPayload: serializeJson({
+              template: templateName,
+              variables: finalVariables || [],
+              sendResult,
+              source: 'staff_command_manual_alta',
+            }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+
+        await prisma.outboundMessageLog.create({
+          data: {
+            workspaceId: params.workspaceId,
+            conversationId: convo.id,
+            relatedConversationId: convo.id,
+            agentRunId: toolRun.id,
+            channel: 'WHATSAPP',
+            type: 'TEMPLATE',
+            templateName,
+            dedupeKey: `manual_staff_alta_template:${convo.id}:${Date.now()}`,
+            textHash: stableHash(`TEMPLATE:${templateName}:${serializeJson(finalVariables || [])}`),
+            blockedReason: null,
+            waMessageId: sendResult.messageId || null,
+          } as any,
+        });
+
+        const statusAfter = await applyTemplateAutoStatus({
+          workspaceId: params.workspaceId,
+          conversationId: convo.id,
+          templateName,
+        });
+        toolResult = {
+          ok: true,
+          details: {
+            toolName: 'CREATE_CANDIDATE_AND_TEMPLATE',
+            result: {
+              ...created,
+              templateName,
+              statusAfter,
+            },
+          },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: toolResult?.details?.result || null }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errText = err instanceof Error ? err.message : 'No se pudo ejecutar alta + plantilla';
+        toolResult = { ok: false, details: { toolName: 'CREATE_CANDIDATE_AND_TEMPLATE', error: errText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errText, resultsJson: serializeJson({ error: errText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'BULK_CONTACTADO') {
+      try {
+        let updated = 0;
+        let unchanged = 0;
+        let notFound = 0;
+        for (const ref of command.args.refs) {
+          const target = await resolveConversationByRefForStaff({
+            workspaceId: params.workspaceId,
+            ref,
+          });
+          if (!target?.id) {
+            notFound += 1;
+            continue;
+          }
+          const convo = await prisma.conversation.findFirst({
+            where: { id: target.id, workspaceId: params.workspaceId },
+            select: { id: true, conversationStage: true, status: true },
+          });
+          if (!convo?.id) {
+            notFound += 1;
+            continue;
+          }
+          const current = deriveCandidateStatusFromConversation(convo);
+          if (current.candidateStatus !== 'NUEVO') {
+            unchanged += 1;
+            continue;
+          }
+          await prisma.conversation.update({
+            where: { id: convo.id },
+            data: {
+              status: 'OPEN',
+              conversationStage: String(convo.conversationStage || '').toUpperCase() === 'NEW_INTAKE' ? 'SCREENING' : convo.conversationStage,
+              stageChangedAt: new Date(),
+              stageReason: 'bulk_contactado',
+              updatedAt: new Date(),
+            } as any,
+          });
+          await createSystemConversationNote(
+            convo.id,
+            `📌 Estado candidato actualizado a CONTACTADO (${new Date().toLocaleString('es-CL')}).`,
+            { source: 'staff_bulk_contactado' },
+          );
+          updated += 1;
+        }
+        toolResult = {
+          ok: true,
+          details: { toolName: 'BULK_CONTACTADO', result: { updated, unchanged, notFound } },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: { updated, unchanged, notFound } }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errText = err instanceof Error ? err.message : 'No se pudo ejecutar bulk contactado';
+        toolResult = { ok: false, details: { toolName: 'BULK_CONTACTADO', error: errText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errText, resultsJson: serializeJson({ error: errText }) },
           })
           .catch(() => {});
       }
