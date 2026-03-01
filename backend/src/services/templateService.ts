@@ -131,7 +131,8 @@ export function resolveTemplateVariables(
   if (
     templateName === (templates.templateGeneralFollowup || DEFAULT_TEMPLATE_GENERAL_FOLLOWUP) ||
     templateKey === 'enviorapido_postulacion_inicio_v1' ||
-    templateKey === 'enviorapido_recontacto_operativo_v1'
+    templateKey === 'enviorapido_recontacto_operativo_v1' ||
+    templateKey === 'general_bienvenida_v1'
   ) {
     const isLegacyRecruitTemplate =
       templateKey ===

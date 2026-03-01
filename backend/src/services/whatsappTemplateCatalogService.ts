@@ -51,6 +51,9 @@ function inferConfiguredTemplateLanguage(templateName: string, globalLanguage: s
   if (key === 'enviorapido_recontacto_operativo_v1' || key === 'enviorapido_apelacion_operativo_v1_') {
     return 'es_CL';
   }
+  if (key === 'general_bienvenida_v1') {
+    return 'es_CL';
+  }
 
   // Legacy internal defaults were created in es_CL.
   const isLegacyDefault =
@@ -102,7 +105,8 @@ function inferConfiguredTemplateVariableCount(
     key === String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase() ||
     key === recruitDefaultKey ||
     key === 'enviorapido_postulacion_inicio_v1' ||
-    key === 'enviorapido_recontacto_operativo_v1'
+    key === 'enviorapido_recontacto_operativo_v1' ||
+    key === 'general_bienvenida_v1'
   ) {
     return 1;
   }
@@ -122,6 +126,7 @@ const ENVIO_RAPIDO_KNOWN_TEMPLATES = [
   'enviorapido_confirma_entrevista_v1',
   'enviorapido_recontacto_operativo_v1',
   'enviorapido_apelacion_operativo_v1_',
+  'general_bienvenida_v1',
 ];
 
 function shouldInjectEnvioRapidoKnownTemplates(names: string[]): boolean {
