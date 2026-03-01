@@ -48,7 +48,7 @@ function inferConfiguredTemplateLanguage(templateName: string, globalLanguage: s
   if (key === 'enviorapido_postulacion_inicio_v1' || key === 'enviorapido_confirma_entrevista_v1') {
     return 'es';
   }
-  if (key === 'enviorapido_recontacto_operativo_v1') {
+  if (key === 'enviorapido_recontacto_operativo_v1' || key === 'enviorapido_apelacion_operativo_v1_') {
     return 'es_CL';
   }
 
@@ -109,11 +109,23 @@ function inferConfiguredTemplateVariableCount(
   if (
     key === String(DEFAULT_TEMPLATE_INTERVIEW_INVITE || '').trim().toLowerCase() ||
     key === interviewDefaultKey ||
-    key === 'enviorapido_confirma_entrevista_v1'
+    key === 'enviorapido_confirma_entrevista_v1' ||
+    key === 'enviorapido_apelacion_operativo_v1_'
   ) {
     return 3;
   }
   return 0;
+}
+
+const ENVIO_RAPIDO_KNOWN_TEMPLATES = [
+  'enviorapido_postulacion_inicio_v1',
+  'enviorapido_confirma_entrevista_v1',
+  'enviorapido_recontacto_operativo_v1',
+  'enviorapido_apelacion_operativo_v1_',
+];
+
+function shouldInjectEnvioRapidoKnownTemplates(names: string[]): boolean {
+  return names.some((name) => String(name || '').trim().toLowerCase().startsWith('enviorapido_'));
 }
 
 function inferMetaTemplateVariableCount(row: any): number {
@@ -263,6 +275,12 @@ export async function listWorkspaceTemplateCatalog(workspaceId: string): Promise
     normalizeName((config as any)?.templateGeneralFollowup),
     normalizeName((config as any)?.templateInterviewInvite),
   ].filter(Boolean);
+
+  if (shouldInjectEnvioRapidoKnownTemplates(configuredNames)) {
+    for (const known of ENVIO_RAPIDO_KNOWN_TEMPLATES) {
+      configuredNames.push(known);
+    }
+  }
 
   for (const name of configuredNames) {
     upsertTemplate(entries, {

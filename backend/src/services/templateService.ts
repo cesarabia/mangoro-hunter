@@ -148,6 +148,23 @@ export function resolveTemplateVariables(
     return [v1];
   }
 
+  if (templateKey === 'enviorapido_apelacion_operativo_v1_') {
+    const candidateName = String(conversationOverrides?.candidateName || '').trim() || 'Postulante';
+    const companyTarget =
+      normalized[1] ||
+      conversationOverrides?.jobTitle ||
+      templates.defaultJobTitle ||
+      DEFAULT_JOB_TITLE ||
+      'la empresa';
+    const followupWhen =
+      normalized[2] ||
+      conversationOverrides?.interviewDay ||
+      templates.defaultInterviewDay ||
+      DEFAULT_INTERVIEW_DAY ||
+      'Mañana';
+    return [normalized[0] || candidateName, companyTarget, followupWhen];
+  }
+
   if (templateName === (templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE)) {
     return [
       normalized[0] ||

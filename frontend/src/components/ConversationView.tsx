@@ -702,6 +702,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     if (
       selectedLower === 'entrevista_confirmacion_1' ||
       selectedLower === 'enviorapido_confirma_entrevista_v1' ||
+      selectedLower === 'enviorapido_apelacion_operativo_v1_' ||
       (interviewDefault && selected === interviewDefault)
     ) {
       return 3;
@@ -830,6 +831,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     if (
       templateNameForSend === 'entrevista_confirmacion_1' ||
       templateNameForSend === 'enviorapido_confirma_entrevista_v1' ||
+      templateNameForSend === 'enviorapido_apelacion_operativo_v1_' ||
       (interviewDefault && templateNameForSend === interviewDefault)
     ) {
       setTemplateVariables([
@@ -843,7 +845,10 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setTemplateVariables([fallbackName]);
       return;
     }
-    setTemplateVariables(Array.from({ length: templateVariableCount }, () => ''));
+    setTemplateVariables([
+      fallbackName,
+      ...Array.from({ length: Math.max(0, templateVariableCount - 1) }, () => '')
+    ]);
   }, [
     conversation?.id,
     templateNameForSend,
