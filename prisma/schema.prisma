@@ -68,6 +68,8 @@ model Workspace {
   clientProgramMenuIdsJson String?
   partnerProgramMenuIdsJson String?
   partnerPhoneE164sJson String?
+  hybridApprovalEnabled Boolean @default(false)
+  hybridApprovalAdminWaId String?
   archivedAt  DateTime?
   stages      WorkspaceStage[]
   notifications InAppNotification[]
@@ -90,6 +92,7 @@ model Workspace {
   copilotThreads CopilotThread[]
   aiUsageLogs AiUsageLog[]
   scenarioRuns ScenarioRunLog[]
+  hybridReplyDrafts HybridReplyDraft[]
   configChanges ConfigChangeLog[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
@@ -435,12 +438,44 @@ model Conversation {
   aiUsageLogs   AiUsageLog[]
   scenarioRuns  ScenarioRunLog[]
   automationRuns AutomationRunLog[]
+  hybridReplyDrafts HybridReplyDraft[]
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
   @@index([workspaceId])
   @@index([phoneLineId])
   @@index([programId])
+}
+
+model HybridReplyDraft {
+  id              String       @id @default(cuid())
+  workspace       Workspace    @relation(fields: [workspaceId], references: [id])
+  workspaceId     String       @default("default")
+  conversation    Conversation @relation(fields: [conversationId], references: [id])
+  conversationId  String
+  inboundMessageId String?
+  agentRunId      String?
+  dedupeKey       String?
+  targetWaId      String
+  proposedText    String
+  finalText       String?
+  status          String       @default("PENDING")
+  approvedByWaId  String?
+  approvedAt      DateTime?
+  cancelledByWaId String?
+  cancelledAt     DateTime?
+  sentWaMessageId String?
+  sentAt          DateTime?
+  error           String?
+  metadataJson    String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([workspaceId])
+  @@index([conversationId])
+  @@index([inboundMessageId])
+  @@index([status])
+  @@index([createdAt])
 }
 
 model Message {

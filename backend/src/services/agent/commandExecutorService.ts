@@ -266,6 +266,98 @@ async function resolveCaseConversationId(params: {
     .catch(() => []);
   if (byPrefix.length === 1 && byPrefix[0]?.id) return byPrefix[0].id;
 
+  // Resolve by candidate phone / waId to make staff commands usable with human refs:
+  // "mover +569... a STAGE", "nota 569... ..."
+  const waLike = normalizeWhatsAppId(direct) || normalizeWhatsAppId(direct.replace(/[^\d]/g, ''));
+  if (waLike) {
+    const phoneCandidates = Array.from(
+      new Set(
+        [waLike, `+${waLike}`, direct]
+          .map((v) => String(v || '').trim())
+          .filter(Boolean),
+      ),
+    );
+    const contact = await prisma.contact
+      .findFirst({
+        where: {
+          workspaceId: params.workspaceId,
+          archivedAt: null,
+          OR: [{ waId: { in: phoneCandidates } }, { phone: { in: phoneCandidates } }],
+        },
+        select: { id: true },
+        orderBy: { updatedAt: 'desc' },
+      })
+      .catch(() => null);
+    if (contact?.id) {
+      const convo = await prisma.conversation
+        .findFirst({
+          where: {
+            workspaceId: params.workspaceId,
+            contactId: contact.id,
+            archivedAt: null,
+            isAdmin: false,
+          } as any,
+          select: { id: true },
+          orderBy: { updatedAt: 'desc' },
+        })
+        .catch(() => null);
+      if (convo?.id) return convo.id;
+    }
+  }
+
+  // Resolve by contact display/name when staff says "nota juan perez ..."
+  const nameNeedle = normalizeForNameChecks(direct);
+  if (nameNeedle.length >= 3) {
+    const contactsByName = await prisma.contact
+      .findMany({
+        where: {
+          workspaceId: params.workspaceId,
+          archivedAt: null,
+          OR: [
+            { candidateName: { contains: direct } },
+            { candidateNameManual: { contains: direct } },
+            { displayName: { contains: direct } },
+            { name: { contains: direct } },
+          ],
+        },
+        select: { id: true, candidateName: true, candidateNameManual: true, displayName: true, name: true, updatedAt: true },
+        orderBy: { updatedAt: 'desc' },
+        take: 8,
+      })
+      .catch(() => []);
+    const best = contactsByName
+      .map((c: any) => ({
+        id: c.id,
+        score: (() => {
+          const hay = normalizeForNameChecks(
+            [c.candidateNameManual, c.candidateName, c.displayName, c.name].filter(Boolean).join(' '),
+          );
+          if (!hay) return 0;
+          if (hay === nameNeedle) return 4;
+          if (hay.startsWith(nameNeedle)) return 3;
+          if (hay.includes(nameNeedle)) return 2;
+          return 0;
+        })(),
+      }))
+      .filter((c) => c.score > 0)
+      .sort((a, b) => b.score - a.score);
+    if (best.length === 1 || (best[0] && best[1] && best[0].score > best[1].score)) {
+      const convo = await prisma.conversation
+        .findFirst({
+          where: {
+            workspaceId: params.workspaceId,
+            contactId: best[0].id,
+            archivedAt: null,
+            isAdmin: false,
+          } as any,
+          select: { id: true },
+          orderBy: { updatedAt: 'desc' },
+        })
+        .catch(() => null);
+      if (convo?.id) return convo.id;
+    }
+  }
+
   return params.relatedConversationId ? String(params.relatedConversationId) : null;
 }
 

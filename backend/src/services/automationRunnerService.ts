@@ -10,6 +10,9 @@ import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { ensurePartnerConversation, ensureStaffConversation } from './staffConversationService';
 import { resolveWorkspaceProgramForKind } from './programRoutingService';
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from './templateService';
+import { getAdminWaIdAllowlist, getSystemConfig } from './configService';
+import { ensureAdminConversation, sendAdminReply } from './adminConversationService';
+import { upsertCandidateAndCase } from './candidateService';
 
 type ProgramSummary = { id: string; name: string; slug: string };
 
@@ -120,6 +123,165 @@ function isMenuCommand(inboundText: string | null | undefined): boolean {
 function normalizeInboundMode(value: unknown): 'DEFAULT' | 'MENU' {
   const upper = String(value || '').trim().toUpperCase();
   return upper === 'MENU' ? 'MENU' : 'DEFAULT';
+}
+
+function pickHybridApprovalAdminWa(params: {
+  workspaceAdminWaRaw: string | null | undefined;
+  adminAllowlist: string[];
+}): string | null {
+  const allowlist = Array.isArray(params.adminAllowlist) ? params.adminAllowlist.map((v) => String(v).trim()).filter(Boolean) : [];
+  if (allowlist.length === 0) return null;
+  const preferred = normalizeWhatsAppId(String(params.workspaceAdminWaRaw || '').trim() || '');
+  if (preferred && allowlist.includes(preferred)) return preferred;
+  return allowlist[0] || null;
+}
+
+async function enqueueHybridApprovalDrafts(params: {
+  app: FastifyInstance;
+  workspaceId: string;
+  conversation: any;
+  inboundMessageId?: string | null;
+  inboundText?: string | null;
+  agentRunId: string;
+  sendCommands: Array<any>;
+}): Promise<Array<{ draftId: string; status: string; adminConversationId?: string | null; reason?: string }>> {
+  const conversation = params.conversation;
+  const toWa = String(conversation?.contact?.waId || conversation?.contact?.phone || '').trim();
+  if (!conversation?.id || !toWa) {
+    return [{ draftId: '', status: 'ERROR', reason: 'missing_candidate_waid' }];
+  }
+
+  const config = await getSystemConfig().catch(() => null);
+  const adminAllowlist = config ? getAdminWaIdAllowlist(config) : [];
+  const workspace = await prisma.workspace
+    .findUnique({
+      where: { id: params.workspaceId },
+      select: { hybridApprovalAdminWaId: true as any },
+    })
+    .catch(() => null);
+  const adminWaNormalized = pickHybridApprovalAdminWa({
+    workspaceAdminWaRaw: String((workspace as any)?.hybridApprovalAdminWaId || '').trim() || null,
+    adminAllowlist,
+  });
+  if (!adminWaNormalized) {
+    return [{ draftId: '', status: 'ERROR', reason: 'missing_admin_allowlist' }];
+  }
+
+  const adminThread = await ensureAdminConversation({
+    workspaceId: params.workspaceId,
+    waId: adminWaNormalized,
+    phoneLineId: conversation.phoneLineId,
+  }).catch((err) => {
+    params.app.log.warn({ err, workspaceId: params.workspaceId }, 'Failed to ensure admin thread for hybrid approval');
+    return null;
+  });
+  if (!adminThread?.conversation?.id) {
+    return [{ draftId: '', status: 'ERROR', reason: 'admin_thread_unavailable' }];
+  }
+
+  const candidateName =
+    getContactDisplayName(conversation.contact) ||
+    String(conversation.contact?.phone || conversation.contact?.waId || 'Candidato');
+  const inboundSnippet = String(params.inboundText || '').trim().slice(0, 280);
+
+  const outputs: Array<{ draftId: string; status: string; adminConversationId?: string | null; reason?: string }> = [];
+  for (const cmd of params.sendCommands) {
+    const type = String(cmd?.type || '').toUpperCase();
+    const text =
+      type === 'SESSION_TEXT'
+        ? String(cmd?.text || '').trim()
+        : type === 'TEMPLATE'
+          ? `[TEMPLATE] ${String(cmd?.templateName || '').trim() || '(sin nombre)'}`.trim()
+          : '';
+    if (!text) continue;
+    const dedupeKey = String(cmd?.dedupeKey || '').trim() || `hybrid:${stableHash(`${params.agentRunId}:${text}`).slice(0, 12)}`;
+    const existing = await prisma.hybridReplyDraft
+      .findFirst({
+        where: {
+          workspaceId: params.workspaceId,
+          conversationId: conversation.id,
+          inboundMessageId: params.inboundMessageId || null,
+          dedupeKey,
+          status: { in: ['PENDING', 'APPROVED'] },
+        },
+        select: { id: true },
+      })
+      .catch(() => null);
+    if (existing?.id) {
+      outputs.push({ draftId: existing.id, status: 'DEDUPED', adminConversationId: adminThread.conversation.id });
+      continue;
+    }
+
+    const created = await prisma.hybridReplyDraft.create({
+      data: {
+        workspaceId: params.workspaceId,
+        conversationId: conversation.id,
+        inboundMessageId: params.inboundMessageId || null,
+        agentRunId: params.agentRunId,
+        dedupeKey,
+        targetWaId: toWa,
+        proposedText: text,
+        status: 'PENDING',
+        metadataJson: serializeJson({
+          commandType: type || null,
+          templateName: type === 'TEMPLATE' ? String(cmd?.templateName || '').trim() || null : null,
+          templateVars: type === 'TEMPLATE' ? (cmd?.templateVars || null) : null,
+        }),
+      } as any,
+    });
+
+    const shortId = String(created.id).slice(0, 8);
+    const adminText = [
+      `📝 Borrador ${shortId}`,
+      `Candidato: ${candidateName} (+${toWa})`,
+      inboundSnippet ? `Último mensaje: ${inboundSnippet}` : null,
+      '',
+      'Propuesta:',
+      text,
+      '',
+      `Comandos: ENVIAR ${shortId} | EDITAR ${shortId}: <texto> | CANCELAR ${shortId}`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    await sendAdminReply({
+      logger: params.app.log,
+      conversationId: adminThread.conversation.id,
+      waId: `+${adminWaNormalized}`,
+      text: adminText,
+      rawPayload: {
+        hybridApproval: true,
+        draftId: created.id,
+        sourceConversationId: conversation.id,
+      },
+    }).catch((err) => {
+      params.app.log.warn({ err, draftId: created.id }, 'Failed sending hybrid draft to admin');
+    });
+
+    await prisma.message
+      .create({
+        data: {
+          conversationId: conversation.id,
+          direction: 'OUTBOUND',
+          text: `📝 Respuesta propuesta enviada a revisión (ID ${shortId}).`,
+          rawPayload: serializeJson({
+            system: true,
+            hybridApproval: true,
+            draftId: created.id,
+            adminConversationId: adminThread.conversation.id,
+            agentRunId: params.agentRunId,
+          }),
+          timestamp: new Date(),
+          read: true,
+        },
+      })
+      .catch(() => {});
+    await prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } }).catch(() => {});
+
+    outputs.push({ draftId: created.id, status: 'PENDING', adminConversationId: adminThread.conversation.id });
+  }
+
+  return outputs;
 }
 
 function parseProgramMenuIdsJson(raw: unknown): string[] {
@@ -477,18 +639,35 @@ async function maybeHandleProgramSelection(params: {
 }
 
 type StaffRouterCommand =
+  | { type: 'PENDING_COUNTS'; args: {} }
   | {
       type: 'LIST_CASES';
       args: { stageSlug?: string; assignedToMe: boolean; limit: number; query?: string; includeSummary?: boolean };
     }
-  | { type: 'GET_CASE_SUMMARY'; args: { conversationId: string } }
-  | { type: 'SET_STAGE'; args: { conversationId: string; stageSlug: string; reason?: string } }
-  | { type: 'SEND_CUSTOMER_MESSAGE'; args: { conversationId: string; text: string } };
+  | { type: 'GET_CASE_SUMMARY'; args: { ref: string } }
+  | { type: 'SET_STAGE'; args: { ref: string; stageSlug: string; reason?: string } }
+  | { type: 'ADD_NOTE'; args: { ref: string; text: string } }
+  | { type: 'SEND_CUSTOMER_MESSAGE'; args: { ref: string; text: string } }
+  | {
+      type: 'CREATE_CANDIDATE';
+      args: {
+        phoneE164: string;
+        name?: string;
+        role?: string;
+        channel?: string;
+        comuna?: string;
+        ciudad?: string;
+      };
+    };
 
 function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null {
   const raw = String(inboundText || '').trim();
   if (!raw) return null;
   const normalized = normalizeLoose(raw);
+
+  if (normalized === 'pendientes' || normalized === '/pendientes' || normalized === 'mis pendientes') {
+    return { type: 'PENDING_COUNTS', args: {} };
+  }
 
   if (
     /\b(casos?|clientes?|postulantes?)\s+nuev/.test(normalized) ||
@@ -501,50 +680,123 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
   ) {
     return { type: 'LIST_CASES', args: { stageSlug: 'NEW_INTAKE', assignedToMe: false, limit: 10 } };
   }
+  const listarNuevosMatch = raw.match(/^\s*listar\s+nuevos(?:\s+(\d{1,2}))?\s*$/i);
+  if (listarNuevosMatch) {
+    const limit = Number(listarNuevosMatch[1] || 10);
+    return {
+      type: 'LIST_CASES',
+      args: { stageSlug: 'NEW_INTAKE', assignedToMe: false, limit: Number.isFinite(limit) ? Math.min(30, Math.max(1, limit)) : 10 },
+    };
+  }
   if (
     /\b(resumen|detalle)\b.*\b(ultimo|último)\b.*\b(postulante|caso|cliente)\b/.test(normalized) ||
     /\b(ultimo|último)\b.*\b(postulante|caso|cliente)\b.*\b(resumen|detalle)\b/.test(normalized)
   ) {
-    return { type: 'GET_CASE_SUMMARY', args: { conversationId: '__latest__' } };
+    return { type: 'GET_CASE_SUMMARY', args: { ref: '__latest__' } };
   }
   if (/\b(dame|darme|muestrame|muéstrame)\s+resumen(\s+de\s+(los\s+)?(casos?|postulantes?))?/.test(normalized)) {
     return { type: 'LIST_CASES', args: { assignedToMe: false, limit: 5, includeSummary: true } };
+  }
+  const createMatch = raw.match(/^\s*crear\s+candidato\s+(.+)\s*$/i);
+  if (createMatch?.[1]) {
+    const parts = createMatch[1]
+      .split('|')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const phoneE164 = String(parts[0] || '').trim();
+    if (phoneE164) {
+      return {
+        type: 'CREATE_CANDIDATE',
+        args: {
+          phoneE164,
+          name: String(parts[1] || '').trim() || undefined,
+          role: String(parts[2] || '').trim() || undefined,
+          channel: String(parts[3] || '').trim() || undefined,
+          comuna: String(parts[4] || '').trim() || undefined,
+          ciudad: String(parts[5] || '').trim() || undefined,
+        },
+      };
+    }
   }
   const buscarMatch = raw.match(/^\s*buscar\s+(.+)\s*$/i);
   if (buscarMatch?.[1]) {
     return { type: 'LIST_CASES', args: { assignedToMe: false, limit: 10, query: buscarMatch[1].trim() } };
   }
-  const resumenMatch = raw.match(/^\s*resumen\s+([a-zA-Z0-9\-_]+)\s*$/i);
+  const resumenMatch = raw.match(/^\s*resumen\s+(.+)\s*$/i);
   if (resumenMatch?.[1]) {
-    return { type: 'GET_CASE_SUMMARY', args: { conversationId: resumenMatch[1].trim() } };
+    return { type: 'GET_CASE_SUMMARY', args: { ref: resumenMatch[1].trim() } };
   }
-  const stageMatch = raw.match(/^\s*cambiar\s+estado\s+([a-zA-Z0-9\-_]+)\s+([a-zA-Z0-9\-_]+)\s*$/i);
+  const stageMatch = raw.match(/^\s*(?:cambiar\s+estado|mover)\s+(.+?)\s+a\s+([a-zA-Z0-9\-_]+)\s*$/i);
   if (stageMatch?.[1] && stageMatch?.[2]) {
     return {
       type: 'SET_STAGE',
       args: {
-        conversationId: stageMatch[1].trim(),
+        ref: stageMatch[1].trim(),
         stageSlug: stageMatch[2].trim(),
         reason: 'staff_command_router',
       },
     };
   }
-  const sendMatch = raw.match(/^\s*enviar\s+msg\s+([a-zA-Z0-9\-_]+)\s+(.+)\s*$/i);
+  const noteMatch = raw.match(/^\s*nota\s+(.+?)\s+(.+)\s*$/i);
+  if (noteMatch?.[1] && noteMatch?.[2]) {
+    return {
+      type: 'ADD_NOTE',
+      args: { ref: noteMatch[1].trim(), text: noteMatch[2].trim() },
+    };
+  }
+  const sendMatch = raw.match(/^\s*enviar\s+msg\s+(.+?)\s+(.+)\s*$/i);
   if (sendMatch?.[1] && sendMatch?.[2]) {
     return {
       type: 'SEND_CUSTOMER_MESSAGE',
-      args: { conversationId: sendMatch[1].trim(), text: sendMatch[2].trim() },
+      args: { ref: sendMatch[1].trim(), text: sendMatch[2].trim() },
     };
   }
 
   return null;
 }
 
+function classifyCandidateBucket(stageRaw: string, statusRaw: string): 'NUEVO' | 'CONTACTADO' | 'CITADO' | 'DESCARTADO' {
+  const stage = String(stageRaw || '').toUpperCase();
+  const status = String(statusRaw || '').toUpperCase();
+  if (
+    status === 'CLOSED' ||
+    ['REJECTED', 'NO_CONTACTAR', 'DISQUALIFIED', 'ARCHIVED', 'CERRADO'].includes(stage)
+  ) {
+    return 'DESCARTADO';
+  }
+  if (['INTERVIEW_PENDING', 'INTERVIEW_SCHEDULED', 'INTERVIEWED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) {
+    return 'CITADO';
+  }
+  if (status === 'OPEN' || ['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'EN_COORDINACION', 'INTERESADO'].includes(stage)) {
+    return 'CONTACTADO';
+  }
+  return 'NUEVO';
+}
+
 function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any): string {
   const toolResult = toolExecResult?.details?.result || null;
   const toolError = toolExecResult?.details?.error || null;
   if (toolError) {
+    if (command.type === 'CREATE_CANDIDATE') {
+      return `No pude crear/actualizar ese candidato (${toolError}). Revisa el formato: crear candidato <telefono> | <nombre> | <rol> | <canal> | <comuna>.`;
+    }
     return `No pude consultar eso ahora (${toolError}). Intenta de nuevo en unos segundos y lo revisamos.`;
+  }
+  if (command.type === 'PENDING_COUNTS') {
+    const counts = toolResult?.counts || {};
+    const nuevo = Number(counts?.NUEVO || 0);
+    const contactado = Number(counts?.CONTACTADO || 0);
+    const citado = Number(counts?.CITADO || 0);
+    const descartado = Number(counts?.DESCARTADO || 0);
+    const total = Number(counts?.TOTAL || nuevo + contactado + citado + descartado);
+    return [
+      `Pendientes del workspace:`,
+      `• Nuevo: ${nuevo}`,
+      `• Contactado: ${contactado}`,
+      `• Citado: ${citado}`,
+      `• Descartado: ${descartado}`,
+      `• Total: ${total}`,
+    ].join('\n');
   }
   if (command.type === 'LIST_CASES') {
     const cases = Array.isArray(toolResult?.cases) ? toolResult.cases : [];
@@ -611,6 +863,10 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
     const stage = String(toolResult?.stage || command.args.stageSlug || '').trim();
     return stage ? `Listo, ya dejé el caso en ${stage}.` : 'Listo, ya actualicé el estado del caso.';
   }
+  if (command.type === 'ADD_NOTE') {
+    const ok = Boolean(toolResult?.ok ?? true);
+    return ok ? 'Listo, agregué la nota al caso.' : 'No pude guardar la nota ahora. ¿Lo intentamos de nuevo?';
+  }
   if (command.type === 'SEND_CUSTOMER_MESSAGE') {
     if (toolExecResult?.blocked) {
       const reason = String(toolExecResult?.blockedReason || 'BLOCKED');
@@ -619,6 +875,15 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
     const ok = Boolean(toolResult?.sendResult?.success ?? true);
     if (ok) return 'Listo, mensaje enviado al candidato.';
     return `No pude enviar el mensaje (${String(toolResult?.sendResult?.error || 'error desconocido')}).`;
+  }
+  if (command.type === 'CREATE_CANDIDATE') {
+    const created = Boolean(toolResult?.createdConversation || toolResult?.createdContact);
+    const phone = String(toolResult?.phoneE164 || command.args.phoneE164 || '').trim();
+    const conversationId = String(toolResult?.conversationId || '').trim();
+    const idShort = conversationId ? conversationId.slice(0, 8) : '';
+    return created
+      ? `Listo, candidato registrado para ${phone}${idShort ? ` (caso ${idShort})` : ''}.`
+      : `Listo, actualicé el candidato ${phone}${idShort ? ` y quedó vinculado al caso ${idShort}` : ''}.`;
   }
   return 'Listo.';
 }
@@ -641,6 +906,25 @@ async function maybeHandleStaffDeterministicRouter(params: {
   if (!command) return { handled: false };
 
   try {
+    const runCommand =
+      command.type === 'PENDING_COUNTS'
+        ? ({ command: 'PENDING_COUNTS' } as any)
+        : command.type === 'GET_CASE_SUMMARY'
+        ? ({ command: 'RUN_TOOL', toolName: 'GET_CASE_SUMMARY', args: { conversationId: command.args.ref } } as any)
+        : command.type === 'SET_STAGE'
+          ? ({
+              command: 'RUN_TOOL',
+              toolName: 'SET_STAGE',
+              args: { conversationId: command.args.ref, stageSlug: command.args.stageSlug, reason: command.args.reason },
+            } as any)
+          : command.type === 'ADD_NOTE'
+            ? ({ command: 'RUN_TOOL', toolName: 'ADD_NOTE', args: { conversationId: command.args.ref, text: command.args.text } } as any)
+            : command.type === 'SEND_CUSTOMER_MESSAGE'
+              ? ({ command: 'RUN_TOOL', toolName: 'SEND_CUSTOMER_MESSAGE', args: { conversationId: command.args.ref, text: command.args.text } } as any)
+              : command.type === 'CREATE_CANDIDATE'
+                ? ({ command: 'CREATE_CANDIDATE', ...(command.args as any) } as any)
+                : ({ command: 'RUN_TOOL', toolName: command.type, args: command.args } as any);
+
     const toolRun = await prisma.agentRunLog.create({
       data: {
         workspaceId: params.workspaceId,
@@ -658,23 +942,95 @@ async function maybeHandleStaffDeterministicRouter(params: {
         commandsJson: serializeJson({
           agent: 'staff_command_router',
           version: 1,
-          commands: [{ command: 'RUN_TOOL', toolName: command.type, args: command.args }],
+          commands: [runCommand],
         }),
       },
     });
 
-    const toolExec = await executeAgentResponse({
-      app: params.app,
-      workspaceId: params.workspaceId,
-      agentRunId: toolRun.id,
-      response: {
-        agent: 'staff_command_router',
-        version: 1,
-        commands: [{ command: 'RUN_TOOL', toolName: command.type, args: command.args } as any],
-      } as any,
-      transportMode: params.transportMode,
-    });
-    const toolResult = Array.isArray(toolExec.results) && toolExec.results.length > 0 ? toolExec.results[0] : null;
+    let toolResult: any = null;
+    if (command.type === 'PENDING_COUNTS') {
+      try {
+        const rows = await prisma.conversation.findMany({
+          where: {
+            workspaceId: params.workspaceId,
+            archivedAt: null,
+            isAdmin: false,
+            conversationKind: 'CLIENT',
+          } as any,
+          select: { conversationStage: true, status: true },
+        });
+        const counts = { NUEVO: 0, CONTACTADO: 0, CITADO: 0, DESCARTADO: 0, TOTAL: rows.length };
+        for (const row of rows) {
+          const bucket = classifyCandidateBucket(String((row as any).conversationStage || ''), String(row.status || 'NEW'));
+          counts[bucket] += 1;
+        }
+        toolResult = { ok: true, details: { toolName: 'PENDING_COUNTS', result: { counts } } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: { counts } }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo calcular pendientes';
+        toolResult = { ok: false, details: { toolName: 'PENDING_COUNTS', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'CREATE_CANDIDATE') {
+      try {
+        const created = await upsertCandidateAndCase({
+          workspaceId: params.workspaceId,
+          phoneRaw: command.args.phoneE164,
+          name: command.args.name || null,
+          role: command.args.role || null,
+          channel: command.args.channel || null,
+          comuna: command.args.comuna || null,
+          ciudad: command.args.ciudad || null,
+          initialStatus: 'NUEVO',
+          preserveExistingConversationStage: true,
+        });
+        toolResult = { ok: true, details: { toolName: 'CREATE_CANDIDATE', result: created } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: created }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo crear candidato';
+        toolResult = { ok: false, details: { toolName: 'CREATE_CANDIDATE', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else {
+      const toolExec = await executeAgentResponse({
+        app: params.app,
+        workspaceId: params.workspaceId,
+        agentRunId: toolRun.id,
+        response: {
+          agent: 'staff_command_router',
+          version: 1,
+          commands: [runCommand],
+        } as any,
+        transportMode: params.transportMode,
+      });
+      toolResult = Array.isArray(toolExec.results) && toolExec.results.length > 0 ? toolExec.results[0] : null;
+    }
     const replyText = buildStaffRouterReply(command, toolResult);
     // Dedupe by inbound message when available so repeated staff commands
     // ("casos nuevos", "buscar ...") do not get muted by ANTI_LOOP_DEDUPE_KEY.
@@ -2119,17 +2475,72 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
             eventType: params.eventType,
             inboundMessageId: params.inboundMessageId || null,
           });
-          const exec = await executeAgentResponse({
+          const workspaceHybrid = await prisma.workspace
+            .findUnique({
+              where: { id: params.workspaceId },
+              select: { hybridApprovalEnabled: true as any },
+            })
+            .catch(() => null);
+          const hybridEnabled = Boolean((workspaceHybrid as any)?.hybridApprovalEnabled);
+          const isClientInboundHybrid =
+            hybridEnabled &&
+            params.transportMode === 'REAL' &&
+            params.eventType === 'INBOUND_MESSAGE' &&
+            String((conversation as any)?.conversationKind || 'CLIENT').toUpperCase() === 'CLIENT' &&
+            !conversation.isAdmin;
+
+          if (!isClientInboundHybrid) {
+            const exec = await executeAgentResponse({
+              app: params.app,
+              workspaceId: params.workspaceId,
+              agentRunId: agentRun.runId,
+              response: agentRun.response,
+              transportMode: params.transportMode,
+            });
+            outputs.push({
+              action: 'RUN_AGENT',
+              agentRunId: agentRun.runId,
+              results: exec.results,
+            });
+            continue;
+          }
+
+          const allCommands = Array.isArray((agentRun as any)?.response?.commands)
+            ? ((agentRun as any).response.commands as any[])
+            : [];
+          const sendCommands = allCommands.filter((cmd: any) => String(cmd?.command || '').toUpperCase() === 'SEND_MESSAGE');
+          const nonSendCommands = allCommands.filter((cmd: any) => String(cmd?.command || '').toUpperCase() !== 'SEND_MESSAGE');
+
+          const nonSendExec =
+            nonSendCommands.length > 0
+              ? await executeAgentResponse({
+                  app: params.app,
+                  workspaceId: params.workspaceId,
+                  agentRunId: agentRun.runId,
+                  response: {
+                    ...(agentRun.response as any),
+                    commands: nonSendCommands,
+                  } as any,
+                  transportMode: params.transportMode,
+                })
+              : { results: [] as any[] };
+
+          const drafts = await enqueueHybridApprovalDrafts({
             app: params.app,
             workspaceId: params.workspaceId,
+            conversation,
+            inboundMessageId: params.inboundMessageId || null,
+            inboundText: params.inboundText || null,
             agentRunId: agentRun.runId,
-            response: agentRun.response,
-            transportMode: params.transportMode,
+            sendCommands,
           });
+
           outputs.push({
             action: 'RUN_AGENT',
             agentRunId: agentRun.runId,
-            results: exec.results,
+            hybridApproval: true,
+            drafts,
+            results: nonSendExec.results,
           });
           continue;
         }

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 
-type TabKey = 'workspace' | 'integrations' | 'users' | 'phoneLines' | 'programs' | 'automations' | 'usage' | 'logs';
+type TabKey = 'workspace' | 'integrations' | 'users' | 'candidates' | 'phoneLines' | 'programs' | 'automations' | 'usage' | 'logs';
 type LogsTabKey = 'agentRuns' | 'automationRuns';
 
 const looksLikeSecretOrToken = (value: string): boolean => {
@@ -32,6 +32,7 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'workspace', label: 'Workspace' },
   { key: 'integrations', label: 'Integraciones' },
   { key: 'users', label: 'Usuarios' },
+  { key: 'candidates', label: 'Candidatos' },
   { key: 'phoneLines', label: 'Números WhatsApp' },
   { key: 'programs', label: 'Programs' },
   { key: 'automations', label: 'Automations' },
@@ -142,6 +143,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [staffDefaultProgramSaving, setStaffDefaultProgramSaving] = useState(false);
   const [staffDefaultProgramStatus, setStaffDefaultProgramStatus] = useState<string | null>(null);
   const [staffDefaultProgramError, setStaffDefaultProgramError] = useState<string | null>(null);
+  const [hybridApprovalEnabledDraft, setHybridApprovalEnabledDraft] = useState<boolean>(false);
+  const [hybridApprovalAdminWaIdDraft, setHybridApprovalAdminWaIdDraft] = useState<string>('');
+  const [hybridApprovalSaving, setHybridApprovalSaving] = useState<boolean>(false);
+  const [hybridApprovalStatus, setHybridApprovalStatus] = useState<string | null>(null);
+  const [hybridApprovalError, setHybridApprovalError] = useState<string | null>(null);
   const [clientDefaultProgramIdDraft, setClientDefaultProgramIdDraft] = useState<string>('');
   const [clientDefaultProgramSaving, setClientDefaultProgramSaving] = useState(false);
   const [clientDefaultProgramStatus, setClientDefaultProgramStatus] = useState<string | null>(null);
@@ -247,6 +253,34 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [invitesIncludeArchived, setInvitesIncludeArchived] = useState(false);
   const [invitesError, setInvitesError] = useState<string | null>(null);
   const [inviteUrlById, setInviteUrlById] = useState<Record<string, string>>({});
+
+  const [candidatesRows, setCandidatesRows] = useState<any[]>([]);
+  const [candidatesQuery, setCandidatesQuery] = useState<string>('');
+  const [candidatesStatusFilter, setCandidatesStatusFilter] = useState<string>('');
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [candidatesStatus, setCandidatesStatus] = useState<string | null>(null);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [candidateEditor, setCandidateEditor] = useState<{
+    phoneE164: string;
+    name: string;
+    role: string;
+    channel: string;
+    comuna: string;
+    ciudad: string;
+    email: string;
+    initialStatus: string;
+  }>({
+    phoneE164: '',
+    name: '',
+    role: '',
+    channel: '',
+    comuna: '',
+    ciudad: '',
+    email: '',
+    initialStatus: 'NUEVO',
+  });
+  const [candidateImporting, setCandidateImporting] = useState(false);
+  const [candidateCreating, setCandidateCreating] = useState(false);
 
   const [phoneLines, setPhoneLines] = useState<any[]>([]);
   const [phoneLinesIncludeArchived, setPhoneLinesIncludeArchived] = useState(false);
@@ -364,6 +398,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       );
       const staffProgramId = typeof data?.staffDefaultProgramId === 'string' ? data.staffDefaultProgramId : '';
       setStaffDefaultProgramIdDraft(staffProgramId || '');
+      setHybridApprovalEnabledDraft(Boolean(data?.hybridApprovalEnabled));
+      setHybridApprovalAdminWaIdDraft(
+        typeof data?.hybridApprovalAdminWaId === 'string' ? data.hybridApprovalAdminWaId : '',
+      );
       const clientProgramId = typeof data?.clientDefaultProgramId === 'string' ? data.clientDefaultProgramId : '';
       setClientDefaultProgramIdDraft(clientProgramId || '');
       const partnerProgramId = typeof data?.partnerDefaultProgramId === 'string' ? data.partnerDefaultProgramId : '';
@@ -426,6 +464,32 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setSsclinicalNurseLeaderError(err.message || 'No se pudo guardar');
     } finally {
       setSsclinicalNurseLeaderSaving(false);
+    }
+  };
+
+  const saveHybridApprovalSettings = async () => {
+    if (hybridApprovalSaving) return;
+    setHybridApprovalSaving(true);
+    setHybridApprovalStatus(null);
+    setHybridApprovalError(null);
+    try {
+      const waRaw = String(hybridApprovalAdminWaIdDraft || '').trim();
+      let waValue: string | null = null;
+      if (waRaw) {
+        const normalized = normalizeChilePhoneE164(waRaw);
+        if (!normalized) throw new Error('WhatsApp admin inválido (usa +56...).');
+        waValue = normalized;
+      }
+      await apiClient.patch('/api/workspaces/current', {
+        hybridApprovalEnabled: Boolean(hybridApprovalEnabledDraft),
+        hybridApprovalAdminWaId: waValue,
+      });
+      setHybridApprovalStatus('Modo híbrido guardado.');
+      await loadWorkspaceDetails();
+    } catch (err: any) {
+      setHybridApprovalError(err.message || 'No se pudo guardar modo híbrido');
+    } finally {
+      setHybridApprovalSaving(false);
     }
   };
 
@@ -661,6 +725,89 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       await loadWorkspaceStages();
     } catch (err: any) {
       setWorkspaceStagesError(err.message || 'No se pudo reordenar');
+    }
+  };
+  const fileToBase64 = async (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const raw = String(reader.result || '');
+        const base64 = raw.includes('base64,') ? raw.split('base64,').pop() || '' : '';
+        if (!base64) {
+          reject(new Error('No se pudo leer el archivo'));
+          return;
+        }
+        resolve(base64);
+      };
+      reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+      reader.readAsDataURL(file);
+    });
+  const loadCandidates = async (opts?: { q?: string; status?: string }) => {
+    setCandidatesError(null);
+    setCandidatesLoading(true);
+    try {
+      const q = String(opts?.q ?? candidatesQuery).trim();
+      const status = String(opts?.status ?? candidatesStatusFilter).trim();
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      if (status) params.set('status', status);
+      params.set('limit', '300');
+      const url = params.toString() ? `/api/candidates?${params.toString()}` : '/api/candidates';
+      const data: any = await apiClient.get(url);
+      setCandidatesRows(Array.isArray(data?.rows) ? data.rows : []);
+    } catch (err: any) {
+      setCandidatesRows([]);
+      setCandidatesError(err.message || 'No se pudieron cargar candidatos');
+    } finally {
+      setCandidatesLoading(false);
+    }
+  };
+  const importCandidatesFile = async (file: File) => {
+    if (!file) return;
+    setCandidateImporting(true);
+    setCandidatesStatus(null);
+    setCandidatesError(null);
+    try {
+      const fileBase64 = await fileToBase64(file);
+      const res: any = await apiClient.post('/api/candidates/import', {
+        fileName: file.name,
+        mimeType: file.type || null,
+        fileBase64,
+      });
+      const created = Number(res?.created || 0);
+      const updated = Number(res?.updated || 0);
+      const skipped = Number(res?.skipped || 0);
+      setCandidatesStatus(`Importación completada. Creados: ${created}, actualizados: ${updated}, omitidos: ${skipped}.`);
+      await loadCandidates();
+    } catch (err: any) {
+      setCandidatesError(err.message || 'No se pudo importar el archivo');
+    } finally {
+      setCandidateImporting(false);
+    }
+  };
+  const createCandidateManual = async () => {
+    setCandidateCreating(true);
+    setCandidatesStatus(null);
+    setCandidatesError(null);
+    try {
+      if (!candidateEditor.phoneE164.trim()) throw new Error('Teléfono obligatorio.');
+      await apiClient.post('/api/candidates', { ...candidateEditor });
+      setCandidatesStatus('Candidato creado/actualizado.');
+      setCandidateEditor({
+        phoneE164: '',
+        name: '',
+        role: '',
+        channel: '',
+        comuna: '',
+        ciudad: '',
+        email: '',
+        initialStatus: 'NUEVO',
+      });
+      await loadCandidates();
+    } catch (err: any) {
+      setCandidatesError(err.message || 'No se pudo guardar candidato');
+    } finally {
+      setCandidateCreating(false);
     }
   };
   const loadUsers = async () => {
@@ -1297,6 +1444,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     if (tab === 'users') {
       loadUsers().catch(() => {});
       loadInvites().catch(() => {});
+    }
+    if (tab === 'candidates') {
+      loadCandidates().catch(() => {});
     }
     if (tab === 'logs') {
       loadAgentRuns().catch(() => {});
@@ -2347,6 +2497,58 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             <div style={{ marginTop: 10, fontSize: 12, color: '#666' }}>Creado</div>
             <div>{currentWorkspace?.createdAt || '—'}</div>
           </div>
+
+          {isWorkspaceAdmin ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Modo híbrido (aprobación manual)</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Cuando está activo, los mensajes automáticos de candidatos quedan como borrador y se envían solo si el admin responde
+                <b> ENVIAR id</b>, <b>EDITAR id: texto</b> o <b>CANCELAR id</b> por WhatsApp.
+              </div>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555', marginBottom: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={hybridApprovalEnabledDraft}
+                  onChange={(e) => setHybridApprovalEnabledDraft(e.target.checked)}
+                />
+                Activar aprobación híbrida (no enviar sin aprobación)
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                WhatsApp admin para recibir borradores
+                <input
+                  value={hybridApprovalAdminWaIdDraft}
+                  onChange={(e) => setHybridApprovalAdminWaIdDraft(e.target.value)}
+                  placeholder="+56982345846"
+                  style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc', maxWidth: 260 }}
+                />
+              </label>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => saveHybridApprovalSettings().catch(() => {})}
+                  disabled={hybridApprovalSaving}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 10,
+                    border: '1px solid #111',
+                    background: '#111',
+                    color: '#fff',
+                    fontWeight: 800,
+                    fontSize: 12,
+                  }}
+                >
+                  {hybridApprovalSaving ? 'Guardando…' : 'Guardar'}
+                </button>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  Estado actual:{' '}
+                  <b>{workspaceDetails?.hybridApprovalEnabled ? 'ACTIVO' : 'INACTIVO'}</b>{' '}
+                  {workspaceDetails?.hybridApprovalAdminWaId ? `· Admin: ${workspaceDetails.hybridApprovalAdminWaId}` : ''}
+                </div>
+              </div>
+              {hybridApprovalStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{hybridApprovalStatus}</div> : null}
+              {hybridApprovalError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{hybridApprovalError}</div> : null}
+            </div>
+          ) : null}
 
           {isWorkspaceAdmin ? (
             <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
@@ -4038,6 +4240,182 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                         </td>
                       </tr>
                     ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === 'candidates' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>Candidatos</div>
+              <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                Importa CSV/XLSX y crea candidatos sin enviar mensajes automáticos. Dedupe por teléfono E.164.
+              </div>
+            </div>
+            <button
+              onClick={() => loadCandidates().catch(() => {})}
+              style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+            >
+              Actualizar
+            </button>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Importar archivo (CSV/XLSX)</div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+              Formato sugerido: teléfono, nombre, rol, canal, comuna/ciudad, estado inicial. No se enviará WhatsApp durante la importación.
+            </div>
+            <input
+              type="file"
+              accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                importCandidatesFile(file).catch(() => {});
+                e.currentTarget.value = '';
+              }}
+              disabled={candidateImporting}
+            />
+            {candidateImporting ? <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>Importando…</div> : null}
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Crear candidato manual</div>
+            <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : 'repeat(4, minmax(140px, 1fr))', gap: 8 }}>
+              <input
+                placeholder="+56994830202"
+                value={candidateEditor.phoneE164}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, phoneE164: e.target.value }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <input
+                placeholder="Nombre"
+                value={candidateEditor.name}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, name: e.target.value }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <input
+                placeholder="Rol"
+                value={candidateEditor.role}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, role: e.target.value }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <input
+                placeholder="Canal"
+                value={candidateEditor.channel}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, channel: e.target.value }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <input
+                placeholder="Comuna"
+                value={candidateEditor.comuna}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, comuna: e.target.value }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <input
+                placeholder="Ciudad"
+                value={candidateEditor.ciudad}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, ciudad: e.target.value }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <input
+                placeholder="Email (opcional)"
+                value={candidateEditor.email}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, email: e.target.value }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <select
+                value={candidateEditor.initialStatus}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, initialStatus: e.target.value }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              >
+                {['NUEVO', 'CONTACTADO', 'CITADO', 'DESCARTADO'].map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <button
+                onClick={() => createCandidateManual().catch(() => {})}
+                disabled={candidateCreating}
+                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                {candidateCreating ? 'Guardando…' : 'Guardar candidato'}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+              <input
+                value={candidatesQuery}
+                onChange={(e) => setCandidatesQuery(e.target.value)}
+                placeholder="Buscar por teléfono, nombre, comuna…"
+                style={{ minWidth: 260, flex: 1, padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <select
+                value={candidatesStatusFilter}
+                onChange={(e) => setCandidatesStatusFilter(e.target.value)}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              >
+                <option value="">Todos</option>
+                <option value="NUEVO">NUEVO</option>
+                <option value="CONTACTADO">CONTACTADO</option>
+                <option value="CITADO">CITADO</option>
+                <option value="DESCARTADO">DESCARTADO</option>
+              </select>
+              <button
+                onClick={() => loadCandidates().catch(() => {})}
+                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+              >
+                Buscar
+              </button>
+            </div>
+
+            {candidatesStatus ? <div style={{ marginBottom: 8, fontSize: 12, color: '#1a7f37' }}>{candidatesStatus}</div> : null}
+            {candidatesError ? <div style={{ marginBottom: 8, fontSize: 12, color: '#b93800' }}>{candidatesError}</div> : null}
+            {candidatesLoading ? <div style={{ fontSize: 12, color: '#666' }}>Cargando candidatos…</div> : null}
+            <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, overflowX: 'auto', overflowY: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#fafafa', textAlign: 'left' }}>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Nombre</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Teléfono</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Estado candidato</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Stage</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Caso</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Actualizado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Array.isArray(candidatesRows) && candidatesRows.length > 0 ? (
+                    candidatesRows.map((row: any) => (
+                      <tr key={`${row.contactId}:${row.conversationId || 'none'}`} style={{ borderTop: '1px solid #f0f0f0' }}>
+                        <td style={{ padding: 10, fontSize: 13 }}>{row.name || 'Sin nombre'}</td>
+                        <td style={{ padding: 10, fontSize: 13 }}>{row.phoneE164 || row.waId || '—'}</td>
+                        <td style={{ padding: 10, fontSize: 12 }}>{row.candidateStatus || '—'}</td>
+                        <td style={{ padding: 10, fontSize: 12 }}>{row.stageSlug || '—'}</td>
+                        <td style={{ padding: 10, fontSize: 12, fontFamily: 'monospace' }}>
+                          {row.conversationId ? String(row.conversationId).slice(0, 8) : '—'}
+                        </td>
+                        <td style={{ padding: 10, fontSize: 12, color: '#666' }}>
+                          {row.updatedAt ? String(row.updatedAt).slice(0, 19).replace('T', ' ') : '—'}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6} style={{ padding: 10, fontSize: 13, color: '#666' }}>
+                        — Sin candidatos.
+                      </td>
+                    </tr>
                   )}
                 </tbody>
               </table>

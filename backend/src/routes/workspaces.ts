@@ -52,6 +52,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         clientProgramMenuIdsJson: true as any,
         partnerProgramMenuIdsJson: true as any,
         partnerPhoneE164sJson: true as any,
+        hybridApprovalEnabled: true as any,
+        hybridApprovalAdminWaId: true as any,
         createdAt: true,
         updatedAt: true,
         archivedAt: true,
@@ -115,6 +117,11 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
           return [];
         }
       })(),
+      hybridApprovalEnabled:
+        typeof (workspace as any).hybridApprovalEnabled === 'boolean'
+          ? Boolean((workspace as any).hybridApprovalEnabled)
+          : false,
+      hybridApprovalAdminWaId: String((workspace as any).hybridApprovalAdminWaId || '').trim() || null,
       createdAt: new Date(workspace.createdAt).toISOString(),
       updatedAt: new Date(workspace.updatedAt).toISOString(),
     };
@@ -139,6 +146,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       clientProgramMenuIds?: string[] | null;
       partnerProgramMenuIds?: string[] | null;
       partnerPhoneE164s?: string[] | null;
+      hybridApprovalEnabled?: boolean;
+      hybridApprovalAdminWaId?: string | null;
     };
     const hasRecruitTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateRecruitmentStartName');
     const hasInterviewTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateInterviewConfirmationName');
@@ -153,6 +162,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const hasClientMenu = Object.prototype.hasOwnProperty.call(body || {}, 'clientProgramMenuIds');
     const hasPartnerMenu = Object.prototype.hasOwnProperty.call(body || {}, 'partnerProgramMenuIds');
     const hasPartnerPhones = Object.prototype.hasOwnProperty.call(body || {}, 'partnerPhoneE164s');
+    const hasHybridApprovalEnabled = Object.prototype.hasOwnProperty.call(body || {}, 'hybridApprovalEnabled');
+    const hasHybridApprovalAdminWaId = Object.prototype.hasOwnProperty.call(body || {}, 'hybridApprovalAdminWaId');
     if (
       !hasRecruitTemplate &&
       !hasInterviewTemplate &&
@@ -166,7 +177,9 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       !hasStaffMenu &&
       !hasClientMenu &&
       !hasPartnerMenu &&
-      !hasPartnerPhones
+      !hasPartnerPhones &&
+      !hasHybridApprovalEnabled &&
+      !hasHybridApprovalAdminWaId
     ) {
       return reply
         .code(400)
@@ -273,6 +286,14 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const nextClientMenuIds = hasClientMenu ? normalizeIdList(body.clientProgramMenuIds) : null;
     const nextPartnerMenuIds = hasPartnerMenu ? normalizeIdList(body.partnerProgramMenuIds) : null;
     const nextPartnerPhones = hasPartnerPhones ? normalizeIdList(body.partnerPhoneE164s) : null;
+    const nextHybridApprovalEnabled =
+      typeof body.hybridApprovalEnabled === 'boolean' ? Boolean(body.hybridApprovalEnabled) : null;
+    const nextHybridApprovalAdminWaId =
+      body.hybridApprovalAdminWaId === null
+        ? null
+        : typeof body.hybridApprovalAdminWaId === 'string'
+          ? body.hybridApprovalAdminWaId.trim() || null
+          : null;
 
     const existing = await prisma.workspace.findUnique({
       where: { id: access.workspaceId },
@@ -292,6 +313,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         clientProgramMenuIdsJson: true as any,
         partnerProgramMenuIdsJson: true as any,
         partnerPhoneE164sJson: true as any,
+        hybridApprovalEnabled: true as any,
+        hybridApprovalAdminWaId: true as any,
       } as any,
     });
     if (!existing || existing.archivedAt) return reply.code(404).send({ error: 'Workspace no encontrado.' });
@@ -355,6 +378,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         ...(hasClientMenu ? { clientProgramMenuIdsJson: nextClientMenuIds && nextClientMenuIds.length > 0 ? serializeJson(nextClientMenuIds) : null } : {}),
         ...(hasPartnerMenu ? { partnerProgramMenuIdsJson: nextPartnerMenuIds && nextPartnerMenuIds.length > 0 ? serializeJson(nextPartnerMenuIds) : null } : {}),
         ...(hasPartnerPhones ? { partnerPhoneE164sJson: nextPartnerPhones && nextPartnerPhones.length > 0 ? serializeJson(nextPartnerPhones) : null } : {}),
+        ...(hasHybridApprovalEnabled && nextHybridApprovalEnabled !== null ? { hybridApprovalEnabled: nextHybridApprovalEnabled } : {}),
+        ...(hasHybridApprovalAdminWaId ? { hybridApprovalAdminWaId: nextHybridApprovalAdminWaId } : {}),
         updatedAt: new Date(),
       } as any,
       select: {
@@ -372,6 +397,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         clientProgramMenuIdsJson: true as any,
         partnerProgramMenuIdsJson: true as any,
         partnerPhoneE164sJson: true as any,
+        hybridApprovalEnabled: true as any,
+        hybridApprovalAdminWaId: true as any,
         updatedAt: true,
       } as any,
     });
@@ -457,6 +484,26 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         .catch(() => {});
     }
 
+    if (hasHybridApprovalEnabled || hasHybridApprovalAdminWaId) {
+      await prisma.configChangeLog
+        .create({
+          data: {
+            workspaceId: access.workspaceId,
+            userId,
+            type: 'WORKSPACE_HYBRID_APPROVAL',
+            beforeJson: serializeJson({
+              hybridApprovalEnabled: Boolean((existing as any).hybridApprovalEnabled),
+              hybridApprovalAdminWaId: String((existing as any).hybridApprovalAdminWaId || '').trim() || null,
+            }),
+            afterJson: serializeJson({
+              hybridApprovalEnabled: Boolean((updated as any).hybridApprovalEnabled),
+              hybridApprovalAdminWaId: String((updated as any).hybridApprovalAdminWaId || '').trim() || null,
+            }),
+          },
+        })
+        .catch(() => {});
+    }
+
     return {
       ok: true,
       templateRecruitmentStartName: String((updated as any).templateRecruitmentStartName || '').trim() || null,
@@ -512,6 +559,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
           return [];
         }
       })(),
+      hybridApprovalEnabled: Boolean((updated as any).hybridApprovalEnabled),
+      hybridApprovalAdminWaId: String((updated as any).hybridApprovalAdminWaId || '').trim() || null,
       updatedAt: new Date((updated as any).updatedAt).toISOString(),
     };
   });

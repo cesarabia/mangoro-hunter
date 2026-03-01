@@ -544,6 +544,17 @@ export async function handleInboundWhatsAppMessage(
       return { conversationId: adminThread.conversation.id };
     }
 
+    const handledHybridDraft = await handleAdminHybridDraftCommand({
+      app,
+      adminConversationId: adminThread.conversation.id,
+      adminWaId: normalizedSender,
+      workspaceId,
+      text: trimmedEffective,
+    });
+    if (handledHybridDraft) {
+      return { conversationId: adminThread.conversation.id };
+    }
+
     const handledPending = await handleAdminPendingAction(
       app,
       adminThread.conversation.id,
@@ -4459,6 +4470,208 @@ async function executePendingAction(params: {
     return true;
   }
   return false;
+}
+
+type HybridDraftCommand =
+  | { type: 'SEND'; ref: string }
+  | { type: 'EDIT_SEND'; ref: string; text: string }
+  | { type: 'CANCEL'; ref: string };
+
+function parseHybridDraftCommand(rawText: string): HybridDraftCommand | null {
+  const raw = String(rawText || '').trim();
+  if (!raw) return null;
+  const sendMatch = raw.match(/^\\s*ENVIAR\\s+([a-zA-Z0-9_-]{4,32})\\s*$/i);
+  if (sendMatch?.[1]) return { type: 'SEND', ref: sendMatch[1].trim() };
+
+  const editMatch = raw.match(/^\\s*EDITAR\\s+([a-zA-Z0-9_-]{4,32})\\s*:\\s*(.+)$/i);
+  if (editMatch?.[1] && editMatch?.[2]) {
+    return { type: 'EDIT_SEND', ref: editMatch[1].trim(), text: String(editMatch[2] || '').trim() };
+  }
+
+  const cancelMatch = raw.match(/^\\s*CANCELAR\\s+([a-zA-Z0-9_-]{4,32})\\s*$/i);
+  if (cancelMatch?.[1]) return { type: 'CANCEL', ref: cancelMatch[1].trim() };
+  return null;
+}
+
+async function resolveHybridDraftByRef(params: {
+  workspaceId: string;
+  ref: string;
+}): Promise<any | null> {
+  const ref = String(params.ref || '').trim();
+  if (!ref) return null;
+  const byId = await prisma.hybridReplyDraft
+    .findFirst({
+      where: { workspaceId: params.workspaceId, id: ref },
+      include: { conversation: { include: { contact: true, phoneLine: true } } },
+    })
+    .catch(() => null);
+  if (byId?.id) return byId;
+
+  const list = await prisma.hybridReplyDraft
+    .findMany({
+      where: {
+        workspaceId: params.workspaceId,
+        id: { startsWith: ref },
+      },
+      include: { conversation: { include: { contact: true, phoneLine: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 2,
+    })
+    .catch(() => []);
+  if (list.length === 1) return list[0];
+  return null;
+}
+
+async function sendHybridDraftMessage(params: {
+  app: FastifyInstance;
+  draft: any;
+  text: string;
+}): Promise<{ ok: boolean; error?: string; waMessageId?: string | null }> {
+  const conversation = params.draft?.conversation;
+  const toWaId = String(conversation?.contact?.waId || conversation?.contact?.phone || '').trim();
+  if (!toWaId) return { ok: false, error: 'missing_target_waid' };
+
+  const phoneNumberId = conversation?.phoneLine?.waPhoneNumberId || null;
+  const sendResult = await sendWhatsAppText(toWaId, params.text, { phoneNumberId }).catch((err) => ({
+    success: false,
+    error: err instanceof Error ? err.message : 'send_failed',
+  }));
+
+  if (!sendResult.success) {
+    return { ok: false, error: String((sendResult as any).error || 'send_failed') };
+  }
+
+  await prisma.message
+    .create({
+      data: {
+        conversationId: conversation.id,
+        direction: 'OUTBOUND',
+        text: params.text,
+        rawPayload: serializeJson({
+          hybridApproval: true,
+          draftId: params.draft.id,
+          sendResult,
+        }),
+        timestamp: new Date(),
+        read: true,
+      },
+    })
+    .catch(() => {});
+  await prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } }).catch(() => {});
+  await prisma.outboundMessageLog
+    .create({
+      data: {
+        workspaceId: params.draft.workspaceId,
+        conversationId: conversation.id,
+        channel: 'WHATSAPP',
+        type: 'SESSION_TEXT',
+        templateName: null,
+        dedupeKey: `hybrid_draft:${params.draft.id}`,
+        textHash: stableHash(`TEXT:${params.text}`),
+        blockedReason: null,
+        waMessageId: (sendResult as any).messageId || null,
+      } as any,
+    })
+    .catch(() => {});
+
+  return { ok: true, waMessageId: (sendResult as any).messageId || null };
+}
+
+async function handleAdminHybridDraftCommand(params: {
+  app: FastifyInstance;
+  adminConversationId: string;
+  adminWaId: string;
+  workspaceId: string;
+  text: string;
+}): Promise<boolean> {
+  const cmd = parseHybridDraftCommand(params.text);
+  if (!cmd) return false;
+
+  const draft = await resolveHybridDraftByRef({ workspaceId: params.workspaceId, ref: cmd.ref });
+  if (!draft?.id) {
+    await sendAdminReply(params.app, params.adminConversationId, params.adminWaId, `No encontré borrador ${cmd.ref}.`);
+    return true;
+  }
+  const shortId = String(draft.id).slice(0, 8);
+
+  if (cmd.type === 'CANCEL') {
+    if (String(draft.status || '') === 'SENT') {
+      await sendAdminReply(params.app, params.adminConversationId, params.adminWaId, `El borrador ${shortId} ya fue enviado.`);
+      return true;
+    }
+    await prisma.hybridReplyDraft
+      .update({
+        where: { id: draft.id },
+        data: {
+          status: 'CANCELLED',
+          cancelledByWaId: params.adminWaId,
+          cancelledAt: new Date(),
+          updatedAt: new Date(),
+        } as any,
+      })
+      .catch(() => {});
+    await sendAdminReply(params.app, params.adminConversationId, params.adminWaId, `Borrador ${shortId} cancelado.`);
+    return true;
+  }
+
+  if (String(draft.status || '') === 'SENT') {
+    await sendAdminReply(params.app, params.adminConversationId, params.adminWaId, `El borrador ${shortId} ya estaba enviado.`);
+    return true;
+  }
+
+  const finalText =
+    cmd.type === 'EDIT_SEND' && String(cmd.text || '').trim()
+      ? String(cmd.text || '').trim()
+      : String(draft.proposedText || '').trim();
+  if (!finalText) {
+    await sendAdminReply(params.app, params.adminConversationId, params.adminWaId, `Borrador ${shortId} no tiene texto para enviar.`);
+    return true;
+  }
+
+  await prisma.hybridReplyDraft
+    .update({
+      where: { id: draft.id },
+      data: {
+        status: 'APPROVED',
+        finalText,
+        approvedByWaId: params.adminWaId,
+        approvedAt: new Date(),
+        updatedAt: new Date(),
+      } as any,
+    })
+    .catch(() => {});
+
+  const send = await sendHybridDraftMessage({ app: params.app, draft, text: finalText });
+  if (!send.ok) {
+    await prisma.hybridReplyDraft
+      .update({
+        where: { id: draft.id },
+        data: { status: 'ERROR', error: send.error || 'send_failed', updatedAt: new Date() } as any,
+      })
+      .catch(() => {});
+    await sendAdminReply(
+      params.app,
+      params.adminConversationId,
+      params.adminWaId,
+      `No pude enviar borrador ${shortId}: ${send.error || 'error'}`,
+    );
+    return true;
+  }
+
+  await prisma.hybridReplyDraft
+    .update({
+      where: { id: draft.id },
+      data: {
+        status: 'SENT',
+        sentAt: new Date(),
+        sentWaMessageId: send.waMessageId || null,
+        updatedAt: new Date(),
+      } as any,
+    })
+    .catch(() => {});
+
+  await sendAdminReply(params.app, params.adminConversationId, params.adminWaId, `✅ Borrador ${shortId} enviado al candidato.`);
+  return true;
 }
 
 async function handleAdminPendingAction(
