@@ -810,6 +810,17 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setCandidateCreating(false);
     }
   };
+  const openCaseInInbox = (conversationId: string) => {
+    const id = String(conversationId || '').trim();
+    if (!id) return;
+    try {
+      localStorage.setItem('selectedConversationId', id);
+      localStorage.setItem(`selectedConversationId:${workspaceId}:INBOX`, id);
+    } catch {
+      // ignore
+    }
+    window.location.assign('/');
+  };
   const loadUsers = async () => {
     const data = await apiClient.get('/api/users');
     setUsers(Array.isArray(data) ? data : []);
@@ -4403,7 +4414,25 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                         <td style={{ padding: 10, fontSize: 12 }}>{row.candidateStatus || '—'}</td>
                         <td style={{ padding: 10, fontSize: 12 }}>{row.stageSlug || '—'}</td>
                         <td style={{ padding: 10, fontSize: 12, fontFamily: 'monospace' }}>
-                          {row.conversationId ? String(row.conversationId).slice(0, 8) : '—'}
+                          {row.conversationId ? (
+                            <button
+                              onClick={() => openCaseInInbox(String(row.conversationId))}
+                              style={{
+                                padding: '4px 8px',
+                                borderRadius: 8,
+                                border: '1px solid #ccc',
+                                background: '#fff',
+                                cursor: 'pointer',
+                                fontFamily: 'monospace',
+                                fontSize: 12,
+                              }}
+                              title="Abrir caso en Inbox"
+                            >
+                              {String(row.conversationId).slice(0, 8)}
+                            </button>
+                          ) : (
+                            '—'
+                          )}
                         </td>
                         <td style={{ padding: 10, fontSize: 12, color: '#666' }}>
                           {row.updatedAt ? String(row.updatedAt).slice(0, 19).replace('T', ' ') : '—'}

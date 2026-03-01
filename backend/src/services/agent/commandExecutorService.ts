@@ -1284,6 +1284,8 @@ export async function executeAgentResponse(params: {
                 assignedToId: c.assignedToId || null,
                 program: c.program ? { id: c.program.id, slug: c.program.slug, name: c.program.name } : null,
                 contactDisplay: getContactDisplayName(c.contact),
+                contactWaId: c.contact?.waId || null,
+                contactPhone: c.contact?.phone || null,
                 createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : null,
                 updatedAt: c.updatedAt ? new Date(c.updatedAt).toISOString() : null,
               })),
@@ -1425,7 +1427,19 @@ export async function executeAgentResponse(params: {
         }
         const stageOk = await isKnownActiveStage(baseConversation.workspaceId, stageSlug).catch(() => false);
         if (!stageOk) {
-          results.push({ ok: false, details: { error: `stageSlug desconocido/inactivo: ${stageSlug}`, toolName } });
+          const validStages = await prisma.workspaceStage
+            .findMany({
+              where: { workspaceId: baseConversation.workspaceId, active: true, archivedAt: null } as any,
+              select: { slug: true },
+              orderBy: { order: 'asc' },
+              take: 30,
+            })
+            .catch(() => []);
+          const stageList = validStages
+            .map((s: any) => String(s?.slug || '').trim())
+            .filter(Boolean);
+          const suffix = stageList.length > 0 ? ` | stages válidos: ${stageList.join(', ')}` : '';
+          results.push({ ok: false, details: { error: `stageSlug desconocido/inactivo: ${stageSlug}${suffix}`, toolName } });
           continue;
         }
         const convo = await prisma.conversation.findFirst({

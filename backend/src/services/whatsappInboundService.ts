@@ -4473,24 +4473,105 @@ async function executePendingAction(params: {
 }
 
 type HybridDraftCommand =
-  | { type: 'SEND'; ref: string }
-  | { type: 'EDIT_SEND'; ref: string; text: string }
-  | { type: 'CANCEL'; ref: string };
+  | { type: 'SEND'; ref?: string | null }
+  | { type: 'EDIT_SEND'; ref?: string | null; text: string }
+  | { type: 'CANCEL'; ref?: string | null }
+  | { type: 'LIST' }
+  | { type: 'HELP' };
 
 function parseHybridDraftCommand(rawText: string): HybridDraftCommand | null {
   const raw = String(rawText || '').trim();
   if (!raw) return null;
-  const sendMatch = raw.match(/^\\s*ENVIAR\\s+([a-zA-Z0-9_-]{4,32})\\s*$/i);
-  if (sendMatch?.[1]) return { type: 'SEND', ref: sendMatch[1].trim() };
-
-  const editMatch = raw.match(/^\\s*EDITAR\\s+([a-zA-Z0-9_-]{4,32})\\s*:\\s*(.+)$/i);
-  if (editMatch?.[1] && editMatch?.[2]) {
-    return { type: 'EDIT_SEND', ref: editMatch[1].trim(), text: String(editMatch[2] || '').trim() };
+  const normalized = stripAccents(raw).toLowerCase();
+  if (normalized === 'ayuda' || normalized === '/ayuda') return { type: 'HELP' };
+  if (normalized === 'borradores' || normalized === 'borrador') return { type: 'LIST' };
+  if (/cuantos mensajes debo aprobar|cuantos borradores|cantidad de borradores|que tengo pendiente/i.test(normalized)) {
+    return { type: 'LIST' };
   }
 
-  const cancelMatch = raw.match(/^\\s*CANCELAR\\s+([a-zA-Z0-9_-]{4,32})\\s*$/i);
-  if (cancelMatch?.[1]) return { type: 'CANCEL', ref: cancelMatch[1].trim() };
+  const sendMatch = raw.match(/^\s*ENVIA(?:R)?(?:\s+([a-zA-Z0-9_-]{4,32}))?\s*$/i);
+  if (sendMatch) return { type: 'SEND', ref: sendMatch?.[1] ? String(sendMatch[1]).trim() : null };
+
+  const editWithId = raw.match(/^\s*EDITA(?:R)?\s+([a-zA-Z0-9_-]{4,32})\s*:\s*(.+)\s*$/i);
+  if (editWithId?.[1] && editWithId?.[2]) {
+    return { type: 'EDIT_SEND', ref: editWithId[1].trim(), text: String(editWithId[2] || '').trim() };
+  }
+  const editNoIdColon = raw.match(/^\s*EDITA(?:R)?\s*:\s*(.+)\s*$/i);
+  if (editNoIdColon?.[1]) {
+    return { type: 'EDIT_SEND', ref: null, text: String(editNoIdColon[1] || '').trim() };
+  }
+  const editNoId = raw.match(/^\s*EDITA(?:R)?\s+(.+)\s*$/i);
+  if (editNoId?.[1]) {
+    return { type: 'EDIT_SEND', ref: null, text: String(editNoId[1] || '').trim() };
+  }
+
+  const cancelMatch = raw.match(/^\s*CANCELA(?:R)?(?:\s+([a-zA-Z0-9_-]{4,32}))?\s*$/i);
+  if (cancelMatch) return { type: 'CANCEL', ref: cancelMatch?.[1] ? String(cancelMatch[1]).trim() : null };
   return null;
+}
+
+async function listPendingHybridDrafts(workspaceId: string): Promise<any[]> {
+  return prisma.hybridReplyDraft
+    .findMany({
+      where: {
+        workspaceId,
+        status: { in: ['PENDING', 'APPROVED'] },
+      },
+      include: {
+        conversation: {
+          include: {
+            contact: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    })
+    .catch(() => []);
+}
+
+function buildHybridDraftHelpText(extra?: string | null): string {
+  return [
+    extra ? String(extra) : null,
+    'Comandos:',
+    '• pendientes',
+    '• listar nuevos N',
+    '• buscar <telefono|nombre>',
+    '• crear candidato <telefono> | <nombre> | <rol> | <canal> | <comuna>',
+    '• mover <telefono|id> a <stage>',
+    '• nota <telefono|id> <texto>',
+    '• borradores',
+    '• ENVIAR <id> (o solo ENVIAR si hay 1 pendiente)',
+    '• EDITAR <id>: <texto> (o EDITAR: <texto> si hay 1 pendiente)',
+    '• CANCELAR <id> (o solo CANCELAR si hay 1 pendiente)',
+    '• ayuda',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function formatPendingDraftList(drafts: any[]): string {
+  if (!Array.isArray(drafts) || drafts.length === 0) {
+    return 'No hay borradores pendientes ahora.';
+  }
+  const lines = drafts.map((draft) => {
+    const shortId = String(draft?.id || '').slice(0, 8);
+    const contact = draft?.conversation?.contact;
+    const candidate =
+      String(
+        contact?.candidateNameManual ||
+          contact?.candidateName ||
+          contact?.displayName ||
+          contact?.name ||
+          contact?.phone ||
+          contact?.waId ||
+          'Candidato',
+      ).trim() || 'Candidato';
+    const wa = String(contact?.waId || contact?.phone || '').trim();
+    const createdAt = draft?.createdAt ? new Date(draft.createdAt).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) : '';
+    return `• ${shortId} · ${candidate}${wa ? ` (+${wa})` : ''}${createdAt ? ` · ${createdAt}` : ''}`;
+  });
+  return [`Borradores pendientes (${drafts.length}):`, ...lines].join('\n');
 }
 
 async function resolveHybridDraftByRef(params: {
@@ -4587,9 +4668,48 @@ async function handleAdminHybridDraftCommand(params: {
   const cmd = parseHybridDraftCommand(params.text);
   if (!cmd) return false;
 
-  const draft = await resolveHybridDraftByRef({ workspaceId: params.workspaceId, ref: cmd.ref });
+  if (cmd.type === 'HELP') {
+    await sendAdminReply(params.app, params.adminConversationId, params.adminWaId, buildHybridDraftHelpText(null));
+    return true;
+  }
+  if (cmd.type === 'LIST') {
+    const drafts = await listPendingHybridDrafts(params.workspaceId);
+    await sendAdminReply(
+      params.app,
+      params.adminConversationId,
+      params.adminWaId,
+      `${formatPendingDraftList(drafts)}\n\n${buildHybridDraftHelpText(null)}`,
+    );
+    return true;
+  }
+
+  let draft: any | null = null;
+  const ref = String((cmd as any)?.ref || '').trim();
+  if (ref) {
+    draft = await resolveHybridDraftByRef({ workspaceId: params.workspaceId, ref });
+  } else {
+    const drafts = await listPendingHybridDrafts(params.workspaceId);
+    if (drafts.length === 1) {
+      draft = drafts[0];
+    } else if (drafts.length > 1) {
+      await sendAdminReply(
+        params.app,
+        params.adminConversationId,
+        params.adminWaId,
+        `${formatPendingDraftList(drafts)}\n\nHay más de un borrador pendiente. Indica el id corto: ENVIAR <id> / EDITAR <id>: ... / CANCELAR <id>.`,
+      );
+      return true;
+    }
+  }
+
   if (!draft?.id) {
-    await sendAdminReply(params.app, params.adminConversationId, params.adminWaId, `No encontré borrador ${cmd.ref}.`);
+    const suffix = ref ? ` ${ref}` : '';
+    await sendAdminReply(
+      params.app,
+      params.adminConversationId,
+      params.adminWaId,
+      buildHybridDraftHelpText(`No encontré borrador${suffix}.`),
+    );
     return true;
   }
   const shortId = String(draft.id).slice(0, 8);

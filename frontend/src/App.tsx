@@ -20,6 +20,7 @@ const CONFIG_TABS = new Set([
   'workspace',
   'integrations',
   'users',
+  'candidates',
   'phoneLines',
   'programs',
   'automations',

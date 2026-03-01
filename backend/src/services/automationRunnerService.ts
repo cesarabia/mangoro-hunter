@@ -89,6 +89,61 @@ function normalizeLoose(value: string): string {
   return stripAccents(String(value || '')).toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function repairMojibake(value: unknown): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (!/[ÃÂ�]/.test(raw)) return raw;
+  try {
+    const fixed = Buffer.from(raw, 'latin1').toString('utf8').trim();
+    if (!fixed) return raw;
+    if (fixed.includes('�')) return raw;
+    return fixed;
+  } catch {
+    return raw;
+  }
+}
+
+function mapCandidateStatus(stageRaw: string, statusRaw: string): 'Nuevo' | 'Contactado' | 'Citado' | 'Descartado' {
+  const stage = String(stageRaw || '').toUpperCase();
+  const status = String(statusRaw || '').toUpperCase();
+  if (
+    status === 'CLOSED' ||
+    ['REJECTED', 'NO_CONTACTAR', 'DISQUALIFIED', 'CERRADO', 'ARCHIVED'].includes(stage)
+  ) {
+    return 'Descartado';
+  }
+  if (['INTERVIEW_PENDING', 'INTERVIEW_SCHEDULED', 'INTERVIEWED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) {
+    return 'Citado';
+  }
+  if (status === 'OPEN' || ['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'EN_COORDINACION', 'INTERESADO'].includes(stage)) {
+    return 'Contactado';
+  }
+  return 'Nuevo';
+}
+
+function normalizeStageCandidate(rawStage: string): string {
+  const raw = String(rawStage || '').trim();
+  if (!raw) return '';
+  const cleaned = stripAccents(raw)
+    .replace(/\(.*?\)/g, ' ')
+    .replace(/[^\w\s-]/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  const tokens = cleaned
+    .split(/[\s-]+/g)
+    .map((t) => t.trim().toUpperCase())
+    .filter(Boolean);
+  if (tokens.length === 0) return '';
+  const stopWords = new Set(['POR', 'FAVOR', 'EL', 'LA', 'LOS', 'LAS', 'STAGE', 'ETAPA', 'ESTADO']);
+  const kept: string[] = [];
+  for (const token of tokens) {
+    if (stopWords.has(token) && kept.length > 0) break;
+    kept.push(token);
+    if (kept.length >= 4) break;
+  }
+  return kept.join('_');
+}
+
 function resolveProgramChoice(inboundText: string, programs: ProgramSummary[]): ProgramSummary | null {
   const normalized = normalizeLoose(inboundText);
   if (!normalized) return null;
@@ -134,6 +189,27 @@ function pickHybridApprovalAdminWa(params: {
   const preferred = normalizeWhatsAppId(String(params.workspaceAdminWaRaw || '').trim() || '');
   if (preferred && allowlist.includes(preferred)) return preferred;
   return allowlist[0] || null;
+}
+
+function looksLikeTechnicalFallback(text: string): boolean {
+  const normalized = normalizeLoose(text);
+  if (!normalized) return false;
+  return (
+    normalized.includes('problema tecnico') ||
+    normalized.includes('invalid_semantics') ||
+    normalized.includes('invalid_schema') ||
+    normalized.includes('run_budget_exceeded') ||
+    normalized.includes('tool_loop_exceeded') ||
+    normalized.includes('ref ') && normalized.includes('error')
+  );
+}
+
+function candidateSafeFallbackText(inboundText?: string | null): string {
+  const inbound = String(inboundText || '').trim();
+  if (inbound) {
+    return `Hola, gracias por escribir. Ya revisé tu mensaje. Para avanzar, ¿me confirmas tu comuna y tu tipo de licencia?`;
+  }
+  return 'Hola, gracias por escribir. Para avanzar, ¿me confirmas tu comuna y tu tipo de licencia?';
 }
 
 async function enqueueHybridApprovalDrafts(params: {
@@ -187,12 +263,13 @@ async function enqueueHybridApprovalDrafts(params: {
   const outputs: Array<{ draftId: string; status: string; adminConversationId?: string | null; reason?: string }> = [];
   for (const cmd of params.sendCommands) {
     const type = String(cmd?.type || '').toUpperCase();
-    const text =
+    const textRaw =
       type === 'SESSION_TEXT'
         ? String(cmd?.text || '').trim()
         : type === 'TEMPLATE'
           ? `[TEMPLATE] ${String(cmd?.templateName || '').trim() || '(sin nombre)'}`.trim()
           : '';
+    const text = looksLikeTechnicalFallback(textRaw) ? candidateSafeFallbackText(params.inboundText || null) : textRaw;
     if (!text) continue;
     const dedupeKey = String(cmd?.dedupeKey || '').trim() || `hybrid:${stableHash(`${params.agentRunId}:${text}`).slice(0, 12)}`;
     const existing = await prisma.hybridReplyDraft
@@ -238,6 +315,9 @@ async function enqueueHybridApprovalDrafts(params: {
       '',
       'Propuesta:',
       text,
+      looksLikeTechnicalFallback(textRaw)
+        ? '(Nota: el borrador técnico fue reemplazado por un mensaje humano seguro para evitar errores al candidato.)'
+        : null,
       '',
       `Comandos: ENVIAR ${shortId} | EDITAR ${shortId}: <texto> | CANCELAR ${shortId}`,
     ]
@@ -726,13 +806,15 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
   if (resumenMatch?.[1]) {
     return { type: 'GET_CASE_SUMMARY', args: { ref: resumenMatch[1].trim() } };
   }
-  const stageMatch = raw.match(/^\s*(?:cambiar\s+estado|mover)\s+(.+?)\s+a\s+([a-zA-Z0-9\-_]+)\s*$/i);
+  const stageMatch = raw.match(/^\s*(?:cambiar\s+estado|mover)\s+(.+?)\s+a\s+(.+?)\s*$/i);
   if (stageMatch?.[1] && stageMatch?.[2]) {
+    const stageCandidate = normalizeStageCandidate(stageMatch[2]);
+    if (!stageCandidate) return null;
     return {
       type: 'SET_STAGE',
       args: {
         ref: stageMatch[1].trim(),
-        stageSlug: stageMatch[2].trim(),
+        stageSlug: stageCandidate,
         reason: 'staff_command_router',
       },
     };
@@ -777,6 +859,9 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
   const toolResult = toolExecResult?.details?.result || null;
   const toolError = toolExecResult?.details?.error || null;
   if (toolError) {
+    if (command.type === 'SET_STAGE' && /stages? validos|stages? válidos|stageSlug desconocido/i.test(String(toolError))) {
+      return `No pude mover el caso porque ese stage no existe. ${String(toolError).replace(/^.*?(\| stages? válidos?:?\s*)/i, 'Stages válidos: ')}`;
+    }
     if (command.type === 'CREATE_CANDIDATE') {
       return `No pude crear/actualizar ese candidato (${toolError}). Revisa el formato: crear candidato <telefono> | <nombre> | <rol> | <canal> | <comuna>.`;
     }
@@ -808,25 +893,28 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
     if (command.args.includeSummary) {
       const lines = cases.slice(0, 5).map((c: any) => {
         const idShort = String(c?.id || '').slice(0, 8);
-        const name = String(c?.contactDisplay || 'Caso');
+        const name = repairMojibake(c?.contactDisplay || 'Caso');
+        const wa = String(c?.contactWaId || c?.contactPhone || '').trim();
         const stage = String(c?.stage || '—');
         const status = String(c?.status || '—');
-        return `• ${name} (${stage}/${status}) · ID ${idShort}`;
+        return `• ${name}${wa ? ` (+${wa})` : ''} (${stage}/${status}) · ID ${idShort}`;
       });
       return `Resumen rápido de casos recientes:\n${lines.join('\n')}\nSi quieres detalle de uno: "resumen <id>".`;
     }
     const lines = cases.slice(0, 10).map((c: any) => {
       const idShort = String(c?.id || '').slice(0, 8);
-      const name = String(c?.contactDisplay || 'Caso');
+      const name = repairMojibake(c?.contactDisplay || 'Caso');
+      const wa = String(c?.contactWaId || c?.contactPhone || '').trim();
       const stage = String(c?.stage || '—');
-      return `• ${name} (${stage}) · ${idShort}`;
+      const statusLabel = mapCandidateStatus(stage, String(c?.status || 'NEW'));
+      return `• ${name}${wa ? ` (+${wa})` : ''} · ${statusLabel} · ${stage} · ${idShort}`;
     });
     return `Te dejo los más recientes (${Math.min(cases.length, 10)}):\n${lines.join('\n')}`;
   }
   if (command.type === 'GET_CASE_SUMMARY') {
     const c = toolResult?.case;
     if (!c) return 'No encontré ese caso. Pásame el ID (o prefijo) y lo reviso.';
-    const name = String(c?.contact?.displayName || 'Caso');
+    const name = repairMojibake(c?.contact?.displayName || 'Caso');
     const stage = String(c?.stage || '—');
     const location = [c?.contact?.comuna, c?.contact?.ciudad, c?.contact?.region].filter(Boolean).join(' · ');
     const availability = String(c?.contact?.availabilityText || '').trim();

@@ -2,6 +2,7 @@ import { prisma } from '../db/client';
 import { normalizeChilePhoneE164 } from '../utils/phone';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { coerceStageSlug, getWorkspaceDefaultStageSlug } from './workspaceStageService';
+import { repairMojibake } from '../utils/textEncoding';
 
 export type CandidateImportStatus = 'NUEVO' | 'CONTACTADO' | 'CITADO' | 'DESCARTADO';
 
@@ -35,7 +36,7 @@ type DerivedCandidateStatus = {
 };
 
 function normalizeText(value: unknown): string {
-  return String(value || '').trim();
+  return repairMojibake(value).trim();
 }
 
 function normalizeCandidateStatus(value: unknown): CandidateImportStatus {

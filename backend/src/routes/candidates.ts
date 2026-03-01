@@ -4,6 +4,7 @@ import { prisma } from '../db/client';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { deriveCandidateStatusFromConversation, upsertCandidateAndCase } from '../services/candidateService';
 import { normalizeChilePhoneE164 } from '../utils/phone';
+import { repairMojibake } from '../utils/textEncoding';
 
 function normalizeHeader(value: unknown): string {
   return String(value || '')
@@ -87,7 +88,9 @@ function mapCandidateResponseItem(contact: any, conversation: any) {
     phoneE164: contact.phone || null,
     waId: contact.waId || null,
     name:
-      contact.candidateNameManual || contact.candidateName || contact.displayName || contact.name || contact.phone || 'Sin nombre',
+      repairMojibake(
+        contact.candidateNameManual || contact.candidateName || contact.displayName || contact.name || contact.phone || 'Sin nombre',
+      ),
     comuna: contact.comuna || null,
     ciudad: contact.ciudad || null,
     email: contact.email || null,

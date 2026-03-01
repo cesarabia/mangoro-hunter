@@ -47,10 +47,26 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   fullWidth = false,
 }) => {
   const [filter, setFilter] = useState<'ALL' | 'NEW' | 'OPEN' | 'CLOSED'>('ALL');
+  const [query, setQuery] = useState('');
   const filteredConversations = useMemo(() => {
-    if (filter === 'ALL') return conversations;
-    return conversations.filter(c => c.status === filter);
-  }, [conversations, filter]);
+    const byStatus = filter === 'ALL' ? conversations : conversations.filter(c => c.status === filter);
+    const needle = String(query || '').trim().toLowerCase();
+    if (!needle) return byStatus;
+    return byStatus.filter((c: any) => {
+      const hay = [
+        c?.id,
+        c?.contact?.waId,
+        c?.contact?.phone,
+        c?.contact?.candidateName,
+        c?.contact?.candidateNameManual,
+        c?.contact?.displayName,
+        c?.contact?.name,
+      ]
+        .map((v) => String(v || '').toLowerCase())
+        .join(' ');
+      return hay.includes(needle);
+    });
+  }, [conversations, filter, query]);
 
   const filters: Array<{ key: 'ALL' | 'NEW' | 'OPEN' | 'CLOSED'; label: string }> = [
     { key: 'ALL', label: 'Todos' },
@@ -92,6 +108,14 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             {item.label}
           </button>
         ))}
+      </div>
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid #f2f2f2' }}>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Buscar por nombre, teléfono o caseId"
+          style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #ddd', fontSize: 13 }}
+        />
       </div>
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {filteredConversations.length === 0 && (
