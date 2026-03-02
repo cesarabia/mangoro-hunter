@@ -30,10 +30,18 @@ export function registerWhatsAppWebhookRoutes(app: FastifyInstance) {
 
   const handlePost = async (request: any, reply: any) => {
     const payload = request.body as any;
-    processIncomingPayload(app, payload).catch((err) => {
+    try {
+      const result = await processIncomingPayload(app, payload);
+      return reply.code(200).send({
+        status: "ok",
+        processed: result.processed,
+        skipped: result.skipped,
+      });
+    } catch (err) {
       app.log.error({ err }, "Error procesando payload de WhatsApp");
-    });
-    reply.code(200).send({ status: "ok" });
+      // Important for Meta retries: if persistence/processing failed, return 5xx.
+      return reply.code(500).send({ status: "error", error: "webhook_processing_failed" });
+    }
   };
 
   app.post("/whatsapp/webhook", handlePost);
@@ -65,27 +73,35 @@ export function registerWhatsAppWebhookRoutes(app: FastifyInstance) {
   });
 }
 
-async function processIncomingPayload(app: FastifyInstance, payload: any) {
-  try {
-    const config = await getSystemConfig();
-    const messages = extractMessages(payload);
-    for (const msg of messages) {
-      if (!msg.from) continue;
-      await handleInboundWhatsAppMessage(app, {
-        waMessageId: msg.id,
-        waPhoneNumberId: msg.waPhoneNumberId,
-        from: msg.from,
-        text: msg.text ?? "",
-        media: msg.media,
-        timestamp: msg.timestamp,
-        rawPayload: msg.rawPayload,
-        profileName: msg.profileName,
-        config,
-      });
+async function processIncomingPayload(
+  app: FastifyInstance,
+  payload: any,
+): Promise<{ processed: number; skipped: number }> {
+  const config = await getSystemConfig();
+  const messages = extractMessages(payload);
+  let processed = 0;
+  let skipped = 0;
+
+  for (const msg of messages) {
+    if (!msg.from) {
+      skipped += 1;
+      continue;
     }
-  } catch (err) {
-    app.log.error({ err }, "Error processing WhatsApp payload");
+    await handleInboundWhatsAppMessage(app, {
+      waMessageId: msg.id,
+      waPhoneNumberId: msg.waPhoneNumberId,
+      from: msg.from,
+      text: msg.text ?? "",
+      media: msg.media,
+      timestamp: msg.timestamp,
+      rawPayload: msg.rawPayload,
+      profileName: msg.profileName,
+      config,
+    });
+    processed += 1;
   }
+
+  return { processed, skipped };
 }
 
 function extractMessages(payload: any): Array<{

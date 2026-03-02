@@ -1,0 +1,11 @@
+# OPS Hunter (P0.6)
+- Salud rápida: `bash /opt/hunter/ops/ops_hunter_status.sh`
+- Backend debe responder `{"ok":true}` en `https://hunter.mangoro.app/api/health`.
+- Proceso aislado: PM2 solo recarga `hunter-backend` (`--only hunter-backend`).
+- Autostart post-reboot: `pm2-ubuntu.service` habilitado + `pm2 save`.
+- Watchdog: `hunter-watchdog.timer` corre cada 1 min y reinicia solo `hunter-backend` tras 3 fallos consecutivos.
+- Logs watchdog: `/opt/hunter/tmp/hunter-watchdog.log`.
+- Error típico histórico: `Cannot find module /opt/hunter/backend/dist/server.js` (crash loop).
+- Mitigación: build no borra `dist` y deploy aborta si falta `dist/server.js`.
+- Webhook WhatsApp: responde 2xx solo tras procesar/persistir inbound; si falla, retorna 5xx para retry de Meta.
+- Regla: nunca reiniciar otros proyectos desde deploy de Hunter.
