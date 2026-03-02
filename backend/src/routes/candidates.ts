@@ -69,13 +69,13 @@ type CandidateRowNormalized = {
 function normalizeImportedRow(row: Record<string, any>, sourceRow: number): CandidateRowNormalized {
   return {
     phoneRaw: firstField(row, ['telefono', 'teléfono', 'celular', 'whatsapp', 'fono', 'phone', 'numero', 'número']),
-    name: firstField(row, ['nombre', 'name', 'postulante', 'candidato']),
-    role: firstField(row, ['rol', 'cargo', 'puesto', 'vacante']),
-    channel: firstField(row, ['canal', 'fuente', 'source', 'origen']),
-    comuna: firstField(row, ['comuna']),
-    ciudad: firstField(row, ['ciudad', 'city']),
-    email: firstField(row, ['email', 'correo']),
-    initialStatus: firstField(row, ['estado', 'status', 'etapa', 'stage']),
+    name: repairMojibake(firstField(row, ['nombre', 'name', 'postulante', 'candidato'])),
+    role: repairMojibake(firstField(row, ['rol', 'cargo', 'puesto', 'vacante'])),
+    channel: repairMojibake(firstField(row, ['canal', 'fuente', 'source', 'origen'])),
+    comuna: repairMojibake(firstField(row, ['comuna'])),
+    ciudad: repairMojibake(firstField(row, ['ciudad', 'city'])),
+    email: repairMojibake(firstField(row, ['email', 'correo'])),
+    initialStatus: repairMojibake(firstField(row, ['estado', 'status', 'etapa', 'stage'])),
     sourceRow,
   };
 }

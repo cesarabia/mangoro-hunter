@@ -2656,6 +2656,8 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const latencyTimeoutBehavior = (step.expect as any)?.latencyTimeoutBehavior;
       const interviewScheduleConflict = (step.expect as any)?.interviewScheduleConflict;
       const staffInterviewSlots20minConfirmTemplate = (step.expect as any)?.staffInterviewSlots20minConfirmTemplate;
+      const staffDraftsSendEditCancel = (step.expect as any)?.staffDraftsSendEditCancel;
+      const staffConfirmTemplateHasNoPorDefinir = (step.expect as any)?.staffConfirmTemplateHasNoPorDefinir;
       if (interviewScheduleConflict && typeof interviewScheduleConflict === 'object') {
         const wsId = String((interviewScheduleConflict as any)?.workspaceId || 'scenario-interview-conflict').trim() || 'scenario-interview-conflict';
         const now = new Date();
@@ -2935,6 +2937,456 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
         await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
         await prisma.phoneLine.updateMany({ where: { workspaceId: wsId, id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+      }
+
+      if (staffDraftsSendEditCancel && typeof staffDraftsSendEditCancel === 'object') {
+        const wsId = String((staffDraftsSendEditCancel as any)?.workspaceId || 'scenario-staff-drafts').trim() || 'scenario-staff-drafts';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'staffDraftsSendEditCancel: userId missing' });
+        } else {
+          const lineId = `scenario-staff-drafts-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          const staffWaId = '56982345846';
+          const staffE164 = '+56982345846';
+          const candidateWaId = `5699${String(Math.floor(Math.random() * 9000000) + 1000000)}`;
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Staff Drafts', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Staff Drafts', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+              update: { role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          const line = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Staff Drafts (temp)',
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const staffContact = await prisma.contact
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+              create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Staff Drafts', archivedAt: null } as any,
+              update: { phone: staffE164, displayName: 'Staff Drafts', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const candidateContact = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, waId: candidateWaId, phone: `+${candidateWaId}`, displayName: 'Candidato Draft', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const staffConv =
+            line?.id && staffContact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: line.id,
+                      contactId: staffContact.id,
+                      status: 'OPEN',
+                      channel: 'whatsapp',
+                      isAdmin: false,
+                      conversationKind: 'STAFF',
+                      conversationStage: 'NUEVO',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+          const candidateConv =
+            line?.id && candidateContact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: line.id,
+                      contactId: candidateContact.id,
+                      status: 'OPEN',
+                      channel: 'whatsapp',
+                      isAdmin: false,
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'NEW_INTAKE',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+          if (!staffConv?.id || !candidateConv?.id) {
+            assertions.push({ ok: false, message: 'staffDraftsSendEditCancel: setup incompleto' });
+          } else {
+            const draftA = await prisma.hybridReplyDraft
+              .create({
+                data: {
+                  workspaceId: wsId,
+                  conversationId: candidateConv.id,
+                  targetWaId: candidateWaId,
+                  proposedText: 'Hola, ¿sigues disponible para entrevista esta semana?',
+                  status: 'PENDING',
+                } as any,
+              })
+              .catch(() => null);
+            if (!draftA?.id) {
+              assertions.push({ ok: false, message: 'staffDraftsSendEditCancel: no se pudo crear borrador A' });
+            } else {
+              const inboundEdit = await prisma.message
+                .create({
+                  data: {
+                    conversationId: staffConv.id,
+                    direction: 'INBOUND',
+                    text: 'EDITAR: Hola, ¿sigues disponible para entrevista mañana?',
+                    timestamp: new Date(),
+                    read: true,
+                  },
+                  select: { id: true },
+                })
+                .catch(() => null);
+              if (inboundEdit?.id) {
+                await runAutomations({
+                  app,
+                  workspaceId: wsId,
+                  eventType: 'INBOUND_MESSAGE',
+                  conversationId: staffConv.id,
+                  inboundMessageId: inboundEdit.id,
+                  inboundText: 'EDITAR: Hola, ¿sigues disponible para entrevista mañana?',
+                  transportMode: 'NULL',
+                }).catch(() => {});
+              }
+              const afterEdit = await prisma.hybridReplyDraft.findUnique({ where: { id: draftA.id } }).catch(() => null as any);
+              assertions.push({
+                ok: String(afterEdit?.finalText || '').toLowerCase().includes('mañana'),
+                message:
+                  String(afterEdit?.finalText || '').toLowerCase().includes('mañana')
+                    ? 'staffDraftsSendEditCancel: EDITAR sin id aplica al último borrador'
+                    : 'staffDraftsSendEditCancel: EDITAR sin id no actualizó borrador',
+              });
+
+              const inboundSend = await prisma.message
+                .create({
+                  data: {
+                    conversationId: staffConv.id,
+                    direction: 'INBOUND',
+                    text: 'ENVIAR',
+                    timestamp: new Date(Date.now() + 500),
+                    read: true,
+                  },
+                  select: { id: true },
+                })
+                .catch(() => null);
+              if (inboundSend?.id) {
+                await runAutomations({
+                  app,
+                  workspaceId: wsId,
+                  eventType: 'INBOUND_MESSAGE',
+                  conversationId: staffConv.id,
+                  inboundMessageId: inboundSend.id,
+                  inboundText: 'ENVIAR',
+                  transportMode: 'NULL',
+                }).catch(() => {});
+              }
+              const afterSend = await prisma.hybridReplyDraft.findUnique({ where: { id: draftA.id } }).catch(() => null as any);
+              assertions.push({
+                ok: String(afterSend?.status || '').toUpperCase() === 'SENT',
+                message:
+                  String(afterSend?.status || '').toUpperCase() === 'SENT'
+                    ? 'staffDraftsSendEditCancel: ENVIAR sin id envía borrador pendiente'
+                    : `staffDraftsSendEditCancel: ENVIAR sin id falló (status=${String(afterSend?.status || '—')})`,
+              });
+              const outbound = await prisma.outboundMessageLog
+                .findFirst({
+                  where: {
+                    workspaceId: wsId,
+                    conversationId: candidateConv.id,
+                    type: 'SESSION_TEXT',
+                    dedupeKey: `hybrid_draft_send:${draftA.id}`,
+                  } as any,
+                  orderBy: { createdAt: 'desc' },
+                  select: { id: true, waMessageId: true, blockedReason: true },
+                })
+                .catch(() => null);
+              assertions.push({
+                ok: Boolean(outbound?.id) && !outbound?.blockedReason,
+                message:
+                  Boolean(outbound?.id) && !outbound?.blockedReason
+                    ? 'staffDraftsSendEditCancel: outbound log de borrador enviado OK'
+                    : 'staffDraftsSendEditCancel: falta outbound log o quedó bloqueado',
+              });
+
+              const draftB = await prisma.hybridReplyDraft
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    conversationId: candidateConv.id,
+                    targetWaId: candidateWaId,
+                    proposedText: 'Segundo borrador para cancelar',
+                    status: 'PENDING',
+                  } as any,
+                })
+                .catch(() => null);
+              if (!draftB?.id) {
+                assertions.push({ ok: false, message: 'staffDraftsSendEditCancel: no se pudo crear borrador B' });
+              } else {
+                const inboundCancel = await prisma.message
+                  .create({
+                    data: {
+                      conversationId: staffConv.id,
+                      direction: 'INBOUND',
+                      text: `CANCELAR ${String(draftB.id).slice(0, 8)}`,
+                      timestamp: new Date(Date.now() + 1000),
+                      read: true,
+                    },
+                    select: { id: true },
+                  })
+                  .catch(() => null);
+                if (inboundCancel?.id) {
+                  await runAutomations({
+                    app,
+                    workspaceId: wsId,
+                    eventType: 'INBOUND_MESSAGE',
+                    conversationId: staffConv.id,
+                    inboundMessageId: inboundCancel.id,
+                    inboundText: `CANCELAR ${String(draftB.id).slice(0, 8)}`,
+                    transportMode: 'NULL',
+                  }).catch(() => {});
+                }
+                const afterCancel = await prisma.hybridReplyDraft.findUnique({ where: { id: draftB.id } }).catch(() => null as any);
+                assertions.push({
+                  ok: String(afterCancel?.status || '').toUpperCase() === 'CANCELLED',
+                  message:
+                    String(afterCancel?.status || '').toUpperCase() === 'CANCELLED'
+                      ? 'staffDraftsSendEditCancel: CANCELAR funciona'
+                      : `staffDraftsSendEditCancel: CANCELAR falló (status=${String(afterCancel?.status || '—')})`,
+                });
+              }
+            }
+          }
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.hybridReplyDraft.updateMany({ where: { workspaceId: wsId }, data: { status: 'CANCELLED', updatedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      if (staffConfirmTemplateHasNoPorDefinir && typeof staffConfirmTemplateHasNoPorDefinir === 'object') {
+        const wsId =
+          String((staffConfirmTemplateHasNoPorDefinir as any)?.workspaceId || 'scenario-staff-confirm-template').trim() ||
+          'scenario-staff-confirm-template';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'staffConfirmTemplateHasNoPorDefinir: userId missing' });
+        } else {
+          const lineId = `scenario-staff-confirm-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          const staffWaId = '56982345846';
+          const staffE164 = '+56982345846';
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Staff Confirm Template', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Staff Confirm Template', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+              update: { role: 'OWNER', staffWhatsAppE164: staffE164, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          const program = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'staff-confirm-template-program' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Staff Confirm Template',
+                slug: 'staff-confirm-template-program',
+                isActive: true,
+                archivedAt: null,
+                agentSystemPrompt: 'Programa temporal de escenario.',
+              } as any,
+              update: { isActive: true, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const line = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Staff Confirm (temp)',
+                waPhoneNumberId,
+                isActive: true,
+                defaultProgramId: program?.id || null,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const staffContact = await prisma.contact
+            .upsert({
+              where: { workspaceId_waId: { workspaceId: wsId, waId: staffWaId } } as any,
+              create: { workspaceId: wsId, waId: staffWaId, phone: staffE164, displayName: 'Staff Confirm', archivedAt: null } as any,
+              update: { phone: staffE164, displayName: 'Staff Confirm', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const candidateWa = `5699${String(Math.floor(Math.random() * 9000000) + 1000000)}`;
+          const candidateContact = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, waId: candidateWa, phone: `+${candidateWa}`, candidateNameManual: 'Juan Pérez', archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const staffConv =
+            line?.id && staffContact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: line.id,
+                      programId: program?.id || null,
+                      contactId: staffContact.id,
+                      status: 'OPEN',
+                      channel: 'whatsapp',
+                      conversationKind: 'STAFF',
+                      conversationStage: 'NUEVO',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+          const clientConv =
+            line?.id && candidateContact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: line.id,
+                      programId: null,
+                      contactId: candidateContact.id,
+                      status: 'OPEN',
+                      channel: 'whatsapp',
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'INTERVIEW_PENDING',
+                      interviewDay: 'martes',
+                      interviewTime: '10:20',
+                      interviewLocation: 'Providencia',
+                      interviewStatus: 'PENDING',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+          if (!staffConv?.id || !clientConv?.id) {
+            assertions.push({ ok: false, message: 'staffConfirmTemplateHasNoPorDefinir: setup incompleto' });
+          } else {
+            const startAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+            const endAt = new Date(startAt.getTime() + 30 * 60 * 1000);
+            await prisma.interviewReservation
+              .create({
+                data: {
+                  conversationId: clientConv.id,
+                  contactId: candidateContact!.id,
+                  startAt,
+                  endAt,
+                  timezone: 'America/Santiago',
+                  location: 'Providencia',
+                  status: 'PENDING',
+                  activeKey: 'ACTIVE',
+                } as any,
+              })
+              .catch(() => null);
+            const inbound = await prisma.message
+              .create({
+                data: {
+                  conversationId: staffConv.id,
+                  direction: 'INBOUND',
+                  text: `confirmar entrevista ${String(clientConv.id).slice(0, 8)}`,
+                  timestamp: now,
+                  read: true,
+                },
+                select: { id: true },
+              })
+              .catch(() => null);
+            if (!inbound?.id) {
+              assertions.push({ ok: false, message: 'staffConfirmTemplateHasNoPorDefinir: no se pudo crear inbound' });
+            } else {
+              await runAutomations({
+                app,
+                workspaceId: wsId,
+                eventType: 'INBOUND_MESSAGE',
+                conversationId: staffConv.id,
+                inboundMessageId: inbound.id,
+                inboundText: `confirmar entrevista ${String(clientConv.id).slice(0, 8)}`,
+                transportMode: 'NULL',
+              }).catch(() => {});
+              const outbound = await prisma.outboundMessageLog
+                .findFirst({
+                  where: {
+                    workspaceId: wsId,
+                    conversationId: clientConv.id,
+                    type: 'TEMPLATE',
+                    templateName: 'enviorapido_confirma_entrevista_v1',
+                  } as any,
+                  orderBy: { createdAt: 'desc' },
+                })
+                .catch(() => null);
+              const templateMsg = await prisma.message
+                .findFirst({
+                  where: { conversationId: clientConv.id, direction: 'OUTBOUND', text: { contains: '[TEMPLATE]' } as any },
+                  orderBy: { timestamp: 'desc' },
+                })
+                .catch(() => null);
+              const rawPayload = String(templateMsg?.rawPayload || '');
+              const noPlaceholder = !/por definir/i.test(rawPayload);
+              assertions.push({
+                ok: Boolean(outbound?.id) && noPlaceholder,
+                message:
+                  Boolean(outbound?.id) && noPlaceholder
+                    ? 'staffConfirmTemplateHasNoPorDefinir: template enviado sin placeholders'
+                    : 'staffConfirmTemplateHasNoPorDefinir: faltó outbound template o contiene "Por definir"',
+              });
+            }
+          }
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          const wsConversationIds = await prisma.conversation
+            .findMany({ where: { workspaceId: wsId }, select: { id: true } })
+            .then((rows) => rows.map((r) => r.id))
+            .catch(() => [] as string[]);
+          if (wsConversationIds.length > 0) {
+            await prisma.interviewReservation
+              .updateMany({
+                where: { conversationId: { in: wsConversationIds } },
+                data: { activeKey: null, status: 'CANCELLED' } as any,
+              })
+              .catch(() => {});
+          }
+        }
       }
 
       if ((staffCasesNewOk && typeof staffCasesNewOk === 'object') || (staffCaseSummaryWorks && typeof staffCaseSummaryWorks === 'object')) {

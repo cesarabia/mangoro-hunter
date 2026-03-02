@@ -127,6 +127,12 @@ export type ScenarioStep = {
     staffInterviewSlots20minConfirmTemplate?: {
       workspaceId?: string;
     };
+    staffDraftsSendEditCancel?: {
+      workspaceId?: string;
+    };
+    staffConfirmTemplateHasNoPorDefinir?: {
+      workspaceId?: string;
+    };
     workspaceCreationWizardGates?: {
       workspaceId?: string;
       template?: string;
@@ -629,6 +635,32 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check staff interview slots 20min confirm template',
         expect: { staffInterviewSlots20minConfirmTemplate: { workspaceId: 'scenario-staff-interview-20min' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_drafts_send_edit_cancel',
+    name: 'Staff drafts: ENVIAR/EDITAR/CANCELAR',
+    description:
+      'Valida operación híbrida por WhatsApp en staff: listar borradores, editar, enviar y cancelar (con/sin id).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff drafts send edit cancel',
+        expect: { staffDraftsSendEditCancel: { workspaceId: 'scenario-staff-drafts' } },
+      },
+    ],
+  },
+  {
+    id: 'staff_confirm_template_has_no_por_definir',
+    name: 'Staff confirmar entrevista: plantilla sin "Por definir"',
+    description:
+      'Valida que al confirmar entrevista la plantilla se renderice con datos reales (nombre/fecha/hora/ubicación) sin placeholders "Por definir".',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check staff confirm template has no por definir',
+        expect: { staffConfirmTemplateHasNoPorDefinir: { workspaceId: 'scenario-staff-confirm-template' } },
       },
     ],
   },

@@ -15,8 +15,9 @@ import { getAdminWaIdAllowlist, getSystemConfig } from './configService';
 import { ensureAdminConversation, sendAdminReply } from './adminConversationService';
 import { deriveCandidateStatusFromConversation, upsertCandidateAndCase } from './candidateService';
 import { listWorkspaceTemplateCatalog } from './whatsappTemplateCatalogService';
-import { sendWhatsAppTemplate } from './whatsappMessageService';
+import { sendWhatsAppTemplate, sendWhatsAppText } from './whatsappMessageService';
 import { normalizeChilePhoneE164 } from '../utils/phone';
+import { isKnownActiveStage, listWorkspaceStages } from './workspaceStageService';
 import {
   attemptScheduleInterview,
   confirmActiveReservation,
@@ -733,6 +734,9 @@ type StaffRouterCommand =
   | { type: 'PENDING_COUNTS'; args: {} }
   | { type: 'HELP'; args: {} }
   | { type: 'LIST_DRAFTS'; args: {} }
+  | { type: 'SEND_DRAFT'; args: { ref?: string | null } }
+  | { type: 'EDIT_DRAFT'; args: { ref?: string | null; text: string } }
+  | { type: 'CANCEL_DRAFT'; args: { ref?: string | null } }
   | { type: 'LIST_SLOTS'; args: { dayToken: string } }
   | {
       type: 'LIST_CASES';
@@ -779,6 +783,10 @@ type StaffRouterCommand =
   | {
       type: 'BULK_CONTACTADO';
       args: { refs: string[] };
+    }
+  | {
+      type: 'BULK_MOVE_STAGE';
+      args: { stageSlug: string; refs: string[] };
     };
 
 const STAFF_COMMAND_HELP_TEXT = [
@@ -797,8 +805,9 @@ const STAFF_COMMAND_HELP_TEXT = [
   '• plantilla <telefono|caseId> <templateName>',
   '• alta <telefono> | <nombre> | <rol> | <canal> | <comuna> | plantilla=<templateName>',
   '• bulk contactado <telefonos separados por espacio/coma>',
+  '• bulk mover <stage> <telefonos|ids separados por espacio/coma>',
   '• borradores',
-  '• ENVIAR <id> | EDITAR <id>: <texto> | CANCELAR <id>',
+  '• ENVIAR [id] | EDITAR [id]: <texto> | CANCELAR [id]',
   '• ayuda',
 ].join('\n');
 
@@ -971,6 +980,120 @@ function parseBulkRefs(raw: string): string[] {
   return out;
 }
 
+async function listPendingHybridDraftsForWorkspace(workspaceId: string): Promise<any[]> {
+  return prisma.hybridReplyDraft
+    .findMany({
+      where: {
+        workspaceId,
+        status: { in: ['PENDING', 'APPROVED'] },
+      },
+      include: {
+        conversation: {
+          include: {
+            contact: true,
+            phoneLine: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    })
+    .catch(() => []);
+}
+
+async function resolveHybridDraftByRefForStaff(params: {
+  workspaceId: string;
+  ref: string;
+}): Promise<any | null> {
+  const ref = String(params.ref || '').trim();
+  if (!ref) return null;
+  const byId = await prisma.hybridReplyDraft
+    .findFirst({
+      where: { workspaceId: params.workspaceId, id: ref },
+      include: { conversation: { include: { contact: true, phoneLine: true } } },
+    })
+    .catch(() => null);
+  if (byId?.id) return byId;
+  const partial = await prisma.hybridReplyDraft
+    .findMany({
+      where: {
+        workspaceId: params.workspaceId,
+        id: { startsWith: ref },
+      },
+      include: { conversation: { include: { contact: true, phoneLine: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 2,
+    })
+    .catch(() => []);
+  if (partial.length === 1) return partial[0];
+  return null;
+}
+
+async function resolveDraftForStaffCommand(params: {
+  workspaceId: string;
+  ref?: string | null;
+}): Promise<{ draft: any | null; listIfAmbiguous: any[] | null }> {
+  const ref = String(params.ref || '').trim();
+  if (ref) {
+    const draft = await resolveHybridDraftByRefForStaff({ workspaceId: params.workspaceId, ref });
+    return { draft, listIfAmbiguous: null };
+  }
+  const drafts = await listPendingHybridDraftsForWorkspace(params.workspaceId);
+  if (drafts.length === 1) return { draft: drafts[0], listIfAmbiguous: null };
+  if (drafts.length > 1) return { draft: null, listIfAmbiguous: drafts };
+  return { draft: null, listIfAmbiguous: null };
+}
+
+async function listActiveWorkspaceStageSlugs(workspaceId: string): Promise<string[]> {
+  const rows = await listWorkspaceStages({ workspaceId, includeArchived: false }).catch(() => []);
+  return rows
+    .filter((s: any) => Boolean(s?.isActive) && !s?.archivedAt)
+    .map((s: any) => String(s?.slug || '').trim())
+    .filter(Boolean);
+}
+
+function deriveCommandFromStaffNaturalText(rawText: string): string | null {
+  const raw = String(rawText || '').trim();
+  if (!raw) return null;
+  const normalized = normalizeLoose(raw);
+
+  // "envía la plantilla enviorapido_postulacion_inicio_v1 al 569..."
+  const templateNatural =
+    raw.match(/\bplantilla\b.*\b([a-zA-Z0-9_.-]+)\b.*\b(56?9\d{8})\b/i) ||
+    raw.match(/\b(56?9\d{8})\b.*\bplantilla\b.*\b([a-zA-Z0-9_.-]+)\b/i);
+  if (templateNatural) {
+    const phone = String(templateNatural[2] || templateNatural[1] || '').trim();
+    const templateName = String(templateNatural[1] || templateNatural[2] || '').trim();
+    if (phone && templateName && templateName.toLowerCase().includes('enviorapido')) {
+      return `plantilla ${phone} ${templateName}`;
+    }
+  }
+
+  // "muévelo a entrevista pendiente" (último caso)
+  const moveLatest = raw.match(/\b(mueve|mover|cambia|cambiar)\b.*\b(entrevista pendiente|screening|new intake|new_intake|qualified|interview pending|interview scheduled|rechazado|no contactar)\b/i);
+  if (moveLatest?.[2]) {
+    return `mover __latest__ a ${String(moveLatest[2]).trim()}`;
+  }
+
+  // "agenda 569... mañana 10:20" / "agenda mañana 10:20 para 569..."
+  const scheduleNaturalA = raw.match(
+    /\bagenda(?:r)?\b.*\b(56?9\d{8})\b.*\b(hoy|mañana|manana|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b.*\b(\d{1,2}:\d{2})\b/i,
+  );
+  if (scheduleNaturalA?.[1] && scheduleNaturalA?.[2] && scheduleNaturalA?.[3]) {
+    return `agendar ${String(scheduleNaturalA[1]).trim()} ${String(scheduleNaturalA[2]).trim()} ${String(scheduleNaturalA[3]).trim()}`;
+  }
+  const scheduleNaturalB = raw.match(
+    /\bagenda(?:r)?\b.*\b(hoy|mañana|manana|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b.*\b(\d{1,2}:\d{2})\b.*\b(56?9\d{8})\b/i,
+  );
+  if (scheduleNaturalB?.[1] && scheduleNaturalB?.[2] && scheduleNaturalB?.[3]) {
+    return `agendar ${String(scheduleNaturalB[3]).trim()} ${String(scheduleNaturalB[1]).trim()} ${String(scheduleNaturalB[2]).trim()}`;
+  }
+
+  if (/\b(cuantos|cuántos)\b.*\bmensajes\b.*\baprobar\b/.test(normalized)) return 'borradores';
+  if (/\b(lista|mostrar|muestrame|muéstrame)\b.*\bborradores\b/.test(normalized)) return 'borradores';
+  return null;
+}
+
 function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null {
   const raw = String(inboundText || '').trim();
   if (!raw) return null;
@@ -981,6 +1104,28 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
   }
   if (normalized === 'borradores' || normalized === '/borradores' || normalized === 'drafts') {
     return { type: 'LIST_DRAFTS', args: {} };
+  }
+  const sendDraftMatch = raw.match(/^\s*ENVIA(?:R)?(?:\s+([a-zA-Z0-9_-]{4,32}))?\s*$/i);
+  if (sendDraftMatch) {
+    return { type: 'SEND_DRAFT', args: { ref: sendDraftMatch?.[1] ? String(sendDraftMatch[1]).trim() : null } };
+  }
+  const editDraftWithId = raw.match(/^\s*EDITA(?:R)?\s+([a-zA-Z0-9_-]{4,32})\s*:\s*(.+)\s*$/i);
+  if (editDraftWithId?.[1] && editDraftWithId?.[2]) {
+    return {
+      type: 'EDIT_DRAFT',
+      args: { ref: String(editDraftWithId[1]).trim(), text: String(editDraftWithId[2]).trim() },
+    };
+  }
+  const editDraftWithoutId = raw.match(/^\s*EDITA(?:R)?\s*:\s*(.+)\s*$/i) || raw.match(/^\s*EDITA(?:R)?\s+(.+)\s*$/i);
+  if (editDraftWithoutId?.[1]) {
+    return {
+      type: 'EDIT_DRAFT',
+      args: { ref: null, text: String(editDraftWithoutId[1]).trim() },
+    };
+  }
+  const cancelDraftMatch = raw.match(/^\s*CANCELA(?:R)?(?:\s+([a-zA-Z0-9_-]{4,32}))?\s*$/i);
+  if (cancelDraftMatch) {
+    return { type: 'CANCEL_DRAFT', args: { ref: cancelDraftMatch?.[1] ? String(cancelDraftMatch[1]).trim() : null } };
   }
 
   if (normalized === 'pendientes' || normalized === '/pendientes' || normalized === 'mis pendientes') {
@@ -1075,6 +1220,12 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
   if (bulkContactadoMatch?.[1]) {
     const refs = parseBulkRefs(bulkContactadoMatch[1]);
     if (refs.length > 0) return { type: 'BULK_CONTACTADO', args: { refs } };
+  }
+  const bulkMoverMatch = raw.match(/^\s*bulk\s+mover\s+([A-Za-z0-9 _-]+?)\s+(.+)\s*$/i);
+  if (bulkMoverMatch?.[1] && bulkMoverMatch?.[2]) {
+    const stageSlug = normalizeStageCandidate(bulkMoverMatch[1]);
+    const refs = parseBulkRefs(bulkMoverMatch[2]);
+    if (stageSlug && refs.length > 0) return { type: 'BULK_MOVE_STAGE', args: { stageSlug, refs } };
   }
   const templateMatch = raw.match(/^\s*plantilla\s+(.+?)\s+([a-zA-Z0-9_\-.]+)\s*$/i);
   if (templateMatch?.[1] && templateMatch?.[2]) {
@@ -1261,7 +1412,14 @@ async function resolveConversationByRefForStaff(params: {
 }
 
 async function listWorkspaceTemplatesForStaff(workspaceId: string): Promise<{
-  entries: Array<{ name: string; category: string | null; language: string | null; status: string | null; source: string }>;
+  entries: Array<{
+    name: string;
+    category: string | null;
+    language: string | null;
+    status: string | null;
+    source: string;
+    variableCount: number;
+  }>;
   namesLower: Set<string>;
 }> {
   const catalog = await listWorkspaceTemplateCatalog(workspaceId).catch(() => null);
@@ -1272,6 +1430,7 @@ async function listWorkspaceTemplatesForStaff(workspaceId: string): Promise<{
         language: t?.language ? String(t.language) : null,
         status: t?.status ? String(t.status) : null,
         source: String(t?.source || ''),
+        variableCount: Number.isFinite(Number((t as any)?.variableCount)) ? Number((t as any).variableCount) : 0,
       }))
     : [];
   const namesLower = new Set(entries.map((e) => e.name.toLowerCase()).filter(Boolean));
@@ -1374,6 +1533,51 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
       return `• ${idShort} · ${who}${wa ? ` (+${wa})` : ''}`;
     });
     return [`Borradores pendientes (${drafts.length}):`, ...lines, '', 'Comando: ENVIAR <id> | EDITAR <id>: ... | CANCELAR <id>'].join('\n');
+  }
+  if (command.type === 'SEND_DRAFT') {
+    const result = toolResult?.details?.result || {};
+    if (toolResult?.details?.errorCode === 'DRAFT_AMBIGUOUS') {
+      const drafts = Array.isArray(result?.drafts) ? result.drafts : [];
+      const lines = drafts.slice(0, 10).map((d: any) => {
+        const idShort = String(d?.id || '').slice(0, 8);
+        const who = String(d?.candidate || d?.waId || 'Candidato');
+        const wa = String(d?.waId || '').trim();
+        return `• ${idShort} · ${who}${wa ? ` (+${wa})` : ''}`;
+      });
+      return [`Hay más de un borrador pendiente (${drafts.length}).`, ...lines, '', 'Indica el id corto: ENVIAR <id>.'].join('\n');
+    }
+    if (!toolResult?.ok) return 'No pude enviar ese borrador. Revisa el id y vuelve a intentar.';
+    return `✅ Enviado borrador ${String(result?.draftId || '').slice(0, 8)} al candidato +${String(result?.waId || '').trim()}.`;
+  }
+  if (command.type === 'EDIT_DRAFT') {
+    const result = toolResult?.details?.result || {};
+    if (toolResult?.details?.errorCode === 'DRAFT_AMBIGUOUS') {
+      const drafts = Array.isArray(result?.drafts) ? result.drafts : [];
+      const lines = drafts.slice(0, 10).map((d: any) => {
+        const idShort = String(d?.id || '').slice(0, 8);
+        const who = String(d?.candidate || d?.waId || 'Candidato');
+        const wa = String(d?.waId || '').trim();
+        return `• ${idShort} · ${who}${wa ? ` (+${wa})` : ''}`;
+      });
+      return [`Hay más de un borrador pendiente (${drafts.length}).`, ...lines, '', 'Indica el id corto: EDITAR <id>: <texto>.'].join('\n');
+    }
+    if (!toolResult?.ok) return 'No pude editar ese borrador. Revisa el id y vuelve a intentar.';
+    return `✏️ Editado borrador ${String(result?.draftId || '').slice(0, 8)}. ¿Lo envío?`;
+  }
+  if (command.type === 'CANCEL_DRAFT') {
+    const result = toolResult?.details?.result || {};
+    if (toolResult?.details?.errorCode === 'DRAFT_AMBIGUOUS') {
+      const drafts = Array.isArray(result?.drafts) ? result.drafts : [];
+      const lines = drafts.slice(0, 10).map((d: any) => {
+        const idShort = String(d?.id || '').slice(0, 8);
+        const who = String(d?.candidate || d?.waId || 'Candidato');
+        const wa = String(d?.waId || '').trim();
+        return `• ${idShort} · ${who}${wa ? ` (+${wa})` : ''}`;
+      });
+      return [`Hay más de un borrador pendiente (${drafts.length}).`, ...lines, '', 'Indica el id corto: CANCELAR <id>.'].join('\n');
+    }
+    if (!toolResult?.ok) return 'No pude cancelar ese borrador. Revisa el id y vuelve a intentar.';
+    return `🗑️ Cancelado borrador ${String(result?.draftId || '').slice(0, 8)}.`;
   }
   if (toolError) {
     if (command.type === 'SET_STAGE' && /stages? validos|stages? válidos|stageSlug desconocido/i.test(String(toolError))) {
@@ -1574,6 +1778,18 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
       `• No encontrados: ${notFound}`,
     ].join('\n');
   }
+  if (command.type === 'BULK_MOVE_STAGE') {
+    const updated = Number(toolResult?.updated || 0);
+    const unchanged = Number(toolResult?.unchanged || 0);
+    const notFound = Number(toolResult?.notFound || 0);
+    const stage = String(toolResult?.stageSlug || command.args.stageSlug || '').trim();
+    return [
+      `Bulk mover a ${stage} completado:`,
+      `• Actualizados: ${updated}`,
+      `• Sin cambio: ${unchanged}`,
+      `• No encontrados: ${notFound}`,
+    ].join('\n');
+  }
   return 'Listo.';
 }
 
@@ -1591,7 +1807,8 @@ async function maybeHandleStaffDeterministicRouter(params: {
 
   const inbound = String(params.inboundText || '').trim();
   if (!inbound) return { handled: false };
-  const command = parseStaffRouterCommand(inbound);
+  const canonicalFromNatural = deriveCommandFromStaffNaturalText(inbound);
+  const command = parseStaffRouterCommand(canonicalFromNatural || inbound);
   if (!command) {
     const helpRun = await prisma.agentRunLog.create({
       data: {
@@ -1645,6 +1862,12 @@ async function maybeHandleStaffDeterministicRouter(params: {
           ? ({ command: 'HELP' } as any)
           : command.type === 'LIST_DRAFTS'
             ? ({ command: 'LIST_DRAFTS' } as any)
+            : command.type === 'SEND_DRAFT'
+              ? ({ command: 'SEND_DRAFT', ...(command.args as any) } as any)
+              : command.type === 'EDIT_DRAFT'
+                ? ({ command: 'EDIT_DRAFT', ...(command.args as any) } as any)
+                : command.type === 'CANCEL_DRAFT'
+                  ? ({ command: 'CANCEL_DRAFT', ...(command.args as any) } as any)
             : command.type === 'LIST_SLOTS'
               ? ({ command: 'LIST_SLOTS', ...(command.args as any) } as any)
               : command.type === 'SCHEDULE_INTERVIEW'
@@ -1661,6 +1884,8 @@ async function maybeHandleStaffDeterministicRouter(params: {
                   ? ({ command: 'CREATE_CANDIDATE_AND_TEMPLATE', ...(command.args as any) } as any)
                   : command.type === 'BULK_CONTACTADO'
                   ? ({ command: 'BULK_CONTACTADO', ...(command.args as any) } as any)
+                  : command.type === 'BULK_MOVE_STAGE'
+                    ? ({ command: 'BULK_MOVE_STAGE', ...(command.args as any) } as any)
                   : command.type === 'PENDING_COUNTS'
                     ? ({ command: 'PENDING_COUNTS' } as any)
                     : command.type === 'GET_CASE_SUMMARY'
@@ -1685,11 +1910,12 @@ async function maybeHandleStaffDeterministicRouter(params: {
         conversationId: params.conversation.id,
         programId: params.conversation.programId || null,
         phoneLineId: params.conversation.phoneLineId || null,
-        eventType: 'STAFF_COMMAND_ROUTER',
+        eventType: canonicalFromNatural ? 'STAFF_NL_INTENT' : 'STAFF_COMMAND_ROUTER',
         status: 'RUNNING',
         inputContextJson: serializeJson({
           inboundMessageId: params.inboundMessageId || null,
           inboundText: inbound,
+          canonicalFromNatural: canonicalFromNatural || null,
           command,
           deterministic: true,
         }),
@@ -1715,21 +1941,7 @@ async function maybeHandleStaffDeterministicRouter(params: {
         .catch(() => {});
     } else if (command.type === 'LIST_DRAFTS') {
       try {
-        const drafts = await prisma.hybridReplyDraft.findMany({
-          where: {
-            workspaceId: params.workspaceId,
-            status: { in: ['PENDING', 'APPROVED'] },
-          } as any,
-          include: {
-            conversation: {
-              include: {
-                contact: true,
-              },
-            },
-          },
-          orderBy: { createdAt: 'desc' },
-          take: 20,
-        });
+        const drafts = await listPendingHybridDraftsForWorkspace(params.workspaceId);
         const mapped = drafts.map((d) => ({
           id: d.id,
           status: d.status,
@@ -1755,6 +1967,186 @@ async function maybeHandleStaffDeterministicRouter(params: {
       } catch (err) {
         const errorText = err instanceof Error ? err.message : 'No se pudo listar borradores';
         toolResult = { ok: false, details: { toolName: 'LIST_DRAFTS', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'SEND_DRAFT' || command.type === 'EDIT_DRAFT' || command.type === 'CANCEL_DRAFT') {
+      try {
+        const resolved = await resolveDraftForStaffCommand({
+          workspaceId: params.workspaceId,
+          ref: (command.args as any)?.ref || null,
+        });
+        if (!resolved.draft?.id) {
+          if (resolved.listIfAmbiguous && resolved.listIfAmbiguous.length > 1) {
+            toolResult = {
+              ok: false,
+              details: {
+                toolName: command.type,
+                errorCode: 'DRAFT_AMBIGUOUS',
+                result: {
+                  drafts: resolved.listIfAmbiguous.map((d: any) => ({
+                    id: d.id,
+                    waId: d?.conversation?.contact?.waId || d?.conversation?.contact?.phone || null,
+                    candidate:
+                      d?.conversation?.contact?.candidateNameManual ||
+                      d?.conversation?.contact?.candidateName ||
+                      d?.conversation?.contact?.displayName ||
+                      d?.conversation?.contact?.name ||
+                      null,
+                  })),
+                },
+              },
+            };
+            await prisma.agentRunLog
+              .update({
+                where: { id: toolRun.id },
+                data: {
+                  status: 'SUCCESS',
+                  resultsJson: serializeJson({
+                    result: { ambiguous: true, drafts: toolResult?.details?.result?.drafts || [] },
+                  }),
+                },
+              })
+              .catch(() => {});
+          } else {
+            throw new Error('No encontré borrador pendiente');
+          }
+        } else {
+          const draft = resolved.draft;
+          const draftIdShort = String(draft.id).slice(0, 8);
+          const waId = String(draft?.conversation?.contact?.waId || draft?.conversation?.contact?.phone || '').trim();
+          if (!waId) throw new Error(`Borrador ${draftIdShort} sin WhatsApp destino`);
+          if (String(draft.status || '').toUpperCase() === 'SENT') {
+            toolResult = {
+              ok: true,
+              details: { toolName: command.type, result: { draftId: draft.id, waId, alreadySent: true } },
+            };
+          } else if (command.type === 'CANCEL_DRAFT') {
+            await prisma.hybridReplyDraft.update({
+              where: { id: draft.id },
+              data: {
+                status: 'CANCELLED',
+                cancelledByWaId: String(params.conversation?.contact?.waId || params.conversation?.contact?.phone || '').trim() || null,
+                cancelledAt: new Date(),
+                updatedAt: new Date(),
+              } as any,
+            });
+            toolResult = {
+              ok: true,
+              details: { toolName: command.type, result: { draftId: draft.id, waId } },
+            };
+          } else if (command.type === 'EDIT_DRAFT') {
+            const nextText = String(command.args.text || '').trim();
+            if (!nextText) throw new Error('El texto EDITAR está vacío');
+            await prisma.hybridReplyDraft.update({
+              where: { id: draft.id },
+              data: {
+                status: 'APPROVED',
+                finalText: nextText,
+                approvedByWaId: String(params.conversation?.contact?.waId || params.conversation?.contact?.phone || '').trim() || null,
+                approvedAt: new Date(),
+                updatedAt: new Date(),
+              } as any,
+            });
+            toolResult = {
+              ok: true,
+              details: { toolName: command.type, result: { draftId: draft.id, waId, text: nextText } },
+            };
+          } else {
+            const finalText = String(draft.finalText || draft.proposedText || '').trim();
+            if (!finalText) throw new Error(`Borrador ${draftIdShort} sin texto`);
+            const send =
+              params.transportMode === 'NULL'
+                ? ({ success: true, messageId: `sim_draft_${draftIdShort}` } as any)
+                : await sendWhatsAppText(waId, finalText, {
+                    phoneNumberId: draft?.conversation?.phoneLine?.waPhoneNumberId || null,
+                    enforceSafeMode: false,
+                  }).catch((err) => ({
+                    success: false,
+                    error: err instanceof Error ? err.message : 'send_failed',
+                  }));
+            if (!(send as any).success) {
+              await prisma.hybridReplyDraft
+                .update({
+                  where: { id: draft.id },
+                  data: { status: 'ERROR', error: String((send as any).error || 'send_failed'), updatedAt: new Date() } as any,
+                })
+                .catch(() => {});
+              throw new Error(`No pude enviar borrador ${draftIdShort}: ${String((send as any).error || 'send_failed')}`);
+            }
+            await prisma.hybridReplyDraft
+              .update({
+                where: { id: draft.id },
+                data: {
+                  status: 'SENT',
+                  finalText,
+                  sentAt: new Date(),
+                  sentWaMessageId: (send as any).messageId || null,
+                  approvedByWaId: String(params.conversation?.contact?.waId || params.conversation?.contact?.phone || '').trim() || null,
+                  approvedAt: new Date(),
+                  updatedAt: new Date(),
+                } as any,
+              })
+              .catch(() => {});
+            await prisma.message
+              .create({
+                data: {
+                  conversationId: draft.conversationId,
+                  direction: 'OUTBOUND',
+                  text: finalText,
+                  rawPayload: serializeJson({
+                    hybridApproval: true,
+                    draftId: draft.id,
+                    sendResult: send,
+                    source: 'staff_command_send_draft',
+                  }),
+                  timestamp: new Date(),
+                  read: true,
+                },
+              })
+              .catch(() => {});
+            await prisma.outboundMessageLog
+              .create({
+                data: {
+                  workspaceId: params.workspaceId,
+                  conversationId: draft.conversationId,
+                  relatedConversationId: draft.conversationId,
+                  agentRunId: toolRun.id,
+                  channel: 'WHATSAPP',
+                  type: 'SESSION_TEXT',
+                  dedupeKey: `hybrid_draft_send:${draft.id}`,
+                  textHash: stableHash(`TEXT:${finalText}`),
+                  blockedReason: null,
+                  waMessageId: (send as any).messageId || null,
+                } as any,
+              })
+              .catch(() => {});
+            toolResult = {
+              ok: true,
+              details: {
+                toolName: command.type,
+                result: { draftId: draft.id, waId, sentWaMessageId: (send as any).messageId || null },
+              },
+            };
+          }
+
+          await prisma.agentRunLog
+            .update({
+              where: { id: toolRun.id },
+              data: {
+                status: 'SUCCESS',
+                resultsJson: serializeJson({ result: toolResult?.details?.result || null }),
+              },
+            })
+            .catch(() => {});
+        }
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo gestionar el borrador';
+        toolResult = { ok: false, details: { toolName: command.type, error: errorText } };
         await prisma.agentRunLog
           .update({
             where: { id: toolRun.id },
@@ -1791,6 +2183,135 @@ async function maybeHandleStaffDeterministicRouter(params: {
       } catch (err) {
         const errorText = err instanceof Error ? err.message : 'No se pudo calcular pendientes';
         toolResult = { ok: false, details: { toolName: 'PENDING_COUNTS', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'GET_CASE_SUMMARY') {
+      try {
+        const targetConversation =
+          String(command.args.ref || '').trim() === '__latest__'
+            ? await prisma.conversation.findFirst({
+                where: {
+                  workspaceId: params.workspaceId,
+                  archivedAt: null,
+                  isAdmin: false,
+                  conversationKind: 'CLIENT',
+                } as any,
+                select: { id: true, contactId: true, phoneLineId: true },
+                orderBy: { updatedAt: 'desc' },
+              })
+            : await resolveConversationByRefForStaff({
+                workspaceId: params.workspaceId,
+                ref: command.args.ref,
+              });
+        if (!targetConversation?.id) throw new Error(`No encontré el caso "${command.args.ref}"`);
+        const convo = await prisma.conversation.findFirst({
+          where: { id: targetConversation.id, workspaceId: params.workspaceId, archivedAt: null, isAdmin: false } as any,
+          include: {
+            contact: true,
+            messages: {
+              orderBy: { timestamp: 'desc' },
+              take: 10,
+              select: { id: true, direction: true, text: true, transcriptText: true, mediaType: true, timestamp: true },
+            },
+          },
+        });
+        if (!convo?.id) throw new Error(`No encontré el caso "${command.args.ref}"`);
+        toolResult = {
+          ok: true,
+          details: {
+            toolName: 'GET_CASE_SUMMARY',
+            result: {
+              case: {
+                id: convo.id,
+                stage: convo.conversationStage,
+                status: convo.status,
+                contact: {
+                  displayName: repairMojibake(getContactDisplayName(convo.contact)),
+                  waId: convo.contact?.waId || convo.contact?.phone || null,
+                  comuna: convo.contact?.comuna || null,
+                  ciudad: convo.contact?.ciudad || null,
+                  region: convo.contact?.region || null,
+                  availabilityText: convo.contact?.availabilityText || null,
+                },
+                lastMessages: (convo.messages || []).map((m: any) => ({
+                  id: m.id,
+                  direction: m.direction,
+                  text: repairMojibake(m.transcriptText || m.text || ''),
+                  mediaType: m.mediaType || null,
+                  timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : null,
+                })),
+              },
+            },
+          },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: { caseId: convo.id, stage: convo.conversationStage } }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo obtener resumen del caso';
+        toolResult = { ok: false, details: { toolName: 'GET_CASE_SUMMARY', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'SET_STAGE') {
+      try {
+        const targetConversation = await resolveConversationByRefForStaff({
+          workspaceId: params.workspaceId,
+          ref: command.args.ref,
+        });
+        if (!targetConversation?.id) throw new Error(`No encontré el caso "${command.args.ref}"`);
+        const stageSlug = normalizeStageCandidate(command.args.stageSlug);
+        if (!stageSlug) throw new Error('Stage inválido');
+        const known = await isKnownActiveStage(params.workspaceId, stageSlug).catch(() => false);
+        if (!known) {
+          const validStages = await listActiveWorkspaceStageSlugs(params.workspaceId);
+          throw new Error(`stageSlug desconocido: ${stageSlug} | stages válidos: ${validStages.join(', ') || 'sin stages activos'}`);
+        }
+        await prisma.conversation.update({
+          where: { id: targetConversation.id },
+          data: {
+            conversationStage: stageSlug,
+            stageChangedAt: new Date(),
+            stageReason: command.args.reason || 'staff_command_router',
+            updatedAt: new Date(),
+          } as any,
+        });
+        await createSystemConversationNote(
+          targetConversation.id,
+          `🏷️ Stage actualizado: ${stageSlug}.`,
+          { source: 'staff_command_set_stage', stage: stageSlug },
+        );
+        toolResult = {
+          ok: true,
+          details: { toolName: 'SET_STAGE', result: { conversationId: targetConversation.id, stage: stageSlug } },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: { conversationId: targetConversation.id, stage: stageSlug } }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo mover el stage';
+        toolResult = { ok: false, details: { toolName: 'SET_STAGE', error: errorText } };
         await prisma.agentRunLog
           .update({
             where: { id: toolRun.id },
@@ -2056,10 +2577,24 @@ async function maybeHandleStaffDeterministicRouter(params: {
         if (!convo?.id || !convo.contact?.waId) throw new Error('El caso no tiene WhatsApp válido');
         if (convo.contact.noContact) throw new Error('El contacto está en NO_CONTACTAR');
 
+        const activeReservation = await prisma.interviewReservation.findFirst({
+          where: { conversationId: convo.id, activeKey: 'ACTIVE' },
+          orderBy: { createdAt: 'desc' },
+          select: { id: true, startAt: true, timezone: true, location: true },
+        });
+        if (!activeReservation?.id) {
+          throw new Error('No hay entrevista en HOLD para confirmar. Usa "agendar <tel|id> mañana HH:MM".');
+        }
         const reservationUpdate = await confirmActiveReservation(convo.id);
         const scheduleConfig = buildStaffInterviewScheduleConfig(await getSystemConfig());
+        const reservationTz =
+          String(activeReservation.timezone || (scheduleConfig as any)?.interviewTimezone || 'America/Santiago').trim() ||
+          'America/Santiago';
+        const reservationStart = DateTime.fromJSDate(activeReservation.startAt).setZone(reservationTz);
+        const reservationDay = reservationStart.setLocale('es-CL').toFormat('cccc');
+        const reservationTime = reservationStart.toFormat('HH:mm');
         const normalizedLocation =
-          String(convo.interviewLocation || '').trim() || STAFF_INTERVIEW_LOCATION_LABEL;
+          String(activeReservation.location || convo.interviewLocation || '').trim() || STAFF_INTERVIEW_LOCATION_LABEL;
         const exactLocation =
           normalizedLocation.toLowerCase().includes('salvador')
             ? normalizedLocation
@@ -2072,6 +2607,8 @@ async function maybeHandleStaffDeterministicRouter(params: {
             stageChangedAt: new Date(),
             stageReason: 'staff_confirm_interview',
             interviewStatus: 'CONFIRMED',
+            interviewDay: reservationDay,
+            interviewTime: reservationTime,
             interviewLocation: exactLocation,
             updatedAt: new Date(),
           } as any,
@@ -2084,24 +2621,49 @@ async function maybeHandleStaffDeterministicRouter(params: {
         }
 
         const templatesCfg = await loadTemplateConfig(undefined, params.workspaceId).catch(() => null as any);
-        const finalVariables = resolveTemplateVariables(templateName, undefined, templatesCfg || undefined, {
-          interviewDay: String(convo.interviewDay || '').trim() || null,
-          interviewTime: String(convo.interviewTime || '').trim() || null,
-          interviewLocation: exactLocation,
-          candidateName:
+        const templateMeta = catalog.entries.find((e) => String(e.name || '').toLowerCase() === templateName.toLowerCase()) || null;
+        const candidateName =
+          String(
             convo.contact?.candidateNameManual ||
-            convo.contact?.candidateName ||
-            convo.contact?.displayName ||
-            convo.contact?.name ||
-            convo.contact?.waId ||
-            '',
+              convo.contact?.candidateName ||
+              convo.contact?.displayName ||
+              convo.contact?.name ||
+              convo.contact?.waId ||
+              '',
+          ).trim() || 'Postulante';
+        let finalVariables = resolveTemplateVariables(templateName, undefined, templatesCfg || undefined, {
+          interviewDay: reservationDay,
+          interviewTime: reservationTime,
+          interviewLocation: exactLocation,
+          candidateName,
         });
+        const variableCount = Number(templateMeta?.variableCount || 0);
+        if (variableCount > 0) {
+          const fallbackVars = [candidateName, reservationDay, reservationTime, exactLocation];
+          if (!Array.isArray(finalVariables) || finalVariables.length < variableCount) {
+            finalVariables = fallbackVars.slice(0, variableCount);
+          } else {
+            finalVariables = finalVariables.slice(0, variableCount).map((v, idx) => {
+              const normalized = String(v || '').trim();
+              if (normalized && !/por definir/i.test(normalized)) return normalized;
+              return String(fallbackVars[idx] || '').trim() || normalized;
+            });
+          }
+          finalVariables = finalVariables.slice(0, variableCount);
+        }
+        const hasPlaceholder = (finalVariables || []).some((v: any) => /por definir/i.test(String(v || '')));
+        if (hasPlaceholder) {
+          throw new Error('No pude completar variables de plantilla (quedó "Por definir"). Revisa la entrevista y vuelve a intentar.');
+        }
 
-        const sendResult = await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
-          phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
-          enforceSafeMode: false,
-          languageCode: null,
-        });
+        const sendResult =
+          params.transportMode === 'NULL'
+            ? ({ success: true, messageId: `sim_tpl_${stableHash(`${convo.id}:${templateName}`).slice(0, 12)}` } as any)
+            : await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
+                phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
+                enforceSafeMode: false,
+                languageCode: null,
+              });
         if (!sendResult.success) {
           await prisma.outboundMessageLog
             .create({
@@ -2164,6 +2726,7 @@ async function maybeHandleStaffDeterministicRouter(params: {
             source: 'staff_command_confirm_interview',
             reservationId: reservationUpdate.reservationId,
             templateName,
+            templateVariables: finalVariables,
           },
         );
 
@@ -2280,11 +2843,14 @@ async function maybeHandleStaffDeterministicRouter(params: {
             '',
         });
 
-        const sendResult = await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
-          phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
-          enforceSafeMode: false,
-          languageCode: null,
-        });
+        const sendResult =
+          params.transportMode === 'NULL'
+            ? ({ success: true, messageId: `sim_tpl_${stableHash(`${convo.id}:${templateName}`).slice(0, 12)}` } as any)
+            : await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
+                phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
+                enforceSafeMode: false,
+                languageCode: null,
+              });
         if (!sendResult.success) {
           await prisma.outboundMessageLog.create({
             data: {
@@ -2429,11 +2995,14 @@ async function maybeHandleStaffDeterministicRouter(params: {
             convo.contact?.waId ||
             '',
         });
-        const sendResult = await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
-          phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
-          enforceSafeMode: false,
-          languageCode: null,
-        });
+        const sendResult =
+          params.transportMode === 'NULL'
+            ? ({ success: true, messageId: `sim_tpl_${stableHash(`${convo.id}:${templateName}`).slice(0, 12)}` } as any)
+            : await sendWhatsAppTemplate(convo.contact.waId, templateName, finalVariables, {
+                phoneNumberId: convo.phoneLine?.waPhoneNumberId || null,
+                enforceSafeMode: false,
+                languageCode: null,
+              });
         if (!sendResult.success) {
           await prisma.outboundMessageLog.create({
             data: {
@@ -2580,6 +3149,82 @@ async function maybeHandleStaffDeterministicRouter(params: {
       } catch (err) {
         const errText = err instanceof Error ? err.message : 'No se pudo ejecutar bulk contactado';
         toolResult = { ok: false, details: { toolName: 'BULK_CONTACTADO', error: errText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errText, resultsJson: serializeJson({ error: errText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'BULK_MOVE_STAGE') {
+      try {
+        const stageSlug = normalizeStageCandidate(command.args.stageSlug);
+        if (!stageSlug) throw new Error('Stage inválido');
+        const known = await isKnownActiveStage(params.workspaceId, stageSlug).catch(() => false);
+        if (!known) {
+          const validStages = await listActiveWorkspaceStageSlugs(params.workspaceId);
+          throw new Error(`stageSlug desconocido: ${stageSlug} | stages válidos: ${validStages.join(', ') || 'sin stages activos'}`);
+        }
+        let updated = 0;
+        let unchanged = 0;
+        let notFound = 0;
+        for (const ref of command.args.refs) {
+          const target = await resolveConversationByRefForStaff({
+            workspaceId: params.workspaceId,
+            ref,
+          });
+          if (!target?.id) {
+            notFound += 1;
+            continue;
+          }
+          const current = await prisma.conversation.findFirst({
+            where: { id: target.id, workspaceId: params.workspaceId },
+            select: { id: true, conversationStage: true },
+          });
+          if (!current?.id) {
+            notFound += 1;
+            continue;
+          }
+          if (String(current.conversationStage || '').toUpperCase() === stageSlug) {
+            unchanged += 1;
+            continue;
+          }
+          await prisma.conversation.update({
+            where: { id: current.id },
+            data: {
+              conversationStage: stageSlug,
+              stageChangedAt: new Date(),
+              stageReason: 'staff_bulk_move_stage',
+              updatedAt: new Date(),
+            } as any,
+          });
+          await createSystemConversationNote(
+            current.id,
+            `🏷️ Stage actualizado masivamente a ${stageSlug}.`,
+            { source: 'staff_bulk_move_stage', stage: stageSlug },
+          );
+          updated += 1;
+        }
+        toolResult = {
+          ok: true,
+          details: { toolName: 'BULK_MOVE_STAGE', result: { stageSlug, updated, unchanged, notFound } },
+          stageSlug,
+          updated,
+          unchanged,
+          notFound,
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({ result: { stageSlug, updated, unchanged, notFound } }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errText = err instanceof Error ? err.message : 'No se pudo ejecutar bulk mover';
+        toolResult = { ok: false, details: { toolName: 'BULK_MOVE_STAGE', error: errText } };
         await prisma.agentRunLog
           .update({
             where: { id: toolRun.id },

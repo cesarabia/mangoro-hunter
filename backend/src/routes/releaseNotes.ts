@@ -187,6 +187,8 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'staff_notification_template_variables',
       'staff_reply_to_notification_updates_case',
       'ssclinical_notification_requires_availability',
+      'staff_drafts_send_edit_cancel',
+      'staff_confirm_template_has_no_por_definir',
       'interview_schedule_conflict',
       'template_outside_24h_first_contact',
       'client_location_free_text',

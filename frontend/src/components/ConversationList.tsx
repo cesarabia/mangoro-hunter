@@ -56,7 +56,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     | 'HIRED_DRIVER'
     | 'REJECTED'
     | 'STALE_NO_RESPONSE'
-    | 'PROSPECTS_NO_MESSAGES';
+    | 'PROSPECTS_NO_MESSAGES'
+    | 'LEGACY_NO_MESSAGES';
   const [stageView, setStageView] = useState<StageViewKey>(mode === 'INACTIVE' ? 'STALE_NO_RESPONSE' : 'NEW_INTAKE');
   const [query, setQuery] = useState('');
 
@@ -92,30 +93,68 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     { key: 'REJECTED', label: 'Rechazados' },
     { key: 'STALE_NO_RESPONSE', label: 'Sin respuesta' },
     { key: 'PROSPECTS_NO_MESSAGES', label: 'Prospectos (sin mensajes)' },
+    { key: 'LEGACY_NO_MESSAGES', label: 'Importados históricos' },
   ];
 
+  const candidateBucket = (conversation: any): 'NUEVO' | 'CONTACTADO' | 'CITADO' | 'DESCARTADO' => {
+    const stage = String(normalizeStage(conversation) || '').toUpperCase();
+    const status = String(conversation?.status || '').toUpperCase();
+    if (status === 'CLOSED' || ['REJECTED', 'NO_CONTACTAR', 'DISQUALIFIED', 'CERRADO', 'ARCHIVED'].includes(stage)) {
+      return 'DESCARTADO';
+    }
+    if (['INTERVIEW_PENDING', 'INTERVIEW_SCHEDULED', 'INTERVIEWED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) {
+      return 'CITADO';
+    }
+    if (status === 'OPEN' || ['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'EN_COORDINACION', 'INTERESADO'].includes(stage)) {
+      return 'CONTACTADO';
+    }
+    return 'NUEVO';
+  };
+
   const countByView = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const view of stageViews) counts[view.key] = 0;
+    const counts: Record<string, { total: number; unread: number }> = {};
+    for (const view of stageViews) counts[view.key] = { total: 0, unread: 0 };
     for (const c of conversations) {
       const hasMessages = Array.isArray(c?.messages) && c.messages.length > 0;
       const st = normalizeStage(c);
-      if (!hasMessages) counts.PROSPECTS_NO_MESSAGES += 1;
-      if (counts[st] !== undefined) counts[st] += 1;
+      const unreadCount = Number(c?.unreadCount || 0);
+      if (!hasMessages) {
+        const bucket = candidateBucket(c);
+        if (bucket === 'NUEVO' && st === 'NEW_INTAKE') {
+          counts.PROSPECTS_NO_MESSAGES.total += 1;
+          if (unreadCount > 0) counts.PROSPECTS_NO_MESSAGES.unread += 1;
+        } else {
+          counts.LEGACY_NO_MESSAGES.total += 1;
+          if (unreadCount > 0) counts.LEGACY_NO_MESSAGES.unread += 1;
+        }
+      }
+      if (counts[st] !== undefined) {
+        counts[st].total += 1;
+        if (unreadCount > 0) counts[st].unread += 1;
+      }
     }
     return counts;
   }, [conversations]);
 
   const filteredConversations = useMemo(() => {
-    const byStage = conversations.filter((c: any) => {
-      const hasMessages = Array.isArray(c?.messages) && c.messages.length > 0;
-      if (stageView === 'PROSPECTS_NO_MESSAGES') return !hasMessages;
-      if (!hasMessages) return false; // ocultar sin mensajes por defecto
-      return normalizeStage(c) === stageView;
-    });
     const needle = String(query || '').trim().toLowerCase();
-    if (!needle) return byStage;
-    return byStage.filter((c: any) => {
+    const base = needle
+      ? conversations
+      : conversations.filter((c: any) => {
+          const hasMessages = Array.isArray(c?.messages) && c.messages.length > 0;
+          const st = normalizeStage(c);
+          if (stageView === 'PROSPECTS_NO_MESSAGES') {
+            return !hasMessages && candidateBucket(c) === 'NUEVO' && st === 'NEW_INTAKE';
+          }
+          if (stageView === 'LEGACY_NO_MESSAGES') {
+            return !hasMessages && !(candidateBucket(c) === 'NUEVO' && st === 'NEW_INTAKE');
+          }
+          if (!hasMessages) return false;
+          return st === stageView;
+        });
+
+    if (!needle) return base;
+    return base.filter((c: any) => {
       const hay = [
         c?.id,
         c?.conversationStage,
@@ -178,8 +217,25 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                 textAlign: 'center',
               }}
             >
-              {countByView[item.key] || 0}
+              {countByView[item.key]?.total || 0}
             </span>
+            {(countByView[item.key]?.unread || 0) > 0 ? (
+              <span
+                title="Sin leer"
+                style={{
+                  fontSize: 11,
+                  borderRadius: 999,
+                  padding: '0 6px',
+                  background: '#fff1f0',
+                  color: '#a8071a',
+                  border: '1px solid #ffa39e',
+                  minWidth: 16,
+                  textAlign: 'center',
+                }}
+              >
+                {countByView[item.key]?.unread || 0}
+              </span>
+            ) : null}
           </button>
         ))}
       </div>
@@ -196,6 +252,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           <div style={{ padding: '16px', color: '#777', fontSize: 13 }}>
             {stageView === 'PROSPECTS_NO_MESSAGES'
               ? 'No hay prospectos sin mensajes.'
+              : stageView === 'LEGACY_NO_MESSAGES'
+                ? 'No hay importados históricos sin mensajes.'
               : 'No hay conversaciones en este stage.'}
           </div>
         )}

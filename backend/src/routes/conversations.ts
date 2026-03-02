@@ -21,6 +21,7 @@ import { runAutomations } from '../services/automationRunnerService';
 import { isKnownActiveStage, normalizeStageSlug } from '../services/workspaceStageService';
 import { createInAppNotification } from '../services/notificationService';
 import { listWorkspaceTemplateCatalog } from '../services/whatsappTemplateCatalogService';
+import { repairMojibake } from '../utils/textEncoding';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -61,12 +62,44 @@ export async function registerConversationRoutes(app: FastifyInstance) {
   };
 
   async function sanitizeContact(contact: any) {
+    const patch: any = {};
+    const maybeRepair = (value: unknown): string | null => {
+      const raw = String(value || '').trim();
+      if (!raw) return null;
+      const repaired = repairMojibake(raw);
+      return repaired && repaired !== raw ? repaired : null;
+    };
+    const repairedCandidateName = maybeRepair(contact?.candidateName);
+    if (repairedCandidateName) {
+      patch.candidateName = repairedCandidateName;
+      contact.candidateName = repairedCandidateName;
+    }
+    const repairedCandidateNameManual = maybeRepair(contact?.candidateNameManual);
+    if (repairedCandidateNameManual) {
+      patch.candidateNameManual = repairedCandidateNameManual;
+      contact.candidateNameManual = repairedCandidateNameManual;
+    }
+    const repairedDisplayName = maybeRepair(contact?.displayName);
+    if (repairedDisplayName) {
+      patch.displayName = repairedDisplayName;
+      contact.displayName = repairedDisplayName;
+    }
+    const repairedName = maybeRepair(contact?.name);
+    if (repairedName) {
+      patch.name = repairedName;
+      contact.name = repairedName;
+    }
     if (contact?.candidateName && isSuspiciousCandidateName(contact.candidateName)) {
-      await prisma.contact.update({
-        where: { id: contact.id },
-        data: { candidateName: null }
-      }).catch(() => {});
+      patch.candidateName = null;
       contact.candidateName = null;
+    }
+    if (Object.keys(patch).length > 0) {
+      await prisma.contact
+        .update({
+          where: { id: contact.id },
+          data: patch,
+        })
+        .catch(() => {});
     }
     return contact;
   }
@@ -275,6 +308,17 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
     return sanitizedContacts.map(conversation => ({
       ...conversation,
+      contact: conversation.contact
+        ? {
+            ...conversation.contact,
+            displayNameManual: conversation.contact.candidateNameManual || null,
+            displayNameAuto:
+              conversation.contact.candidateName ||
+              conversation.contact.displayName ||
+              conversation.contact.name ||
+              null,
+          }
+        : conversation.contact,
       unreadCount: unreadMap[conversation.id] || 0
     }));
   });
@@ -388,9 +432,20 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       ? conversation.aiMode
       : 'RECRUIT';
 
+    const sanitizedContact = await sanitizeContact(conversation.contact);
     return {
       ...conversation,
-      contact: await sanitizeContact(conversation.contact),
+      contact: sanitizedContact
+        ? {
+            ...sanitizedContact,
+            displayNameManual: sanitizedContact.candidateNameManual || null,
+            displayNameAuto:
+              sanitizedContact.candidateName ||
+              sanitizedContact.displayName ||
+              sanitizedContact.name ||
+              null,
+          }
+        : sanitizedContact,
       status: normalizedStatus,
       aiMode: normalizedMode,
       aiPaused: Boolean(conversation.aiPaused),
