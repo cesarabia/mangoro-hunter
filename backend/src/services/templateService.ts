@@ -166,6 +166,18 @@ export function resolveTemplateVariables(
     return [normalized[0] || candidateName, companyTarget, followupWhen];
   }
 
+  if (templateKey === 'enviorapido_postulacion_general_v1') {
+    const candidateName = String(conversationOverrides?.candidateName || '').trim() || 'Postulante';
+    const companyName = normalized[1] || 'Envío Rápido';
+    const jobTitle =
+      normalized[2] ||
+      conversationOverrides?.jobTitle ||
+      templates.defaultJobTitle ||
+      DEFAULT_JOB_TITLE ||
+      'Conductor';
+    return [normalized[0] || candidateName, companyName, jobTitle];
+  }
+
   if (templateName === (templates.templateInterviewInvite || DEFAULT_TEMPLATE_INTERVIEW_INVITE)) {
     return [
       normalized[0] ||

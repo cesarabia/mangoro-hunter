@@ -27,7 +27,11 @@ function isLegacyEsClTemplate(templateName: string): boolean {
   if (!key) return false;
   return (
     key === String(DEFAULT_TEMPLATE_GENERAL_FOLLOWUP || '').trim().toLowerCase() ||
-    key === String(DEFAULT_TEMPLATE_INTERVIEW_INVITE || '').trim().toLowerCase()
+    key === String(DEFAULT_TEMPLATE_INTERVIEW_INVITE || '').trim().toLowerCase() ||
+    key === 'enviorapido_recontacto_operativo_v1' ||
+    key === 'enviorapido_apelacion_operativo_v1_' ||
+    key === 'general_bienvenida_v1' ||
+    key === 'enviorapido_postulacion_general_v1'
   );
 }
 

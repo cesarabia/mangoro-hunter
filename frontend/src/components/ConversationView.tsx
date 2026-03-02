@@ -707,6 +707,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     ) {
       return 3;
     }
+    if (selectedLower === 'enviorapido_postulacion_general_v1') {
+      return 3;
+    }
     return 0;
   })();
   const modeOptions: Array<{ key: 'RECRUIT' | 'INTERVIEW' | 'SELLER' | 'OFF'; label: string }> = [
@@ -838,6 +841,14 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         conversation?.interviewDay || templateConfig.defaultInterviewDay || '',
         conversation?.interviewTime || templateConfig.defaultInterviewTime || '',
         conversation?.interviewLocation || templateConfig.defaultInterviewLocation || ''
+      ]);
+      return;
+    }
+    if (templateNameForSend === 'enviorapido_postulacion_general_v1') {
+      setTemplateVariables([
+        fallbackName,
+        'Envío Rápido',
+        templateConfig.defaultJobTitle || ''
       ]);
       return;
     }

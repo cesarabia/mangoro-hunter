@@ -54,6 +54,9 @@ function inferConfiguredTemplateLanguage(templateName: string, globalLanguage: s
   if (key === 'general_bienvenida_v1') {
     return 'es_CL';
   }
+  if (key === 'enviorapido_postulacion_general_v1') {
+    return 'es_CL';
+  }
 
   // Legacy internal defaults were created in es_CL.
   const isLegacyDefault =
@@ -110,6 +113,9 @@ function inferConfiguredTemplateVariableCount(
   ) {
     return 1;
   }
+  if (key === 'enviorapido_postulacion_general_v1') {
+    return 3;
+  }
   if (
     key === String(DEFAULT_TEMPLATE_INTERVIEW_INVITE || '').trim().toLowerCase() ||
     key === interviewDefaultKey ||
@@ -126,6 +132,7 @@ const ENVIO_RAPIDO_KNOWN_TEMPLATES = [
   'enviorapido_confirma_entrevista_v1',
   'enviorapido_recontacto_operativo_v1',
   'enviorapido_apelacion_operativo_v1_',
+  'enviorapido_postulacion_general_v1',
   'general_bienvenida_v1',
 ];
 
