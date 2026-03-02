@@ -3202,8 +3202,21 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           await prisma.workspace
             .upsert({
               where: { id: wsId },
-              create: { id: wsId, name: 'Scenario Staff Confirm Template', isSandbox: true, archivedAt: null } as any,
-              update: { name: 'Scenario Staff Confirm Template', isSandbox: true, archivedAt: null } as any,
+              create: {
+                id: wsId,
+                name: 'Scenario Staff Confirm Template',
+                isSandbox: true,
+                archivedAt: null,
+                templateRecruitmentStartName: 'enviorapido_postulacion_inicio_v1',
+                templateInterviewConfirmationName: 'enviorapido_confirma_entrevista_v1',
+              } as any,
+              update: {
+                name: 'Scenario Staff Confirm Template',
+                isSandbox: true,
+                archivedAt: null,
+                templateRecruitmentStartName: 'enviorapido_postulacion_inicio_v1',
+                templateInterviewConfirmationName: 'enviorapido_confirma_entrevista_v1',
+              } as any,
             })
             .catch(() => {});
           await prisma.membership
