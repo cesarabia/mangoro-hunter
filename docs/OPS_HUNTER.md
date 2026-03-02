@@ -1,5 +1,5 @@
 # OPS Hunter (P0.6)
-- Salud rápida: `bash /opt/hunter/ops/ops_hunter_status.sh`
+- Salud rápida: `bash /opt/hunter/ops/ops_hunter_status.sh` (valida `http=200` + `"ok":true`).
 - Backend debe responder `{"ok":true}` en `https://hunter.mangoro.app/api/health`.
 - Proceso aislado: PM2 solo recarga `hunter-backend` (`--only hunter-backend`).
 - Autostart post-reboot: `pm2-ubuntu.service` habilitado + `pm2 save`.
