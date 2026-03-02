@@ -50,7 +50,15 @@ cd ..
 pm2 startOrReload ecosystem.config.cjs --only hunter-backend || pm2 start ecosystem.config.cjs --only hunter-backend
 pm2 save
 pm2 describe hunter-backend >/tmp/hunter-pm2-describe.txt || true
-if ! pm2 jlist | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const arr=JSON.parse(d||'[]');const p=arr.find(x=>x&&x.name==='hunter-backend');const ok=Boolean(p&&p.pm2_env&&p.pm2_env.status==='online');process.exit(ok?0:1);}catch{process.exit(1);}})"; then
+online=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if pm2 jlist | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const arr=JSON.parse(d||'[]');const p=arr.find(x=>x&&x.name==='hunter-backend');const ok=Boolean(p&&p.pm2_env&&p.pm2_env.status==='online');process.exit(ok?0:1);}catch{process.exit(1);}})"; then
+    online=1
+    break
+  fi
+  sleep 1
+done
+if [ "$online" -ne 1 ]; then
   echo "ERROR: hunter-backend no quedó online tras reload."
   pm2 logs hunter-backend --lines 100 --nostream || true
   exit 1
