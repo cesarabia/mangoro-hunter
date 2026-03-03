@@ -213,6 +213,8 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       // P0.8: Puestos + import + envío masivo por batch
       'import_peoneta_batch_no_send',
       'bulk_template_batch_send_null',
+      // P0.9: Inbox consistencia (Todos + jobRole + stages no mapeados)
+      'inbox_todos_stage_jobrole_consistency',
     ];
 
     const scenarioRuns = await prisma.scenarioRunLog

@@ -5875,6 +5875,258 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         }
       }
 
+      const inboxTodosStageJobroleConsistency = (step.expect as any)?.inboxTodosStageJobroleConsistency;
+      if (inboxTodosStageJobroleConsistency && typeof inboxTodosStageJobroleConsistency === 'object') {
+        const wsId =
+          String((inboxTodosStageJobroleConsistency as any)?.workspaceId || 'scenario-inbox-todos-jobrole').trim() ||
+          'scenario-inbox-todos-jobrole';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'inboxTodosStageJobroleConsistency: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'inboxTodosStageJobroleConsistency: auth header missing' });
+        } else {
+          const lineId = `scenario-inbox-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Inbox Todos/JobRole', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Inbox Todos/JobRole', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const programConductor = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-conductores-scenario' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Reclutamiento — Conductores (Scenario)',
+                slug: 'reclutamiento-conductores-scenario',
+                description: 'Scenario program conductor',
+                agentSystemPrompt: 'Programa de escenario para conductores.',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: { isActive: true, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const programPeoneta = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-peonetas-scenario' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Reclutamiento — Peonetas (Scenario)',
+                slug: 'reclutamiento-peonetas-scenario',
+                description: 'Scenario program peoneta',
+                agentSystemPrompt: 'Programa de escenario para peonetas.',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: { isActive: true, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Inbox (temp)',
+                waPhoneNumberId,
+                isActive: true,
+                defaultProgramId: programConductor?.id || null,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+            })
+            .catch(() => {});
+
+          const contactConductor = await prisma.contact.create({
+            data: {
+              workspaceId: wsId,
+              waId: `scenario-conductor-${Date.now()}`,
+              phone: '+56970000001',
+              candidateName: 'Carlos Conductor',
+              jobRole: 'CONDUCTOR' as any,
+              archivedAt: null,
+            } as any,
+          });
+          const contactPeoneta = await prisma.contact.create({
+            data: {
+              workspaceId: wsId,
+              waId: `scenario-peoneta-${Date.now()}`,
+              phone: '+56970000002',
+              candidateName: 'Pedro Peoneta',
+              jobRole: 'PEONETA' as any,
+              archivedAt: null,
+            } as any,
+          });
+          const contactOther = await prisma.contact.create({
+            data: {
+              workspaceId: wsId,
+              waId: `scenario-other-${Date.now()}`,
+              phone: '+56970000003',
+              candidateName: 'Andrea Operaciones',
+              jobRole: 'CONDUCTOR' as any,
+              archivedAt: null,
+            } as any,
+          });
+
+          const convA = await prisma.conversation.create({
+            data: {
+              workspaceId: wsId,
+              phoneLineId: lineId,
+              contactId: contactConductor.id,
+              status: 'NEW',
+              channel: 'whatsapp',
+              isAdmin: false,
+              conversationStage: 'DOCS_PENDING',
+              programId: programConductor?.id || null,
+              archivedAt: null,
+            } as any,
+          });
+          const convB = await prisma.conversation.create({
+            data: {
+              workspaceId: wsId,
+              phoneLineId: lineId,
+              contactId: contactPeoneta.id,
+              status: 'OPEN',
+              channel: 'whatsapp',
+              isAdmin: false,
+              conversationStage: 'BACKGROUND_CHECK',
+              programId: programPeoneta?.id || null,
+              archivedAt: null,
+            } as any,
+          });
+          const convC = await prisma.conversation.create({
+            data: {
+              workspaceId: wsId,
+              phoneLineId: lineId,
+              contactId: contactOther.id,
+              status: 'OPEN',
+              channel: 'whatsapp',
+              isAdmin: false,
+              conversationStage: 'SCREENING',
+              programId: programConductor?.id || null,
+              archivedAt: null,
+            } as any,
+          });
+
+          await prisma.message.createMany({
+            data: [
+              { conversationId: convA.id, direction: 'INBOUND', text: 'Tengo documentos listos', read: false, timestamp: new Date() } as any,
+              { conversationId: convB.id, direction: 'INBOUND', text: 'Estoy en revisión', read: false, timestamp: new Date() } as any,
+              { conversationId: convC.id, direction: 'INBOUND', text: 'Sigo en screening', read: false, timestamp: new Date() } as any,
+            ],
+          });
+
+          const listAll = await app.inject({
+            method: 'GET',
+            url: '/api/conversations?viewKey=ALL',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+          });
+          let listAllJson: any = null;
+          try {
+            listAllJson = JSON.parse(String(listAll.body || '[]'));
+          } catch {
+            listAllJson = [];
+          }
+          const rowsAll = Array.isArray(listAllJson) ? listAllJson : [];
+          const allIds = new Set(rowsAll.map((r: any) => String(r?.id || '')));
+          const allHasWeirdStages = allIds.has(convA.id) && allIds.has(convB.id);
+          assertions.push({
+            ok: listAll.statusCode === 200 && allHasWeirdStages,
+            message:
+              listAll.statusCode === 200 && allHasWeirdStages
+                ? 'inboxTodosStageJobroleConsistency: view=ALL incluye stages no mapeados'
+                : `inboxTodosStageJobroleConsistency: view=ALL no incluye casos esperados (status=${listAll.statusCode})`,
+          });
+
+          const listPeoneta = await app.inject({
+            method: 'GET',
+            url: '/api/conversations?viewKey=ALL&jobRole=PEONETA',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+          });
+          let listPeonetaJson: any = null;
+          try {
+            listPeonetaJson = JSON.parse(String(listPeoneta.body || '[]'));
+          } catch {
+            listPeonetaJson = [];
+          }
+          const peonetaRows = Array.isArray(listPeonetaJson) ? listPeonetaJson : [];
+          const onlyPeoneta = peonetaRows.length > 0 && peonetaRows.every((r: any) => String(r?.contact?.jobRole || '').toUpperCase() === 'PEONETA');
+          assertions.push({
+            ok: listPeoneta.statusCode === 200 && onlyPeoneta,
+            message:
+              listPeoneta.statusCode === 200 && onlyPeoneta
+                ? 'inboxTodosStageJobroleConsistency: filtro jobRole=PEONETA OK'
+                : `inboxTodosStageJobroleConsistency: filtro jobRole falló (status=${listPeoneta.statusCode}, rows=${peonetaRows.length})`,
+          });
+
+          const listByStage = await app.inject({
+            method: 'GET',
+            url: '/api/conversations?viewKey=ALL&stage=DOCS_PENDING',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+          });
+          let listByStageJson: any = null;
+          try {
+            listByStageJson = JSON.parse(String(listByStage.body || '[]'));
+          } catch {
+            listByStageJson = [];
+          }
+          const stageRows = Array.isArray(listByStageJson) ? listByStageJson : [];
+          const stageContainsA = stageRows.some((r: any) => String(r?.id || '') === convA.id);
+          assertions.push({
+            ok: listByStage.statusCode === 200 && stageContainsA,
+            message:
+              listByStage.statusCode === 200 && stageContainsA
+                ? 'inboxTodosStageJobroleConsistency: filtro stage en view=ALL OK'
+                : `inboxTodosStageJobroleConsistency: filtro stage falló (status=${listByStage.statusCode})`,
+          });
+
+          const listSearch = await app.inject({
+            method: 'GET',
+            url: `/api/conversations?q=${encodeURIComponent(contactPeoneta.phone || '')}`,
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+          });
+          let listSearchJson: any = null;
+          try {
+            listSearchJson = JSON.parse(String(listSearch.body || '[]'));
+          } catch {
+            listSearchJson = [];
+          }
+          const searchRows = Array.isArray(listSearchJson) ? listSearchJson : [];
+          const searchFound = searchRows.some((r: any) => String(r?.id || '') === convB.id);
+          assertions.push({
+            ok: listSearch.statusCode === 200 && searchFound,
+            message:
+              listSearch.statusCode === 200 && searchFound
+                ? 'inboxTodosStageJobroleConsistency: búsqueda global por teléfono OK'
+                : `inboxTodosStageJobroleConsistency: búsqueda global falló (status=${listSearch.statusCode})`,
+          });
+
+          await prisma.conversation.updateMany({ where: { id: { in: [convA.id, convB.id, convC.id] } }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { id: { in: [contactConductor.id, contactPeoneta.id, contactOther.id] } }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { isActive: false, archivedAt: now } as any }).catch(() => {});
+          await prisma.program.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
       const clientLocationFreeText =
         (step.expect as any)?.clientLocationFreeText || (step.expect as any)?.clientFreeTextFields;
       if (clientLocationFreeText && typeof clientLocationFreeText === 'object') {

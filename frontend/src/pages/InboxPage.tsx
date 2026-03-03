@@ -50,6 +50,9 @@ export const InboxPage: React.FC<Props> = ({
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [programs, setPrograms] = useState<any[]>([]);
+  const [workspaceStages, setWorkspaceStages] = useState<
+    Array<{ slug: string; labelEs?: string | null; isActive?: boolean }>
+  >([]);
   const selectedIdRef = useRef<string | null>(null);
   const initialSelectionDone = useRef(false);
   const lastBackendErrorRef = useRef<string | null>(null);
@@ -240,6 +243,22 @@ export const InboxPage: React.FC<Props> = ({
       .then((data: any) => setPrograms(Array.isArray(data) ? data : []))
       .catch(() => setPrograms([]));
   }, []);
+
+  useEffect(() => {
+    apiClient
+      .get('/api/workspaces/current/stages')
+      .then((data: any) => {
+        const rows = Array.isArray(data) ? data : [];
+        setWorkspaceStages(
+          rows.map((row: any) => ({
+            slug: String(row?.slug || '').trim(),
+            labelEs: typeof row?.labelEs === 'string' ? row.labelEs : null,
+            isActive: Boolean(row?.isActive),
+          }))
+        );
+      })
+      .catch(() => setWorkspaceStages([]));
+  }, [workspaceId]);
 
   useEffect(() => {
     const current = selectedId;
@@ -488,6 +507,8 @@ export const InboxPage: React.FC<Props> = ({
               onSelect={handleSelect}
               fullWidth
               mode={mode}
+              workspaceId={workspaceId}
+              workspaceStages={workspaceStages}
             />
           )
         ) : (
@@ -497,6 +518,8 @@ export const InboxPage: React.FC<Props> = ({
               selectedId={selectedId}
               onSelect={handleSelect}
               mode={mode}
+              workspaceId={workspaceId}
+              workspaceStages={workspaceStages}
             />
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               {selectedConversation && !selectedConversation.isAdmin && (

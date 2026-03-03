@@ -253,6 +253,108 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const access = await resolveWorkspaceAccess(request);
     const userId = (request as any)?.user?.userId ? String((request as any).user.userId) : null;
     const assignedOnly = canSeeOnlyAssigned(access, userId);
+    const query = (request.query || {}) as any;
+    const viewKeyRaw = String(query?.viewKey || '').trim().toUpperCase();
+    const searchQuery = String(query?.q || '').trim().toLowerCase();
+    const stageFilter = String(query?.stage || '').trim().toUpperCase();
+    const jobRoleFilter = String(query?.jobRole || '').trim().toUpperCase();
+    const viewKey =
+      viewKeyRaw === 'NEW_INTAKE' ||
+      viewKeyRaw === 'SCREENING' ||
+      viewKeyRaw === 'INTERVIEW_PENDING' ||
+      viewKeyRaw === 'INTERVIEW_SCHEDULED' ||
+      viewKeyRaw === 'HIRED_DRIVER' ||
+      viewKeyRaw === 'REJECTED' ||
+      viewKeyRaw === 'STALE_NO_RESPONSE' ||
+      viewKeyRaw === 'PROSPECTS_NO_MESSAGES' ||
+      viewKeyRaw === 'LEGACY_NO_MESSAGES' ||
+      viewKeyRaw === 'ALL'
+        ? viewKeyRaw
+        : '';
+
+    const normalizeConversationStage = (conversation: any): string => {
+      const raw = String(conversation?.conversationStage || conversation?.stage || '').trim().toUpperCase();
+      if (!raw || raw === 'NUEVO') return 'NEW_INTAKE';
+      if (raw === 'WAITING_CANDIDATE' || raw === 'INFO') return 'SCREENING';
+      if (raw === 'AGENDADO' || raw === 'CONFIRMED') return 'INTERVIEW_SCHEDULED';
+      if (raw === 'DESCARTADO') return 'REJECTED';
+      return raw;
+    };
+
+    const mapStageToView = (stageRaw: string): string | null => {
+      const stage = String(stageRaw || '').trim().toUpperCase();
+      if (!stage || stage === 'NEW_INTAKE' || stage === 'NUEVO') return 'NEW_INTAKE';
+      if (['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'INTERESADO'].includes(stage)) return 'SCREENING';
+      if (['INTERVIEW_PENDING', 'EN_COORDINACION'].includes(stage)) return 'INTERVIEW_PENDING';
+      if (['INTERVIEW_SCHEDULED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) return 'INTERVIEW_SCHEDULED';
+      if (['HIRED_DRIVER', 'HIRED', 'COMPLETADO'].includes(stage)) return 'HIRED_DRIVER';
+      if (['REJECTED', 'DISQUALIFIED'].includes(stage)) return 'REJECTED';
+      if (stage === 'STALE_NO_RESPONSE') return 'STALE_NO_RESPONSE';
+      return null;
+    };
+
+    const inferJobRoleFromConversation = (conversation: any): 'CONDUCTOR' | 'PEONETA' => {
+      const explicit = String(conversation?.contact?.jobRole || '').trim().toUpperCase();
+      if (explicit === 'PEONETA' || explicit === 'CONDUCTOR') return explicit;
+      const source = `${String(conversation?.program?.slug || '')} ${String(conversation?.program?.name || '')}`.toLowerCase();
+      if (source.includes('peoneta') || source.includes('ayudante') || source.includes('cargador')) return 'PEONETA';
+      return 'CONDUCTOR';
+    };
+
+    const candidateBucket = (conversation: any): 'NUEVO' | 'CONTACTADO' | 'CITADO' | 'DESCARTADO' => {
+      const stage = normalizeConversationStage(conversation);
+      const status = String(conversation?.status || '').toUpperCase();
+      if (status === 'CLOSED' || ['REJECTED', 'NO_CONTACTAR', 'DISQUALIFIED', 'CERRADO', 'ARCHIVED'].includes(stage)) {
+        return 'DESCARTADO';
+      }
+      if (['INTERVIEW_PENDING', 'INTERVIEW_SCHEDULED', 'INTERVIEWED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) {
+        return 'CITADO';
+      }
+      if (status === 'OPEN' || ['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'EN_COORDINACION', 'INTERESADO'].includes(stage)) {
+        return 'CONTACTADO';
+      }
+      return 'NUEVO';
+    };
+
+    const matchesView = (conversation: any): boolean => {
+      const hasMessages = Array.isArray(conversation?.messages) && conversation.messages.length > 0;
+      const stage = normalizeConversationStage(conversation);
+      if (stageFilter && stage !== stageFilter) return false;
+      if (!viewKey) return true;
+      if (viewKey === 'PROSPECTS_NO_MESSAGES') {
+        return !hasMessages && candidateBucket(conversation) === 'NUEVO' && stage === 'NEW_INTAKE';
+      }
+      if (viewKey === 'LEGACY_NO_MESSAGES') {
+        return !hasMessages && !(candidateBucket(conversation) === 'NUEVO' && stage === 'NEW_INTAKE');
+      }
+      if (viewKey === 'ALL') {
+        return hasMessages;
+      }
+      if (!hasMessages) return false;
+      return mapStageToView(stage) === viewKey;
+    };
+
+    const matchesSearch = (conversation: any): boolean => {
+      if (!searchQuery) return true;
+      const haystack = [
+        conversation?.id,
+        conversation?.conversationStage,
+        conversation?.stage,
+        conversation?.contact?.waId,
+        conversation?.contact?.phone,
+        conversation?.contact?.candidateName,
+        conversation?.contact?.candidateNameManual,
+        conversation?.contact?.displayName,
+        conversation?.contact?.name,
+        conversation?.contact?.importBatchId,
+        conversation?.program?.name,
+        conversation?.program?.slug,
+      ]
+        .map((v) => String(v || '').toLowerCase())
+        .join(' ');
+      return haystack.includes(searchQuery);
+    };
+
     const conversations = await prisma.conversation.findMany({
       where: {
         workspaceId: access.workspaceId,
@@ -271,7 +373,16 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       orderBy: { updatedAt: 'desc' }
     });
 
-    const conversationIds = conversations.map(conversation => conversation.id);
+    const filteredConversations = conversations.filter((conversation: any) => {
+      if (jobRoleFilter && jobRoleFilter !== 'ALL' && inferJobRoleFromConversation(conversation) !== jobRoleFilter) {
+        return false;
+      }
+      if (!matchesView(conversation)) return false;
+      if (!matchesSearch(conversation)) return false;
+      return true;
+    });
+
+    const conversationIds = filteredConversations.map(conversation => conversation.id);
     let unreadMap: Record<string, number> = {};
 
     if (conversationIds.length > 0) {
@@ -294,7 +405,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
 
     const sanitizedContacts = await Promise.all(
-      conversations.map(async conversation => {
+      filteredConversations.map(async conversation => {
         if (conversation.contact && isSuspiciousCandidateName(conversation.contact.candidateName)) {
           await prisma.contact.update({
             where: { id: conversation.contact.id },

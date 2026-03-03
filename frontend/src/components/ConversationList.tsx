@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 interface ConversationListProps {
   conversations: any[];
@@ -6,6 +6,8 @@ interface ConversationListProps {
   onSelect: (id: string) => void;
   fullWidth?: boolean;
   mode?: 'INBOX' | 'INACTIVE';
+  workspaceId?: string;
+  workspaceStages?: Array<{ slug: string; labelEs?: string | null; isActive?: boolean }>;
 }
 
 const statusLabels: Record<string, string> = {
@@ -47,9 +49,15 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   onSelect,
   fullWidth = false,
   mode = 'INBOX',
+  workspaceId = 'default',
+  workspaceStages = [],
 }) => {
   const INBOX_IMPORT_BATCH_FILTER_KEY = 'inboxFilterImportBatchId';
+  const STAGE_VIEW_STORAGE_KEY = `inboxStageView:${workspaceId}:${mode}`;
+  const JOB_ROLE_FILTER_STORAGE_KEY = `inboxJobRoleFilter:${workspaceId}:${mode}`;
+  const ALL_STAGE_FILTER_STORAGE_KEY = `inboxAllStageFilter:${workspaceId}:${mode}`;
   type StageViewKey =
+    | 'ALL'
     | 'NEW_INTAKE'
     | 'SCREENING'
     | 'INTERVIEW_PENDING'
@@ -60,8 +68,44 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     | 'PROSPECTS_NO_MESSAGES'
     | 'LEGACY_NO_MESSAGES';
   type JobRoleFilter = 'ALL' | 'CONDUCTOR' | 'PEONETA';
-  const [stageView, setStageView] = useState<StageViewKey>(mode === 'INACTIVE' ? 'STALE_NO_RESPONSE' : 'NEW_INTAKE');
-  const [jobRoleFilter, setJobRoleFilter] = useState<JobRoleFilter>('ALL');
+  const [stageView, setStageView] = useState<StageViewKey>(() => {
+    try {
+      const saved = String(localStorage.getItem(STAGE_VIEW_STORAGE_KEY) || '').trim().toUpperCase();
+      if (
+        saved === 'ALL' ||
+        saved === 'NEW_INTAKE' ||
+        saved === 'SCREENING' ||
+        saved === 'INTERVIEW_PENDING' ||
+        saved === 'INTERVIEW_SCHEDULED' ||
+        saved === 'HIRED_DRIVER' ||
+        saved === 'REJECTED' ||
+        saved === 'STALE_NO_RESPONSE' ||
+        saved === 'PROSPECTS_NO_MESSAGES' ||
+        saved === 'LEGACY_NO_MESSAGES'
+      ) {
+        return saved as StageViewKey;
+      }
+    } catch {
+      // ignore
+    }
+    return mode === 'INACTIVE' ? 'STALE_NO_RESPONSE' : 'ALL';
+  });
+  const [jobRoleFilter, setJobRoleFilter] = useState<JobRoleFilter>(() => {
+    try {
+      const saved = String(localStorage.getItem(JOB_ROLE_FILTER_STORAGE_KEY) || '').trim().toUpperCase();
+      if (saved === 'CONDUCTOR' || saved === 'PEONETA' || saved === 'ALL') return saved as JobRoleFilter;
+    } catch {
+      // ignore
+    }
+    return 'ALL';
+  });
+  const [allStageFilter, setAllStageFilter] = useState<string>(() => {
+    try {
+      return String(localStorage.getItem(ALL_STAGE_FILTER_STORAGE_KEY) || '').trim().toUpperCase();
+    } catch {
+      return '';
+    }
+  });
   const [importBatchFilter, setImportBatchFilter] = useState<string>(() => {
     try {
       return String(localStorage.getItem(INBOX_IMPORT_BATCH_FILTER_KEY) || '').trim();
@@ -71,13 +115,25 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   });
   const [query, setQuery] = useState('');
 
-  const normalizeStage = (conversation: any): StageViewKey | string => {
+  const normalizeStage = (conversation: any): string => {
     const raw = String(conversation?.conversationStage || conversation?.stage || '').trim().toUpperCase();
     if (!raw || raw === 'NUEVO') return 'NEW_INTAKE';
     if (raw === 'WAITING_CANDIDATE' || raw === 'INFO') return 'SCREENING';
     if (raw === 'AGENDADO' || raw === 'CONFIRMED') return 'INTERVIEW_SCHEDULED';
     if (raw === 'DESCARTADO') return 'REJECTED';
     return raw;
+  };
+
+  const mapStageToView = (stageRaw: string): StageViewKey | null => {
+    const stage = String(stageRaw || '').trim().toUpperCase();
+    if (!stage || stage === 'NEW_INTAKE' || stage === 'NUEVO') return 'NEW_INTAKE';
+    if (['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'INTERESADO'].includes(stage)) return 'SCREENING';
+    if (['INTERVIEW_PENDING', 'EN_COORDINACION'].includes(stage)) return 'INTERVIEW_PENDING';
+    if (['INTERVIEW_SCHEDULED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) return 'INTERVIEW_SCHEDULED';
+    if (['HIRED_DRIVER', 'HIRED', 'COMPLETADO'].includes(stage)) return 'HIRED_DRIVER';
+    if (['REJECTED', 'DISQUALIFIED'].includes(stage)) return 'REJECTED';
+    if (stage === 'STALE_NO_RESPONSE') return 'STALE_NO_RESPONSE';
+    return null;
   };
 
   const stageLabel = (stage: string): string => {
@@ -95,6 +151,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   };
 
   const stageViews: Array<{ key: StageViewKey; label: string }> = [
+    { key: 'ALL', label: 'Todos' },
     { key: 'NEW_INTAKE', label: 'Nuevos' },
     { key: 'SCREENING', label: 'Screening' },
     { key: 'INTERVIEW_PENDING', label: 'Entrevista pendiente' },
@@ -105,6 +162,31 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     { key: 'PROSPECTS_NO_MESSAGES', label: 'Prospectos (sin mensajes)' },
     { key: 'LEGACY_NO_MESSAGES', label: 'Importados históricos' },
   ];
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STAGE_VIEW_STORAGE_KEY, stageView);
+    } catch {
+      // ignore
+    }
+  }, [stageView, STAGE_VIEW_STORAGE_KEY]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(JOB_ROLE_FILTER_STORAGE_KEY, jobRoleFilter);
+    } catch {
+      // ignore
+    }
+  }, [jobRoleFilter, JOB_ROLE_FILTER_STORAGE_KEY]);
+
+  useEffect(() => {
+    try {
+      if (allStageFilter) localStorage.setItem(ALL_STAGE_FILTER_STORAGE_KEY, allStageFilter);
+      else localStorage.removeItem(ALL_STAGE_FILTER_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }, [allStageFilter, ALL_STAGE_FILTER_STORAGE_KEY]);
 
   const candidateBucket = (conversation: any): 'NUEVO' | 'CONTACTADO' | 'CITADO' | 'DESCARTADO' => {
     const stage = String(normalizeStage(conversation) || '').toUpperCase();
@@ -154,41 +236,74 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       const hasMessages = Array.isArray(c?.messages) && c.messages.length > 0;
       const st = normalizeStage(c);
       const unreadCount = Number(c?.unreadCount || 0);
-      if (!hasMessages) {
-        const bucket = candidateBucket(c);
-        if (bucket === 'NUEVO' && st === 'NEW_INTAKE') {
-          counts.PROSPECTS_NO_MESSAGES.total += 1;
-          if (unreadCount > 0) counts.PROSPECTS_NO_MESSAGES.unread += 1;
-        } else {
-          counts.LEGACY_NO_MESSAGES.total += 1;
-          if (unreadCount > 0) counts.LEGACY_NO_MESSAGES.unread += 1;
-        }
+      const mappedView = mapStageToView(st);
+      const isProspectNoMessages = !hasMessages && candidateBucket(c) === 'NUEVO' && st === 'NEW_INTAKE';
+      const isLegacyNoMessages = !hasMessages && !isProspectNoMessages;
+
+      if (hasMessages) {
+        counts.ALL.total += 1;
+        if (unreadCount > 0) counts.ALL.unread += 1;
       }
-      if (counts[st] !== undefined) {
-        counts[st].total += 1;
-        if (unreadCount > 0) counts[st].unread += 1;
+
+      if (isProspectNoMessages) {
+        counts.PROSPECTS_NO_MESSAGES.total += 1;
+        if (unreadCount > 0) counts.PROSPECTS_NO_MESSAGES.unread += 1;
+      } else if (isLegacyNoMessages) {
+        counts.LEGACY_NO_MESSAGES.total += 1;
+        if (unreadCount > 0) counts.LEGACY_NO_MESSAGES.unread += 1;
+      }
+
+      if (hasMessages && mappedView && counts[mappedView] !== undefined) {
+        counts[mappedView].total += 1;
+        if (unreadCount > 0) counts[mappedView].unread += 1;
       }
     }
     return counts;
   }, [conversations, jobRoleFilter, importBatchFilter]);
 
+  const allStageOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const stage of workspaceStages || []) {
+      const slug = String(stage?.slug || '').trim().toUpperCase();
+      if (!slug) continue;
+      const label = String(stage?.labelEs || '').trim() || stageLabel(slug);
+      map.set(slug, label);
+    }
+    for (const c of conversations) {
+      const slug = normalizeStage(c);
+      if (!slug) continue;
+      if (!map.has(slug)) map.set(slug, stageLabel(slug));
+    }
+    return Array.from(map.entries())
+      .map(([slug, label]) => ({ slug, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'es', { sensitivity: 'base' }));
+  }, [workspaceStages, conversations]);
+
   const filteredConversations = useMemo(() => {
     const needle = String(query || '').trim().toLowerCase();
     const filteredByRoleAndBatch = conversations.filter((c: any) => passesJobRoleFilter(c) && passesImportBatchFilter(c));
-    const base = needle
-      ? filteredByRoleAndBatch
-      : filteredByRoleAndBatch.filter((c: any) => {
+    const base = (needle ? filteredByRoleAndBatch : filteredByRoleAndBatch.filter((c: any) => {
           const hasMessages = Array.isArray(c?.messages) && c.messages.length > 0;
           const st = normalizeStage(c);
+          const mappedView = mapStageToView(st);
           if (stageView === 'PROSPECTS_NO_MESSAGES') {
             return !hasMessages && candidateBucket(c) === 'NUEVO' && st === 'NEW_INTAKE';
           }
           if (stageView === 'LEGACY_NO_MESSAGES') {
             return !hasMessages && !(candidateBucket(c) === 'NUEVO' && st === 'NEW_INTAKE');
           }
+          if (stageView === 'ALL') {
+            if (!hasMessages) return false;
+            if (allStageFilter) return st === allStageFilter;
+            return true;
+          }
           if (!hasMessages) return false;
-          return st === stageView;
-        });
+          return mappedView === stageView;
+        }))
+      .filter((c: any) => {
+        if (stageView !== 'ALL' || !allStageFilter) return true;
+        return normalizeStage(c) === allStageFilter;
+      });
 
     if (!needle) return base;
     return base.filter((c: any) => {
@@ -203,12 +318,14 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         c?.contact?.displayName,
         c?.contact?.name,
         c?.contact?.importBatchId,
+        c?.program?.name,
+        c?.program?.slug,
       ]
         .map((v) => String(v || '').toLowerCase())
         .join(' ');
       return hay.includes(needle);
     });
-  }, [conversations, stageView, query, jobRoleFilter, importBatchFilter]);
+  }, [conversations, stageView, query, jobRoleFilter, importBatchFilter, allStageFilter]);
 
   return (
     <div
@@ -338,14 +455,37 @@ export const ConversationList: React.FC<ConversationListProps> = ({
           style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #ddd', fontSize: 13 }}
         />
       </div>
+      {stageView === 'ALL' ? (
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #f2f2f2' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#666' }}>
+            Filtrar por stage
+            <select
+              value={allStageFilter}
+              onChange={(e) => setAllStageFilter(String(e.target.value || '').trim().toUpperCase())}
+              style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #ddd', fontSize: 13 }}
+            >
+              <option value="">Todos los stages</option>
+              {allStageOptions.map((opt) => (
+                <option key={opt.slug} value={opt.slug}>
+                  {opt.label} ({opt.slug})
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {filteredConversations.length === 0 && (
           <div style={{ padding: '16px', color: '#777', fontSize: 13 }}>
-            {stageView === 'PROSPECTS_NO_MESSAGES'
+            {query
+              ? 'No hay resultados para esa búsqueda.'
+              : stageView === 'PROSPECTS_NO_MESSAGES'
               ? 'No hay prospectos sin mensajes.'
               : stageView === 'LEGACY_NO_MESSAGES'
                 ? 'No hay importados históricos sin mensajes.'
-              : 'No hay conversaciones en este stage.'}
+                : stageView === 'ALL' && allStageFilter
+                  ? 'No hay conversaciones para ese stage.'
+                  : 'No hay conversaciones en este stage.'}
           </div>
         )}
         {filteredConversations.map(c => {

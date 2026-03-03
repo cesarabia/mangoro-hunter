@@ -146,6 +146,9 @@ export type ScenarioStep = {
     bulkTemplateBatchSend?: {
       workspaceId?: string;
     };
+    inboxTodosStageJobroleConsistency?: {
+      workspaceId?: string;
+    };
     inviteExistingUserAccept?: boolean;
     copilotArchiveRestore?: boolean;
     copilotContextFollowup?: boolean;
@@ -511,6 +514,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check bulk template batch send',
         expect: { bulkTemplateBatchSend: { workspaceId: 'scenario-bulk-template-batch' } },
+      },
+    ],
+  },
+  {
+    id: 'inbox_todos_stage_jobrole_consistency',
+    name: 'P0.9: Inbox Todos + stages no mapeados + filtro jobRole',
+    description:
+      'Valida que stages no mapeados sigan encontrables por vista Todos y que el filtro jobRole reduzca resultados correctamente.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check inbox todos stage jobrole',
+        expect: { inboxTodosStageJobroleConsistency: { workspaceId: 'scenario-inbox-todos-jobrole' } },
       },
     ],
   },
