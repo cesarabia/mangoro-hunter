@@ -5606,6 +5606,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
               convs.length > 0 &&
               Boolean(programPeoneta?.id) &&
               convs.every((c) => String(c.programId || '') === String(programPeoneta?.id || ''));
+            const distinctProgramIds = Array.from(new Set(convs.map((c) => String(c.programId || '')))).filter(Boolean);
             assertions.push({
               ok: importedContacts.length === 2,
               message:
@@ -5619,7 +5620,9 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             });
             assertions.push({
               ok: allProgramPeoneta,
-              message: allProgramPeoneta ? 'importPeonetaBatchNoSend: Program Peonetas asignado OK' : 'importPeonetaBatchNoSend: program mapping incorrecto',
+              message: allProgramPeoneta
+                ? 'importPeonetaBatchNoSend: Program Peonetas asignado OK'
+                : `importPeonetaBatchNoSend: program mapping incorrecto (expected=${String(programPeoneta?.id || '—')}, got=${distinctProgramIds.join('|') || '—'})`,
             });
             assertions.push({
               ok: outboundCount === 0,
