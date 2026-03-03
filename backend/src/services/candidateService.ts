@@ -314,7 +314,9 @@ export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promi
       data.stageChangedAt = new Date();
       data.stageReason = 'import_initial_status';
     }
-    if (mappedProgramId && (!conversation.programId || !preserve)) {
+    // Program mapping by puesto (jobRole) must stay consistent even when preserving stage/status.
+    // Preserve only applies to funnel progression fields, not to role→program routing.
+    if (mappedProgramId && String(conversation.programId || '') !== String(mappedProgramId)) {
       data.programId = mappedProgramId;
     }
     conversation = await prisma.conversation.update({
