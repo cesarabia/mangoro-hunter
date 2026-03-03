@@ -5,18 +5,25 @@ import { coerceStageSlug, getWorkspaceDefaultStageSlug } from './workspaceStageS
 import { repairMojibake } from '../utils/textEncoding';
 
 export type CandidateImportStatus = 'NUEVO' | 'CONTACTADO' | 'CITADO' | 'DESCARTADO';
+export type CandidateJobRole = 'CONDUCTOR' | 'PEONETA';
 
 type UpsertCandidateInput = {
   workspaceId: string;
   phoneRaw: string;
   name?: string | null;
   role?: string | null;
+  jobRole?: CandidateJobRole | string | null;
   channel?: string | null;
   comuna?: string | null;
   ciudad?: string | null;
   email?: string | null;
   initialStatus?: CandidateImportStatus | string | null;
   preserveExistingConversationStage?: boolean;
+  importBatchId?: string | null;
+  importedByUserId?: string | null;
+  sourceFileName?: string | null;
+  sourceChannel?: string | null;
+  roleProgramMap?: Partial<Record<CandidateJobRole, string | null>>;
 };
 
 type UpsertCandidateResult = {
@@ -27,6 +34,8 @@ type UpsertCandidateResult = {
   phoneE164: string;
   stageSlug: string;
   status: 'NEW' | 'OPEN' | 'CLOSED';
+  jobRole: CandidateJobRole;
+  programId: string | null;
 };
 
 type DerivedCandidateStatus = {
@@ -37,6 +46,30 @@ type DerivedCandidateStatus = {
 
 function normalizeText(value: unknown): string {
   return repairMojibake(value).trim();
+}
+
+function normalizeLoose(value: unknown): string {
+  return normalizeText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function hasAnyKeyword(value: string, keywords: string[]): boolean {
+  return keywords.some((k) => value.includes(k));
+}
+
+export function normalizeCandidateJobRole(value: unknown, fallback: CandidateJobRole = 'CONDUCTOR'): CandidateJobRole {
+  const raw = normalizeLoose(value);
+  if (!raw) return fallback;
+  if (hasAnyKeyword(raw, ['peoneta', 'peonetas', 'ayudante', 'cargador', 'carga y descarga'])) return 'PEONETA';
+  if (hasAnyKeyword(raw, ['conductor', 'conductores', 'chofer', 'driver', 'repartidor', 'reparto'])) return 'CONDUCTOR';
+  return fallback;
+}
+
+export function inferCandidateJobRoleFromProgram(program: { slug?: string | null; name?: string | null } | null | undefined): CandidateJobRole {
+  const source = normalizeLoose(`${program?.slug || ''} ${program?.name || ''}`);
+  return normalizeCandidateJobRole(source, 'CONDUCTOR');
 }
 
 function normalizeCandidateStatus(value: unknown): CandidateImportStatus {
@@ -63,10 +96,11 @@ function compactNoteLine(label: string, value: string): string | null {
   return `${label}: ${v}`;
 }
 
-function buildImportMetadataNote(input: { role?: string | null; channel?: string | null }): string | null {
+function buildImportMetadataNote(input: { role?: string | null; channel?: string | null; jobRole?: CandidateJobRole | null }): string | null {
   const lines = [
     compactNoteLine('Rol postulación', String(input.role || '')),
     compactNoteLine('Canal origen', String(input.channel || '')),
+    compactNoteLine('Puesto', String(input.jobRole || '')),
   ].filter(Boolean) as string[];
   if (lines.length === 0) return null;
   return lines.join(' | ');
@@ -85,6 +119,45 @@ async function resolveWorkspaceDefaultProgramId(params: {
     .catch(() => null);
   const id = String((ws as any)?.clientDefaultProgramId || '').trim();
   return id || null;
+}
+
+export async function buildWorkspaceJobRoleProgramMap(workspaceId: string): Promise<Record<CandidateJobRole, string | null>> {
+  const programs = await prisma.program
+    .findMany({
+      where: { workspaceId, archivedAt: null, isActive: true },
+      select: { id: true, slug: true, name: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    .catch(() => [] as any[]);
+
+  const pickByKeywords = (keywords: string[]): string | null => {
+    for (const p of programs) {
+      const key = normalizeLoose(`${p?.slug || ''} ${p?.name || ''}`);
+      if (!key) continue;
+      if (keywords.some((k) => key.includes(k))) return String(p.id);
+    }
+    return null;
+  };
+
+  const ws = await prisma.workspace
+    .findUnique({ where: { id: workspaceId }, select: { clientDefaultProgramId: true as any } })
+    .catch(() => null);
+  const wsDefaultProgramId = String((ws as any)?.clientDefaultProgramId || '').trim() || null;
+
+  const conductor =
+    pickByKeywords(['conductor', 'conductores', 'chofer', 'driver', 'repartidor', 'reparto']) ||
+    (wsDefaultProgramId && programs.some((p) => String(p.id) === wsDefaultProgramId) ? wsDefaultProgramId : null) ||
+    (programs[0]?.id ? String(programs[0].id) : null);
+
+  const peoneta =
+    pickByKeywords(['peoneta', 'peonetas', 'ayudante', 'cargador']) ||
+    conductor ||
+    null;
+
+  return {
+    CONDUCTOR: conductor,
+    PEONETA: peoneta,
+  };
 }
 
 export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promise<UpsertCandidateResult> {
@@ -114,7 +187,8 @@ export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promi
   const comuna = normalizeText(input.comuna);
   const ciudad = normalizeText(input.ciudad);
   const email = normalizeText(input.email);
-  const metadataNote = buildImportMetadataNote({ role: input.role, channel: input.channel });
+  const jobRole = normalizeCandidateJobRole(input.jobRole || input.role || '', 'CONDUCTOR');
+  const metadataNote = buildImportMetadataNote({ role: input.role, channel: input.channel, jobRole });
 
   const existingContact = await prisma.contact.findFirst({
     where: {
@@ -124,16 +198,32 @@ export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promi
     select: { id: true },
   });
 
+  const importedAt = input.importBatchId ? new Date() : null;
+
   const contact = existingContact?.id
     ? await prisma.contact.update({
         where: { id: existingContact.id },
         data: {
           waId,
           phone: phoneE164,
+          jobRole,
           ...(name ? { candidateNameManual: name, displayName: name, name } : {}),
           ...(comuna ? { comuna } : {}),
           ...(ciudad ? { ciudad } : {}),
           ...(email ? { email } : {}),
+          ...(typeof input.sourceChannel === 'string' && input.sourceChannel.trim()
+            ? { importSourceChannel: input.sourceChannel.trim() }
+            : {}),
+          ...(typeof input.sourceFileName === 'string' && input.sourceFileName.trim()
+            ? { importSourceFileName: input.sourceFileName.trim() }
+            : {}),
+          ...(input.importBatchId
+            ? {
+                importBatchId: String(input.importBatchId).trim(),
+                importedAt,
+                importedByUserId: String(input.importedByUserId || '').trim() || null,
+              }
+            : {}),
           ...(metadataNote
             ? {
                 notes: (() => {
@@ -143,17 +233,31 @@ export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promi
               }
             : {}),
           updatedAt: new Date(),
-        },
+        } as any,
       })
     : await prisma.contact.create({
         data: {
           workspaceId,
           waId,
           phone: phoneE164,
+          jobRole,
           ...(name ? { candidateNameManual: name, displayName: name, name } : {}),
           ...(comuna ? { comuna } : {}),
           ...(ciudad ? { ciudad } : {}),
           ...(email ? { email } : {}),
+          ...(typeof input.sourceChannel === 'string' && input.sourceChannel.trim()
+            ? { importSourceChannel: input.sourceChannel.trim() }
+            : {}),
+          ...(typeof input.sourceFileName === 'string' && input.sourceFileName.trim()
+            ? { importSourceFileName: input.sourceFileName.trim() }
+            : {}),
+          ...(input.importBatchId
+            ? {
+                importBatchId: String(input.importBatchId).trim(),
+                importedAt,
+                importedByUserId: String(input.importedByUserId || '').trim() || null,
+              }
+            : {}),
           ...(metadataNote
             ? {
                 notes: (() => {
@@ -162,8 +266,13 @@ export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promi
                 })(),
               }
             : {}),
-        },
+        } as any,
       });
+
+  const roleProgramMap = input.roleProgramMap || {};
+  const mappedProgramId =
+    (jobRole === 'PEONETA' ? roleProgramMap.PEONETA : roleProgramMap.CONDUCTOR) ||
+    null;
 
   let conversation = await prisma.conversation.findFirst({
     where: {
@@ -178,7 +287,9 @@ export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promi
 
   let createdConversation = false;
   if (!conversation?.id) {
-    const defaultProgramId = await resolveWorkspaceDefaultProgramId({ workspaceId, phoneLine: defaultPhoneLine });
+    const defaultProgramId =
+      mappedProgramId ||
+      (await resolveWorkspaceDefaultProgramId({ workspaceId, phoneLine: defaultPhoneLine }));
     conversation = await prisma.conversation.create({
       data: {
         workspaceId,
@@ -194,16 +305,21 @@ export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promi
       } as any,
     });
     createdConversation = true;
-  } else if (input.preserveExistingConversationStage !== true) {
+  } else {
+    const preserve = input.preserveExistingConversationStage === true;
+    const data: Record<string, any> = { updatedAt: new Date() };
+    if (!preserve) {
+      data.status = resolvedStatus;
+      data.conversationStage = stageSlug;
+      data.stageChangedAt = new Date();
+      data.stageReason = 'import_initial_status';
+    }
+    if (mappedProgramId && (!conversation.programId || !preserve)) {
+      data.programId = mappedProgramId;
+    }
     conversation = await prisma.conversation.update({
       where: { id: conversation.id },
-      data: {
-        status: resolvedStatus,
-        conversationStage: stageSlug,
-        stageChangedAt: new Date(),
-        stageReason: 'import_initial_status',
-        updatedAt: new Date(),
-      } as any,
+      data: data as any,
     });
   }
 
@@ -215,6 +331,8 @@ export async function upsertCandidateAndCase(input: UpsertCandidateInput): Promi
     phoneE164,
     stageSlug: String((conversation as any).conversationStage || stageSlug),
     status: (conversation.status as any) || resolvedStatus,
+    jobRole,
+    programId: conversation.programId ? String(conversation.programId) : null,
   };
 }
 

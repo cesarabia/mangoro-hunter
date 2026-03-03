@@ -140,6 +140,12 @@ export type ScenarioStep = {
     phoneLineTransfer?: {
       waPhoneNumberId?: string;
     };
+    importPeonetaBatchNoSend?: {
+      workspaceId?: string;
+    };
+    bulkTemplateBatchSend?: {
+      workspaceId?: string;
+    };
     inviteExistingUserAccept?: boolean;
     copilotArchiveRestore?: boolean;
     copilotContextFollowup?: boolean;
@@ -479,6 +485,32 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check phone line transfer',
         expect: { phoneLineTransfer: {} },
+      },
+    ],
+  },
+  {
+    id: 'import_peoneta_batch_no_send',
+    name: 'P0.8: import peonetas (dedupe + mapping, sin envío)',
+    description:
+      'Importa fixture CSV de peonetas, dedupe E.164 y valida mapping a Program Peonetas sin generar outbound durante la importación.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check import peoneta batch',
+        expect: { importPeonetaBatchNoSend: { workspaceId: 'scenario-import-peoneta' } },
+      },
+    ],
+  },
+  {
+    id: 'bulk_template_batch_send_null',
+    name: 'P0.8: bulk template post-import (NULL transport)',
+    description:
+      'Ejecuta dry-run + envío masivo sobre un batch importado en modo NULL y valida outbound logs + transición de stage/status.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check bulk template batch send',
+        expect: { bulkTemplateBatchSend: { workspaceId: 'scenario-bulk-template-batch' } },
       },
     ],
   },

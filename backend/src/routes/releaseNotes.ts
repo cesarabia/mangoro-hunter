@@ -210,6 +210,9 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'copilot_archive_restore',
       'workspace_creation_wizard_gates',
       'phone_line_transfer',
+      // P0.8: Puestos + import + envío masivo por batch
+      'import_peoneta_batch_no_send',
+      'bulk_template_batch_send_null',
     ];
 
     const scenarioRuns = await prisma.scenarioRunLog

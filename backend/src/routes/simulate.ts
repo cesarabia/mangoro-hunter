@@ -5458,6 +5458,416 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         }
       }
 
+      const importPeonetaBatchNoSend = (step.expect as any)?.importPeonetaBatchNoSend;
+      if (importPeonetaBatchNoSend && typeof importPeonetaBatchNoSend === 'object') {
+        const wsId = String((importPeonetaBatchNoSend as any)?.workspaceId || 'scenario-import-peoneta').trim() || 'scenario-import-peoneta';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'importPeonetaBatchNoSend: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'importPeonetaBatchNoSend: auth header missing' });
+        } else {
+          const lineId = `scenario-import-peoneta-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          const phoneSeedA = `5699${Math.floor(1000000 + Math.random() * 8999999)}`;
+          const phoneSeedB = `5699${Math.floor(1000000 + Math.random() * 8999999)}`;
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Import Peoneta', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Import Peoneta', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const programConductor = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-conductores-scenario' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Reclutamiento — Conductores (Scenario)',
+                slug: 'reclutamiento-conductores-scenario',
+                description: 'Scenario program conductor',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: { isActive: true, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const programPeoneta = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-peonetas-scenario' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Reclutamiento — Peonetas (Scenario)',
+                slug: 'reclutamiento-peonetas-scenario',
+                description: 'Scenario program peoneta',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: { isActive: true, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          await prisma.workspace
+            .updateMany({
+              where: { id: wsId },
+              data: {
+                clientDefaultProgramId: programConductor?.id || null,
+                templateRecruitmentStartName: 'enviorapido_postulacion_inicio_v1',
+                templatePeonetaStartName: 'enviorapido_postulacion_general_v1',
+              } as any,
+            })
+            .catch(() => {});
+
+          await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Import Peoneta (temp)',
+                waPhoneNumberId,
+                isActive: true,
+                defaultProgramId: programConductor?.id || null,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const csv = [
+            'telefono,nombre,rol,canal,comuna,estado',
+            `${phoneSeedA},Andrés Peña,Peoneta,Chiletrabajos,Pudahuel,NUEVO`,
+            `+${phoneSeedA},Andrés Peña,Peoneta,Chiletrabajos,Pudahuel,NUEVO`,
+            `${phoneSeedB},Nicolás Ramírez,peoneta,LinkedIn,Maipú,NUEVO`,
+          ].join('\n');
+          const importRes = await app.inject({
+            method: 'POST',
+            url: '/api/candidates/import',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            payload: {
+              fileName: 'scenario_peoneta.csv',
+              mimeType: 'text/csv',
+              fileBase64: Buffer.from(csv, 'utf8').toString('base64'),
+              preserveExistingConversationStage: true,
+            },
+          });
+          let importJson: any = null;
+          try {
+            importJson = JSON.parse(String(importRes.body || '{}'));
+          } catch {
+            importJson = null;
+          }
+          assertions.push({
+            ok: importRes.statusCode === 200,
+            message: importRes.statusCode === 200
+              ? 'importPeonetaBatchNoSend: import OK'
+              : `importPeonetaBatchNoSend: import failed (${importRes.statusCode})`,
+          });
+
+          const importBatchId = String(importJson?.importBatchId || '').trim();
+          const dedupeOk = Number(importJson?.dedupedRows || 0) >= 1 && Number(importJson?.createdContacts || 0) >= 2;
+          assertions.push({
+            ok: dedupeOk,
+            message: dedupeOk
+              ? `importPeonetaBatchNoSend: dedupe E.164 OK (deduped=${Number(importJson?.dedupedRows || 0)})`
+              : `importPeonetaBatchNoSend: dedupe inesperado (${String(importRes.body || '').slice(0, 240)})`,
+          });
+
+          if (importBatchId) {
+            const importedContacts = await prisma.contact.findMany({
+              where: { workspaceId: wsId, importBatchId, archivedAt: null },
+              select: { id: true, phone: true, jobRole: true },
+            });
+            const contactIds = importedContacts.map((c) => c.id);
+            const convs = contactIds.length
+              ? await prisma.conversation.findMany({
+                  where: { workspaceId: wsId, contactId: { in: contactIds }, archivedAt: null, isAdmin: false } as any,
+                  select: { id: true, programId: true, conversationStage: true, status: true },
+                })
+              : [];
+            const outboundCount = await prisma.outboundMessageLog
+              .count({ where: { workspaceId: wsId, conversationId: { in: convs.map((c) => c.id) } } as any })
+              .catch(() => 0);
+            const allPeoneta = importedContacts.length > 0 && importedContacts.every((c) => String(c.jobRole || '').toUpperCase() === 'PEONETA');
+            const allProgramPeoneta =
+              convs.length > 0 &&
+              Boolean(programPeoneta?.id) &&
+              convs.every((c) => String(c.programId || '') === String(programPeoneta?.id || ''));
+            assertions.push({
+              ok: importedContacts.length === 2,
+              message:
+                importedContacts.length === 2
+                  ? 'importPeonetaBatchNoSend: contactos importados (2) OK'
+                  : `importPeonetaBatchNoSend: expected 2 contactos, got ${importedContacts.length}`,
+            });
+            assertions.push({
+              ok: allPeoneta,
+              message: allPeoneta ? 'importPeonetaBatchNoSend: jobRole=PEONETA OK' : 'importPeonetaBatchNoSend: jobRole inesperado',
+            });
+            assertions.push({
+              ok: allProgramPeoneta,
+              message: allProgramPeoneta ? 'importPeonetaBatchNoSend: Program Peonetas asignado OK' : 'importPeonetaBatchNoSend: program mapping incorrecto',
+            });
+            assertions.push({
+              ok: outboundCount === 0,
+              message:
+                outboundCount === 0
+                  ? 'importPeonetaBatchNoSend: sin envíos WhatsApp en import OK'
+                  : `importPeonetaBatchNoSend: outbound inesperado (${outboundCount})`,
+            });
+
+            await prisma.conversation.updateMany({ where: { id: { in: convs.map((c) => c.id) } }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.contact.updateMany({ where: { id: { in: importedContacts.map((c) => c.id) } }, data: { archivedAt: now } as any }).catch(() => {});
+          } else {
+            assertions.push({ ok: false, message: 'importPeonetaBatchNoSend: importBatchId missing' });
+          }
+
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { isActive: false, archivedAt: now } as any }).catch(() => {});
+          await prisma.program.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      const bulkTemplateBatchSend = (step.expect as any)?.bulkTemplateBatchSend;
+      if (bulkTemplateBatchSend && typeof bulkTemplateBatchSend === 'object') {
+        const wsId = String((bulkTemplateBatchSend as any)?.workspaceId || 'scenario-bulk-template-batch').trim() || 'scenario-bulk-template-batch';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'bulkTemplateBatchSend: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'bulkTemplateBatchSend: auth header missing' });
+        } else {
+          const lineId = `scenario-bulk-template-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          const phoneA = `5699${Math.floor(1000000 + Math.random() * 8999999)}`;
+          const phoneB = `5699${Math.floor(1000000 + Math.random() * 8999999)}`;
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Bulk Template Batch', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Bulk Template Batch', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const programConductor = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-conductores-scenario' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Reclutamiento — Conductores (Scenario)',
+                slug: 'reclutamiento-conductores-scenario',
+                description: 'Scenario program conductor',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: { isActive: true, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const programPeoneta = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-peonetas-scenario' } } as any,
+              create: {
+                workspaceId: wsId,
+                name: 'Reclutamiento — Peonetas (Scenario)',
+                slug: 'reclutamiento-peonetas-scenario',
+                description: 'Scenario program peoneta',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: { isActive: true, archivedAt: null } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          await prisma.workspace
+            .updateMany({
+              where: { id: wsId },
+              data: {
+                clientDefaultProgramId: programConductor?.id || null,
+                templateRecruitmentStartName: 'enviorapido_postulacion_inicio_v1',
+                templatePeonetaStartName: 'enviorapido_postulacion_general_v1',
+              } as any,
+            })
+            .catch(() => {});
+
+          await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Bulk Template (temp)',
+                waPhoneNumberId,
+                isActive: true,
+                defaultProgramId: programConductor?.id || null,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+
+          const csv = [
+            'telefono,nombre,rol,canal,comuna,estado',
+            `${phoneA},Juan Conductor,Conductor,Chiletrabajos,Puente Alto,NUEVO`,
+            `${phoneB},María Peoneta,Peoneta,Chiletrabajos,La Florida,NUEVO`,
+          ].join('\n');
+
+          const importRes = await app.inject({
+            method: 'POST',
+            url: '/api/candidates/import',
+            headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            payload: {
+              fileName: 'scenario_bulk_template.csv',
+              mimeType: 'text/csv',
+              fileBase64: Buffer.from(csv, 'utf8').toString('base64'),
+              preserveExistingConversationStage: true,
+            },
+          });
+          let importJson: any = null;
+          try {
+            importJson = JSON.parse(String(importRes.body || '{}'));
+          } catch {
+            importJson = null;
+          }
+          const importBatchId = String(importJson?.importBatchId || '').trim();
+          assertions.push({
+            ok: importRes.statusCode === 200 && !!importBatchId,
+            message:
+              importRes.statusCode === 200 && !!importBatchId
+                ? `bulkTemplateBatchSend: import OK (${importBatchId})`
+                : `bulkTemplateBatchSend: import failed (${importRes.statusCode})`,
+          });
+
+          if (importBatchId) {
+            const previewRes = await app.inject({
+              method: 'POST',
+              url: '/api/candidates/import/bulk-template/preview',
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+              payload: {
+                importBatchId,
+                templateByRole: {
+                  CONDUCTOR: 'enviorapido_postulacion_inicio_v1',
+                  PEONETA: 'enviorapido_postulacion_general_v1',
+                },
+              },
+            });
+            let previewJson: any = null;
+            try {
+              previewJson = JSON.parse(String(previewRes.body || '{}'));
+            } catch {
+              previewJson = null;
+            }
+            const previewOk = previewRes.statusCode === 200 && Number(previewJson?.totals?.eligible || 0) >= 2;
+            assertions.push({
+              ok: previewOk,
+              message: previewOk
+                ? `bulkTemplateBatchSend: dry-run OK (eligible=${Number(previewJson?.totals?.eligible || 0)})`
+                : `bulkTemplateBatchSend: dry-run failed (${previewRes.statusCode})`,
+            });
+
+            const dryRunHash = String(previewJson?.dryRunHash || '').trim();
+            const sendRes = await app.inject({
+              method: 'POST',
+              url: '/api/candidates/import/bulk-template/send',
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+              payload: {
+                importBatchId,
+                templateByRole: {
+                  CONDUCTOR: 'enviorapido_postulacion_inicio_v1',
+                  PEONETA: 'enviorapido_postulacion_general_v1',
+                },
+                confirmText: 'CONFIRMAR',
+                dryRunHash,
+                transportMode: 'NULL',
+              },
+            });
+            let sendJson: any = null;
+            try {
+              sendJson = JSON.parse(String(sendRes.body || '{}'));
+            } catch {
+              sendJson = null;
+            }
+            const sendOk = sendRes.statusCode === 200 && Number(sendJson?.totals?.sent || 0) >= 2;
+            assertions.push({
+              ok: sendOk,
+              message: sendOk
+                ? `bulkTemplateBatchSend: send OK (sent=${Number(sendJson?.totals?.sent || 0)})`
+                : `bulkTemplateBatchSend: send failed (${sendRes.statusCode})`,
+            });
+
+            const importedContacts = await prisma.contact.findMany({
+              where: { workspaceId: wsId, importBatchId, archivedAt: null },
+              select: { id: true },
+            });
+            const convs = importedContacts.length
+              ? await prisma.conversation.findMany({
+                  where: { workspaceId: wsId, contactId: { in: importedContacts.map((c) => c.id) }, archivedAt: null, isAdmin: false } as any,
+                  select: { id: true, conversationStage: true, status: true },
+                })
+              : [];
+            const outboundLogs = convs.length
+              ? await prisma.outboundMessageLog.findMany({
+                  where: {
+                    workspaceId: wsId,
+                    conversationId: { in: convs.map((c) => c.id) },
+                    type: 'TEMPLATE',
+                    dedupeKey: { contains: `bulk_import_template:${importBatchId}` },
+                  } as any,
+                  select: { id: true, blockedReason: true, templateName: true },
+                })
+              : [];
+            const noBlocked = outboundLogs.every((l) => !l.blockedReason);
+            const stageMoved = convs.length > 0 && convs.every((c) => String(c.conversationStage || '').toUpperCase() === 'SCREENING');
+            assertions.push({
+              ok: outboundLogs.length >= 2 && noBlocked,
+              message:
+                outboundLogs.length >= 2 && noBlocked
+                  ? 'bulkTemplateBatchSend: outbound logs template OK'
+                  : `bulkTemplateBatchSend: outbound logs inválidos (${outboundLogs.length})`,
+            });
+            assertions.push({
+              ok: stageMoved,
+              message: stageMoved
+                ? 'bulkTemplateBatchSend: transición stage NEW_INTAKE->SCREENING OK'
+                : 'bulkTemplateBatchSend: stage no actualizado a SCREENING',
+            });
+
+            await prisma.conversation.updateMany({ where: { id: { in: convs.map((c) => c.id) } }, data: { archivedAt: now } as any }).catch(() => {});
+            await prisma.contact.updateMany({ where: { id: { in: importedContacts.map((c) => c.id) } }, data: { archivedAt: now } as any }).catch(() => {});
+          }
+
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { isActive: false, archivedAt: now } as any }).catch(() => {});
+          await prisma.program.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
       const clientLocationFreeText =
         (step.expect as any)?.clientLocationFreeText || (step.expect as any)?.clientFreeTextFields;
       if (clientLocationFreeText && typeof clientLocationFreeText === 'object') {

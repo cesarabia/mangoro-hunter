@@ -40,6 +40,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         name: true,
         isSandbox: true,
         templateRecruitmentStartName: true as any,
+        templatePeonetaStartName: true as any,
         templateInterviewConfirmationName: true as any,
         templateAdditionalNamesJson: true as any,
         ssclinicalNurseLeaderEmail: true as any,
@@ -65,6 +66,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       name: workspace.name,
       isSandbox: Boolean(workspace.isSandbox),
       templateRecruitmentStartName: String((workspace as any).templateRecruitmentStartName || '').trim() || null,
+      templatePeonetaStartName: String((workspace as any).templatePeonetaStartName || '').trim() || null,
       templateInterviewConfirmationName: String((workspace as any).templateInterviewConfirmationName || '').trim() || null,
       templateAdditionalNames: (() => {
         try {
@@ -134,6 +136,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
 
     const body = request.body as {
       templateRecruitmentStartName?: string | null;
+      templatePeonetaStartName?: string | null;
       templateInterviewConfirmationName?: string | null;
       templateAdditionalNames?: string[] | null;
       ssclinicalNurseLeaderEmail?: string | null;
@@ -150,6 +153,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       hybridApprovalAdminWaId?: string | null;
     };
     const hasRecruitTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateRecruitmentStartName');
+    const hasPeonetaTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templatePeonetaStartName');
     const hasInterviewTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateInterviewConfirmationName');
     const hasAdditionalTemplates = Object.prototype.hasOwnProperty.call(body || {}, 'templateAdditionalNames');
     const hasEmail = Object.prototype.hasOwnProperty.call(body || {}, 'ssclinicalNurseLeaderEmail');
@@ -166,6 +170,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const hasHybridApprovalAdminWaId = Object.prototype.hasOwnProperty.call(body || {}, 'hybridApprovalAdminWaId');
     if (
       !hasRecruitTemplate &&
+      !hasPeonetaTemplate &&
       !hasInterviewTemplate &&
       !hasAdditionalTemplates &&
       !hasEmail &&
@@ -217,6 +222,17 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       nextInterviewTemplateName.length > 120
     ) {
       return reply.code(400).send({ error: '"templateInterviewConfirmationName" es demasiado largo (max 120).' });
+    }
+
+    const peonetaTemplateRaw = body?.templatePeonetaStartName;
+    const nextPeonetaTemplateName =
+      peonetaTemplateRaw === null
+        ? null
+        : typeof peonetaTemplateRaw === 'string'
+          ? peonetaTemplateRaw.trim()
+          : null;
+    if (typeof peonetaTemplateRaw === 'string' && nextPeonetaTemplateName && nextPeonetaTemplateName.length > 120) {
+      return reply.code(400).send({ error: '"templatePeonetaStartName" es demasiado largo (max 120).' });
     }
 
     const normalizeTemplateList = (value: unknown): string[] => {
@@ -301,6 +317,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         id: true,
         archivedAt: true,
         templateRecruitmentStartName: true as any,
+        templatePeonetaStartName: true as any,
         templateInterviewConfirmationName: true as any,
         templateAdditionalNamesJson: true as any,
         ssclinicalNurseLeaderEmail: true as any,
@@ -354,6 +371,12 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
                 typeof recruitTemplateRaw === 'string' ? nextRecruitTemplateName || null : null,
             }
           : {}),
+        ...(hasPeonetaTemplate
+          ? {
+              templatePeonetaStartName:
+                typeof peonetaTemplateRaw === 'string' ? nextPeonetaTemplateName || null : null,
+            }
+          : {}),
         ...(hasInterviewTemplate
           ? {
               templateInterviewConfirmationName:
@@ -385,6 +408,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       select: {
         id: true,
         templateRecruitmentStartName: true as any,
+        templatePeonetaStartName: true as any,
         templateInterviewConfirmationName: true as any,
         templateAdditionalNamesJson: true as any,
         ssclinicalNurseLeaderEmail: true as any,
@@ -439,11 +463,13 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
             type: 'WORKSPACE_TEMPLATE_DEFAULTS',
             beforeJson: serializeJson({
               templateRecruitmentStartName: (existing as any).templateRecruitmentStartName || null,
+              templatePeonetaStartName: (existing as any).templatePeonetaStartName || null,
               templateInterviewConfirmationName: (existing as any).templateInterviewConfirmationName || null,
               templateAdditionalNamesJson: (existing as any).templateAdditionalNamesJson || null,
             }),
             afterJson: serializeJson({
               templateRecruitmentStartName: (updated as any).templateRecruitmentStartName || null,
+              templatePeonetaStartName: (updated as any).templatePeonetaStartName || null,
               templateInterviewConfirmationName: (updated as any).templateInterviewConfirmationName || null,
               templateAdditionalNamesJson: (updated as any).templateAdditionalNamesJson || null,
             }),
@@ -507,6 +533,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     return {
       ok: true,
       templateRecruitmentStartName: String((updated as any).templateRecruitmentStartName || '').trim() || null,
+      templatePeonetaStartName: String((updated as any).templatePeonetaStartName || '').trim() || null,
       templateInterviewConfirmationName: String((updated as any).templateInterviewConfirmationName || '').trim() || null,
       templateAdditionalNames: (() => {
         try {

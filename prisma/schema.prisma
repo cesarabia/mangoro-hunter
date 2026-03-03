@@ -53,6 +53,7 @@ model Workspace {
   name        String
   isSandbox   Boolean       @default(false)
   templateRecruitmentStartName String?
+  templatePeonetaStartName String?
   templateInterviewConfirmationName String?
   templateAdditionalNamesJson String?
   ssclinicalNurseLeaderEmail String?
@@ -373,6 +374,12 @@ model Contact {
   noContactAt   DateTime?
   noContactReason String?
   notes         String?
+  jobRole       String?
+  importBatchId String?
+  importedAt    DateTime?
+  importedByUserId String?
+  importSourceFileName String?
+  importSourceChannel String?
   mergedIntoContactId String?
   mergedAt      DateTime?
   mergedReason  String?
@@ -385,6 +392,7 @@ model Contact {
   updatedAt     DateTime        @updatedAt
 
   @@index([workspaceId])
+  @@index([workspaceId, importBatchId])
   @@unique([workspaceId, waId])
   @@unique([workspaceId, phone])
 }

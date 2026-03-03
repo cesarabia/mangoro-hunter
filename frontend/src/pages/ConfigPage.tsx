@@ -128,6 +128,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [ssclinicalNurseLeaderStatus, setSsclinicalNurseLeaderStatus] = useState<string | null>(null);
   const [ssclinicalNurseLeaderError, setSsclinicalNurseLeaderError] = useState<string | null>(null);
   const [templateRecruitDefaultDraft, setTemplateRecruitDefaultDraft] = useState<string>('');
+  const [templatePeonetaDefaultDraft, setTemplatePeonetaDefaultDraft] = useState<string>('');
   const [templateInterviewDefaultDraft, setTemplateInterviewDefaultDraft] = useState<string>('');
   const [templateAdditionalNamesDraft, setTemplateAdditionalNamesDraft] = useState<string>('');
   const [templateDefaultsSaving, setTemplateDefaultsSaving] = useState(false);
@@ -257,13 +258,24 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [candidatesRows, setCandidatesRows] = useState<any[]>([]);
   const [candidatesQuery, setCandidatesQuery] = useState<string>('');
   const [candidatesStatusFilter, setCandidatesStatusFilter] = useState<string>('');
+  const [candidatesJobRoleFilter, setCandidatesJobRoleFilter] = useState<string>('');
+  const [candidatesProgramFilter, setCandidatesProgramFilter] = useState<string>('');
   const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [candidatesStatus, setCandidatesStatus] = useState<string | null>(null);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [lastImportSummary, setLastImportSummary] = useState<any | null>(null);
+  const [bulkTemplatePreview, setBulkTemplatePreview] = useState<any | null>(null);
+  const [bulkTemplateRunning, setBulkTemplateRunning] = useState(false);
+  const [bulkTemplateConfirmText, setBulkTemplateConfirmText] = useState('');
+  const [bulkTemplateTemplateByRole, setBulkTemplateTemplateByRole] = useState<{ CONDUCTOR: string; PEONETA: string }>({
+    CONDUCTOR: '',
+    PEONETA: '',
+  });
   const [candidateEditor, setCandidateEditor] = useState<{
     phoneE164: string;
     name: string;
     role: string;
+    jobRole: 'CONDUCTOR' | 'PEONETA';
     channel: string;
     comuna: string;
     ciudad: string;
@@ -273,6 +285,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     phoneE164: '',
     name: '',
     role: '',
+    jobRole: 'CONDUCTOR',
     channel: '',
     comuna: '',
     ciudad: '',
@@ -281,6 +294,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   });
   const [candidateImporting, setCandidateImporting] = useState(false);
   const [candidateCreating, setCandidateCreating] = useState(false);
+  const [candidateImportOverrideJobRole, setCandidateImportOverrideJobRole] = useState<string>('');
 
   const [phoneLines, setPhoneLines] = useState<any[]>([]);
   const [phoneLinesIncludeArchived, setPhoneLinesIncludeArchived] = useState(false);
@@ -385,6 +399,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       const email = typeof data?.ssclinicalNurseLeaderEmail === 'string' ? data.ssclinicalNurseLeaderEmail : '';
       setSsclinicalNurseLeaderEmailDraft(email || '');
       setTemplateRecruitDefaultDraft(typeof data?.templateRecruitmentStartName === 'string' ? data.templateRecruitmentStartName : '');
+      setTemplatePeonetaDefaultDraft(typeof data?.templatePeonetaStartName === 'string' ? data.templatePeonetaStartName : '');
       setTemplateInterviewDefaultDraft(
         typeof data?.templateInterviewConfirmationName === 'string' ? data.templateInterviewConfirmationName : '',
       );
@@ -396,6 +411,16 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               .join('\n')
           : '',
       );
+      setBulkTemplateTemplateByRole({
+        CONDUCTOR:
+          typeof data?.templateRecruitmentStartName === 'string' && data.templateRecruitmentStartName.trim()
+            ? data.templateRecruitmentStartName.trim()
+            : 'enviorapido_postulacion_inicio_v1',
+        PEONETA:
+          typeof data?.templatePeonetaStartName === 'string' && data.templatePeonetaStartName.trim()
+            ? data.templatePeonetaStartName.trim()
+            : 'enviorapido_postulacion_general_v1',
+      });
       const staffProgramId = typeof data?.staffDefaultProgramId === 'string' ? data.staffDefaultProgramId : '';
       setStaffDefaultProgramIdDraft(staffProgramId || '');
       setHybridApprovalEnabledDraft(Boolean(data?.hybridApprovalEnabled));
@@ -500,6 +525,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setTemplateDefaultsError(null);
     try {
       const recruit = templateRecruitDefaultDraft.trim();
+      const peoneta = templatePeonetaDefaultDraft.trim();
       const interview = templateInterviewDefaultDraft.trim();
       const additional = Array.from(
         new Set(
@@ -511,12 +537,14 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       );
       const res: any = await apiClient.patch('/api/workspaces/current', {
         templateRecruitmentStartName: recruit.length > 0 ? recruit : null,
+        templatePeonetaStartName: peoneta.length > 0 ? peoneta : null,
         templateInterviewConfirmationName: interview.length > 0 ? interview : null,
         templateAdditionalNames: additional,
       });
       setTemplateRecruitDefaultDraft(
         typeof res?.templateRecruitmentStartName === 'string' ? res.templateRecruitmentStartName : '',
       );
+      setTemplatePeonetaDefaultDraft(typeof res?.templatePeonetaStartName === 'string' ? res.templatePeonetaStartName : '');
       setTemplateInterviewDefaultDraft(
         typeof res?.templateInterviewConfirmationName === 'string' ? res.templateInterviewConfirmationName : '',
       );
@@ -742,15 +770,27 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
       reader.readAsDataURL(file);
     });
-  const loadCandidates = async (opts?: { q?: string; status?: string }) => {
+  const loadCandidates = async (opts?: { q?: string; status?: string; jobRole?: string; programId?: string; importBatchId?: string }) => {
     setCandidatesError(null);
     setCandidatesLoading(true);
     try {
       const q = String(opts?.q ?? candidatesQuery).trim();
       const status = String(opts?.status ?? candidatesStatusFilter).trim();
+      const jobRole = String(opts?.jobRole ?? candidatesJobRoleFilter).trim();
+      const programId = String(opts?.programId ?? candidatesProgramFilter).trim();
+      const importBatchId = String(
+        typeof opts?.importBatchId === 'string'
+          ? opts.importBatchId
+          : tab === 'candidates'
+            ? (lastImportSummary?.importBatchId || '')
+            : '',
+      ).trim();
       const params = new URLSearchParams();
       if (q) params.set('q', q);
       if (status) params.set('status', status);
+      if (jobRole) params.set('jobRole', jobRole);
+      if (programId) params.set('programId', programId);
+      if (importBatchId) params.set('importBatchId', importBatchId);
       params.set('limit', '300');
       const url = params.toString() ? `/api/candidates?${params.toString()}` : '/api/candidates';
       const data: any = await apiClient.get(url);
@@ -767,24 +807,114 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setCandidateImporting(true);
     setCandidatesStatus(null);
     setCandidatesError(null);
+    setBulkTemplatePreview(null);
+    setBulkTemplateConfirmText('');
     try {
       const fileBase64 = await fileToBase64(file);
       const res: any = await apiClient.post('/api/candidates/import', {
         fileName: file.name,
         mimeType: file.type || null,
         fileBase64,
+        overrideJobRole: candidateImportOverrideJobRole || null,
       });
-      const created = Number(res?.created || 0);
-      const updated = Number(res?.updated || 0);
-      const skipped = Number(res?.skipped || 0);
-      setCandidatesStatus(`Importación completada. Creados: ${created}, actualizados: ${updated}, omitidos: ${skipped}.`);
-      await loadCandidates();
+      const created = Number(res?.createdContacts ?? res?.created ?? 0);
+      const updated = Number(res?.updatedContacts ?? res?.updated ?? 0);
+      const skipped = Number(res?.dedupedRows ?? 0) + (Array.isArray(res?.errors) ? res.errors.length : Number(res?.skipped || 0));
+      const importBatchId = String(res?.importBatchId || '').trim();
+      setLastImportSummary(res || null);
+      setBulkTemplateTemplateByRole((prev) => ({
+        CONDUCTOR:
+          prev.CONDUCTOR ||
+          (typeof workspaceDetails?.templateRecruitmentStartName === 'string' && workspaceDetails.templateRecruitmentStartName.trim()
+            ? workspaceDetails.templateRecruitmentStartName.trim()
+            : 'enviorapido_postulacion_inicio_v1'),
+        PEONETA:
+          prev.PEONETA ||
+          (typeof (workspaceDetails as any)?.templatePeonetaStartName === 'string' &&
+          String((workspaceDetails as any).templatePeonetaStartName).trim()
+            ? String((workspaceDetails as any).templatePeonetaStartName).trim()
+            : 'enviorapido_postulacion_general_v1'),
+      }));
+      setCandidatesStatus(
+        `Importación completada. Batch: ${importBatchId || '—'} · Creados: ${created}, actualizados: ${updated}, omitidos/error: ${skipped}.`,
+      );
+      await loadCandidates({
+        importBatchId: importBatchId || '',
+        q: '',
+        status: '',
+        jobRole: '',
+        programId: '',
+      });
     } catch (err: any) {
       setCandidatesError(err.message || 'No se pudo importar el archivo');
     } finally {
       setCandidateImporting(false);
     }
   };
+
+  const runBulkTemplatePreview = async (importBatchId: string) => {
+    const batch = String(importBatchId || '').trim();
+    if (!batch) return;
+    setBulkTemplateRunning(true);
+    setCandidatesError(null);
+    setCandidatesStatus(null);
+    try {
+      const data: any = await apiClient.post('/api/candidates/import/bulk-template/preview', {
+        importBatchId: batch,
+        templateByRole: bulkTemplateTemplateByRole,
+      });
+      setBulkTemplatePreview(data || null);
+      setBulkTemplateConfirmText('');
+      if (data?.totals) {
+        const t = data.totals;
+        setCandidatesStatus(`Dry-run listo. Elegibles: ${Number(t.eligible || 0)} / ${Number(t.total || 0)}.`);
+      }
+    } catch (err: any) {
+      setBulkTemplatePreview(null);
+      setCandidatesError(err?.message || 'No se pudo calcular el dry-run');
+    } finally {
+      setBulkTemplateRunning(false);
+    }
+  };
+
+  const executeBulkTemplateSend = async () => {
+    const importBatchId = String(lastImportSummary?.importBatchId || bulkTemplatePreview?.importBatchId || '').trim();
+    if (!importBatchId) {
+      setCandidatesError('No hay importBatchId para ejecutar envío masivo.');
+      return;
+    }
+    setBulkTemplateRunning(true);
+    setCandidatesError(null);
+    try {
+      const data: any = await apiClient.post('/api/candidates/import/bulk-template/send', {
+        importBatchId,
+        templateByRole: bulkTemplateTemplateByRole,
+        confirmText: bulkTemplateConfirmText,
+        dryRunHash: bulkTemplatePreview?.dryRunHash || null,
+      });
+      setBulkTemplatePreview((prev: any) => ({ ...(prev || {}), sendResult: data }));
+      setCandidatesStatus(
+        `Envío masivo ejecutado. Sent: ${Number(data?.totals?.sent || 0)}, failed: ${Number(data?.totals?.failed || 0)}.`,
+      );
+      await loadCandidates({ importBatchId });
+    } catch (err: any) {
+      setCandidatesError(err?.message || 'No se pudo ejecutar el envío masivo.');
+    } finally {
+      setBulkTemplateRunning(false);
+    }
+  };
+
+  const openImportedBatchInInbox = () => {
+    const batch = String(lastImportSummary?.importBatchId || '').trim();
+    if (!batch) return;
+    try {
+      localStorage.setItem('inboxFilterImportBatchId', batch);
+    } catch {
+      // ignore
+    }
+    window.location.assign('/');
+  };
+
   const createCandidateManual = async () => {
     setCandidateCreating(true);
     setCandidatesStatus(null);
@@ -797,6 +927,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         phoneE164: '',
         name: '',
         role: '',
+        jobRole: 'CONDUCTOR',
         channel: '',
         comuna: '',
         ciudad: '',
@@ -1432,6 +1563,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   }, []);
 
   useEffect(() => {
+    setLastImportSummary(null);
+    setBulkTemplatePreview(null);
+    setBulkTemplateConfirmText('');
     loadWorkspaceDetails().catch(() => {});
     loadWorkspaceTemplateCatalog().catch(() => {});
     loadWorkspaceStages().catch(() => {});
@@ -2570,7 +2704,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               </div>
               <div style={{ display: 'grid', gap: 10 }}>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
-                  Plantilla default para inicio (reclutamiento)
+                  Plantilla default para inicio (conductor)
                   <select
                     value={templateRecruitDefaultDraft}
                     onChange={(e) => setTemplateRecruitDefaultDraft(e.target.value)}
@@ -2579,6 +2713,21 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     <option value="">(sin default)</option>
                     {workspaceTemplateCatalog.map((tpl) => (
                       <option key={`recruit-${tpl.name}`} value={String(tpl.name)}>
+                        {tpl.name} · {tpl.category || 'Sin categoría'} · {tpl.language || '—'} · {tpl.status || '—'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Plantilla default para inicio (peoneta)
+                  <select
+                    value={templatePeonetaDefaultDraft}
+                    onChange={(e) => setTemplatePeonetaDefaultDraft(e.target.value)}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  >
+                    <option value="">(sin default)</option>
+                    {workspaceTemplateCatalog.map((tpl) => (
+                      <option key={`peoneta-${tpl.name}`} value={String(tpl.name)}>
                         {tpl.name} · {tpl.category || 'Sin categoría'} · {tpl.language || '—'} · {tpl.status || '—'}
                       </option>
                     ))}
@@ -2688,7 +2837,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   {templateDefaultsSaving ? 'Guardando…' : 'Guardar'}
                 </button>
                 <div style={{ fontSize: 12, color: '#666' }}>
-                  Actual inicio: <b>{String(workspaceDetails?.templateRecruitmentStartName || '—')}</b> · Actual entrevista:{' '}
+                  Inicio conductor: <b>{String(workspaceDetails?.templateRecruitmentStartName || '—')}</b> · Inicio peoneta:{' '}
+                  <b>{String((workspaceDetails as any)?.templatePeonetaStartName || '—')}</b> · Entrevista:{' '}
                   <b>{String(workspaceDetails?.templateInterviewConfirmationName || '—')}</b>
                 </div>
               </div>
@@ -4265,7 +4415,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             <div>
               <div style={{ fontSize: 18, fontWeight: 700 }}>Candidatos</div>
               <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
-                Importa CSV/XLSX y crea candidatos sin enviar mensajes automáticos. Dedupe por teléfono E.164.
+                Importa CSV/XLSX por batch, dedupe por E.164, mapea Puesto → Program y ejecuta envío masivo de plantilla solo con confirmación.
               </div>
             </div>
             <button
@@ -4279,7 +4429,20 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
           <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Importar archivo (CSV/XLSX)</div>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
-              Formato sugerido: teléfono, nombre, rol, canal, comuna/ciudad, estado inicial. No se enviará WhatsApp durante la importación.
+              Headers flexibles: teléfono/phone, nombre/name, rol/puesto/job, canal/source, comuna/ciudad/city, estado inicial/status.
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+              <label style={{ fontSize: 12, color: '#555' }}>Override puesto</label>
+              <select
+                value={candidateImportOverrideJobRole}
+                onChange={(e) => setCandidateImportOverrideJobRole(e.target.value)}
+                style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #ddd' }}
+              >
+                <option value="">Inferir desde archivo</option>
+                <option value="CONDUCTOR">CONDUCTOR</option>
+                <option value="PEONETA">PEONETA</option>
+              </select>
+              <span style={{ fontSize: 12, color: '#666' }}>Import no envía WhatsApp automático.</span>
             </div>
             <input
               type="file"
@@ -4295,9 +4458,154 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             {candidateImporting ? <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>Importando…</div> : null}
           </div>
 
+          {lastImportSummary ? (
+            <div style={{ border: '1px solid #e8f3ff', borderRadius: 10, padding: 12, background: '#f8fcff' }}>
+              <div style={{ fontWeight: 800, marginBottom: 6 }}>Último batch importado</div>
+              <div style={{ fontSize: 12, color: '#555', lineHeight: 1.5 }}>
+                Batch: <span style={{ fontFamily: 'monospace' }}>{String(lastImportSummary?.importBatchId || '—')}</span> ·
+                archivo: {String(lastImportSummary?.fileName || '—')} · creados: {Number(lastImportSummary?.createdContacts ?? 0)} ·
+                actualizados: {Number(lastImportSummary?.updatedContacts ?? 0)} · dedupe: {Number(lastImportSummary?.dedupedRows ?? 0)} ·
+                errores: {Array.isArray(lastImportSummary?.errors) ? lastImportSummary.errors.length : 0}
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  onClick={() => openImportedBatchInInbox()}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                >
+                  Abrir Inbox filtrado por este batch
+                </button>
+                <button
+                  onClick={() => runBulkTemplatePreview(String(lastImportSummary?.importBatchId || '')).catch(() => {})}
+                  disabled={bulkTemplateRunning}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+                >
+                  {bulkTemplateRunning ? 'Calculando…' : 'Enviar plantilla inicial a todos (batch)'}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {bulkTemplatePreview ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>Bulk Template Send (dry-run + confirmación)</div>
+              <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr', gap: 8, marginBottom: 10 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Template CONDUCTOR
+                  <select
+                    value={bulkTemplateTemplateByRole.CONDUCTOR}
+                    onChange={(e) =>
+                      setBulkTemplateTemplateByRole((prev) => ({ ...prev, CONDUCTOR: e.target.value }))
+                    }
+                    style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                  >
+                    <option value="">(sin template)</option>
+                    {workspaceTemplateCatalog.map((tpl) => (
+                      <option key={`bulk-c-${tpl.name}`} value={String(tpl.name)}>
+                        {tpl.name} · {tpl.category || 'Sin categoría'} · {tpl.language || '—'} · {tpl.status || '—'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Template PEONETA
+                  <select
+                    value={bulkTemplateTemplateByRole.PEONETA}
+                    onChange={(e) =>
+                      setBulkTemplateTemplateByRole((prev) => ({ ...prev, PEONETA: e.target.value }))
+                    }
+                    style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                  >
+                    <option value="">(sin template)</option>
+                    {workspaceTemplateCatalog.map((tpl) => (
+                      <option key={`bulk-p-${tpl.name}`} value={String(tpl.name)}>
+                        {tpl.name} · {tpl.category || 'Sin categoría'} · {tpl.language || '—'} · {tpl.status || '—'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div style={{ fontSize: 12, color: '#555', marginBottom: 8 }}>
+                Total: {Number(bulkTemplatePreview?.totals?.total || 0)} · Elegibles: {Number(bulkTemplatePreview?.totals?.eligible || 0)} ·
+                Omitidos: {Number(bulkTemplatePreview?.totals?.skipped || 0)} · Costo estimado:{' '}
+                {bulkTemplatePreview?.estimatedCostUsd === null || typeof bulkTemplatePreview?.estimatedCostUsd === 'undefined'
+                  ? '—'
+                  : `$${Number(bulkTemplatePreview.estimatedCostUsd).toFixed(4)} USD`}
+              </div>
+              {bulkTemplatePreview?.skipReasons && Object.keys(bulkTemplatePreview.skipReasons).length > 0 ? (
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+                  Omitidos por razón:{' '}
+                  {Object.entries(bulkTemplatePreview.skipReasons)
+                    .map(([k, v]) => `${k}:${v}`)
+                    .join(' · ')}
+                </div>
+              ) : null}
+              <div style={{ marginBottom: 8, fontSize: 12, color: '#666' }}>
+                Dry-run hash: <span style={{ fontFamily: 'monospace' }}>{String(bulkTemplatePreview?.dryRunHash || '—')}</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+                <button
+                  onClick={() =>
+                    runBulkTemplatePreview(String(lastImportSummary?.importBatchId || bulkTemplatePreview?.importBatchId || '')).catch(
+                      () => {},
+                    )
+                  }
+                  disabled={bulkTemplateRunning}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                >
+                  Recalcular dry-run
+                </button>
+                <input
+                  value={bulkTemplateConfirmText}
+                  onChange={(e) => setBulkTemplateConfirmText(e.target.value)}
+                  placeholder='Escribe "CONFIRMAR"'
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd', minWidth: 180 }}
+                />
+                <button
+                  onClick={() => executeBulkTemplateSend().catch(() => {})}
+                  disabled={
+                    bulkTemplateRunning ||
+                    String(bulkTemplateConfirmText || '').trim().toUpperCase() !== 'CONFIRMAR' ||
+                    Number(bulkTemplatePreview?.totals?.eligible || 0) <= 0
+                  }
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+                >
+                  {bulkTemplateRunning ? 'Enviando…' : 'Confirmar envío masivo'}
+                </button>
+              </div>
+              {Array.isArray(bulkTemplatePreview?.rows) && bulkTemplatePreview.rows.length > 0 ? (
+                <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 8 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: '#fafafa', textAlign: 'left' }}>
+                        <th style={{ padding: 8, fontSize: 11, color: '#555' }}>Nombre</th>
+                        <th style={{ padding: 8, fontSize: 11, color: '#555' }}>Teléfono</th>
+                        <th style={{ padding: 8, fontSize: 11, color: '#555' }}>Puesto</th>
+                        <th style={{ padding: 8, fontSize: 11, color: '#555' }}>Template</th>
+                        <th style={{ padding: 8, fontSize: 11, color: '#555' }}>Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkTemplatePreview.rows.slice(0, 80).map((r: any) => (
+                        <tr key={`${r.contactId}:${r.templateName || 'none'}`} style={{ borderTop: '1px solid #f0f0f0' }}>
+                          <td style={{ padding: 8, fontSize: 12 }}>{r.name || '—'}</td>
+                          <td style={{ padding: 8, fontSize: 12 }}>{r.phoneE164 || '—'}</td>
+                          <td style={{ padding: 8, fontSize: 12 }}>{r.jobRole || '—'}</td>
+                          <td style={{ padding: 8, fontSize: 12, fontFamily: 'monospace' }}>{r.templateName || '—'}</td>
+                          <td style={{ padding: 8, fontSize: 12, color: r.eligible ? '#1a7f37' : '#b93800' }}>
+                            {r.eligible ? 'eligible' : String(r.reason || 'skip')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Crear candidato manual</div>
-            <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : 'repeat(4, minmax(140px, 1fr))', gap: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : 'repeat(5, minmax(120px, 1fr))', gap: 8 }}>
               <input
                 placeholder="+56994830202"
                 value={candidateEditor.phoneE164}
@@ -4311,11 +4619,19 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
               />
               <input
-                placeholder="Rol"
+                placeholder="Rol texto"
                 value={candidateEditor.role}
                 onChange={(e) => setCandidateEditor((prev) => ({ ...prev, role: e.target.value }))}
                 style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
               />
+              <select
+                value={candidateEditor.jobRole}
+                onChange={(e) => setCandidateEditor((prev) => ({ ...prev, jobRole: e.target.value as any }))}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              >
+                <option value="CONDUCTOR">Puesto: CONDUCTOR</option>
+                <option value="PEONETA">Puesto: PEONETA</option>
+              </select>
               <input
                 placeholder="Canal"
                 value={candidateEditor.channel}
@@ -4369,21 +4685,52 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 value={candidatesQuery}
                 onChange={(e) => setCandidatesQuery(e.target.value)}
                 placeholder="Buscar por teléfono, nombre, comuna…"
-                style={{ minWidth: 260, flex: 1, padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                style={{ minWidth: 220, flex: 1, padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
               />
               <select
                 value={candidatesStatusFilter}
                 onChange={(e) => setCandidatesStatusFilter(e.target.value)}
                 style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
               >
-                <option value="">Todos</option>
+                <option value="">Estado candidato: Todos</option>
                 <option value="NUEVO">NUEVO</option>
                 <option value="CONTACTADO">CONTACTADO</option>
                 <option value="CITADO">CITADO</option>
                 <option value="DESCARTADO">DESCARTADO</option>
               </select>
+              <select
+                value={candidatesJobRoleFilter}
+                onChange={(e) => setCandidatesJobRoleFilter(e.target.value)}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+              >
+                <option value="">Puesto: Todos</option>
+                <option value="CONDUCTOR">CONDUCTOR</option>
+                <option value="PEONETA">PEONETA</option>
+              </select>
+              <select
+                value={candidatesProgramFilter}
+                onChange={(e) => setCandidatesProgramFilter(e.target.value)}
+                style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd', minWidth: 180 }}
+              >
+                <option value="">Program: Todos</option>
+                {(programs || [])
+                  .filter((p: any) => p && !p.archivedAt)
+                  .map((p: any) => (
+                    <option key={`cand-program-${p.id}`} value={String(p.id)}>
+                      {p.name}
+                    </option>
+                  ))}
+              </select>
               <button
-                onClick={() => loadCandidates().catch(() => {})}
+                onClick={() =>
+                  loadCandidates({
+                    q: candidatesQuery,
+                    status: candidatesStatusFilter,
+                    jobRole: candidatesJobRoleFilter,
+                    programId: candidatesProgramFilter,
+                    importBatchId: String(lastImportSummary?.importBatchId || ''),
+                  }).catch(() => {})
+                }
                 style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
               >
                 Buscar
@@ -4399,8 +4746,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   <tr style={{ background: '#fafafa', textAlign: 'left' }}>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Nombre</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Teléfono</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Puesto</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Program</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Estado candidato</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Stage</th>
+                    <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Batch</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Caso</th>
                     <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Actualizado</th>
                   </tr>
@@ -4411,8 +4761,19 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                       <tr key={`${row.contactId}:${row.conversationId || 'none'}`} style={{ borderTop: '1px solid #f0f0f0' }}>
                         <td style={{ padding: 10, fontSize: 13 }}>{row.name || 'Sin nombre'}</td>
                         <td style={{ padding: 10, fontSize: 13 }}>{row.phoneE164 || row.waId || '—'}</td>
+                        <td style={{ padding: 10, fontSize: 12 }}>{row.jobRole || '—'}</td>
+                        <td style={{ padding: 10, fontSize: 12 }}>
+                          {row.programName ? (
+                            <span style={{ background: '#f0f5ff', border: '1px solid #adc6ff', borderRadius: 999, padding: '2px 8px', fontSize: 11 }}>
+                              {row.programName}
+                            </span>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
                         <td style={{ padding: 10, fontSize: 12 }}>{row.candidateStatus || '—'}</td>
                         <td style={{ padding: 10, fontSize: 12 }}>{row.stageSlug || '—'}</td>
+                        <td style={{ padding: 10, fontSize: 12, fontFamily: 'monospace' }}>{row.importBatchId || '—'}</td>
                         <td style={{ padding: 10, fontSize: 12, fontFamily: 'monospace' }}>
                           {row.conversationId ? (
                             <button
@@ -4441,7 +4802,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6} style={{ padding: 10, fontSize: 13, color: '#666' }}>
+                      <td colSpan={9} style={{ padding: 10, fontSize: 13, color: '#666' }}>
                         — Sin candidatos.
                       </td>
                     </tr>
