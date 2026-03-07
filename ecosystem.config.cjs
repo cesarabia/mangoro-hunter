@@ -1,4 +1,4 @@
-const appRoot = process.env.HUNTER_APP_ROOT || '/opt/hunter/current';
+const appRoot = '/opt/hunter/current';
 
 module.exports = {
   apps: [
@@ -18,6 +18,7 @@ module.exports = {
       listen_timeout: 8000,
       env: {
         NODE_ENV: 'production',
+        PORT: '4101',
       },
     },
   ],

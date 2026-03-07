@@ -145,9 +145,8 @@ rollback_to_previous_release() {
   fi
   log "Rollback automático a release previo: $previous_release"
   ln -sfn "$previous_release" "$CURRENT_LINK"
-  ln -sfn "$CURRENT_LINK/backend" "$APP_ROOT/backend"
-  ln -sfn "$CURRENT_LINK/frontend" "$APP_ROOT/frontend"
-  pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --only hunter-backend || pm2 restart hunter-backend
+  pm2 delete hunter-backend >/dev/null 2>&1 || true
+  pm2 start "$CURRENT_LINK/ecosystem.config.cjs" --only hunter-backend --update-env || pm2 restart hunter-backend --update-env
   return 0
 }
 
@@ -226,6 +225,18 @@ if [[ ! -d "$SOURCE_DIR/.git" ]]; then
   exit 1
 fi
 
+if [[ -f "$SOURCE_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$SOURCE_DIR/.env"
+  set +a
+elif [[ -f "$APP_ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$APP_ROOT/.env"
+  set +a
+fi
+
 log "Preflight: baseline de DB"
 guard_database_url_not_in_code_tree "$SOURCE_DIR/.env"
 IFS=',' read -r db_size_before conv_before msg_before <<< "$(db_metrics "$STATE_DIR/dev.db")"
@@ -267,7 +278,6 @@ rsync -a --delete \
   --exclude='dev.db' \
   --exclude='*.db' \
   --exclude='backend/uploads' \
-  --exclude='uploads' \
   --exclude='state' \
   --exclude='shared' \
   --exclude='backups' \
@@ -297,14 +307,16 @@ fi
 
 previous_release="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
 ln -sfn "$release_dir" "$CURRENT_LINK"
-ln -sfn "$CURRENT_LINK/backend" "$APP_ROOT/backend"
-ln -sfn "$CURRENT_LINK/frontend" "$APP_ROOT/frontend"
+
+mkdir -p "$APP_ROOT/frontend/dist"
+rsync -a --delete "$release_dir/frontend/dist/" "$APP_ROOT/frontend/dist/"
 
 log "Restart seguro (solo hunter-backend)"
 if [[ -f "$CURRENT_LINK/ecosystem.config.cjs" ]]; then
-  pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --only hunter-backend || pm2 restart hunter-backend
+  pm2 delete hunter-backend >/dev/null 2>&1 || true
+  pm2 start "$CURRENT_LINK/ecosystem.config.cjs" --only hunter-backend --update-env || pm2 restart hunter-backend --update-env
 else
-  pm2 restart hunter-backend
+  pm2 restart hunter-backend --update-env
 fi
 pm2 save
 
