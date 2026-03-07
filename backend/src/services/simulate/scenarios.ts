@@ -118,6 +118,15 @@ export type ScenarioStep = {
     clientLocationFreeText?: {
       workspaceId?: string;
     };
+    candidateIntakeChooseRole?: {
+      workspaceId?: string;
+    };
+    candidateConductorCollectCvAndDocs?: {
+      workspaceId?: string;
+    };
+    candidatePeonetaBasicFlow?: {
+      workspaceId?: string;
+    };
     clientRepeatedMessagesNoCannedRepeat?: {
       workspaceId?: string;
     };
@@ -149,6 +158,36 @@ export type ScenarioStep = {
     inboxTodosStageJobroleConsistency?: {
       workspaceId?: string;
     };
+    suggestIncludesDraftText?: {
+      workspaceId?: string;
+    };
+    suggestUsesHistoryWithoutSystemEvents?: {
+      workspaceId?: string;
+    };
+    inboundDebounceSingleDraftForMultipleMsgs?: {
+      workspaceId?: string;
+    };
+    candidateOkDoesNotRestartFlow?: {
+      workspaceId?: string;
+    };
+    sendPdfPublicAssetOk?: {
+      workspaceId?: string;
+    };
+    sendPdfOutside24hReturnsBlocked?: {
+      workspaceId?: string;
+    };
+    modelResolvedGpt4oMini?: {
+      workspaceId?: string;
+    };
+    suggestRewritesSlangToProfessional?: {
+      workspaceId?: string;
+    };
+    menuTemplateCanBeSent?: {
+      workspaceId?: string;
+    };
+    inboundUnroutedDoesNotReply?: boolean;
+    deployDoesNotTouchDb?: boolean;
+    deployCreatesBackupBeforeRestart?: boolean;
     inviteExistingUserAccept?: boolean;
     copilotArchiveRestore?: boolean;
     copilotContextFollowup?: boolean;
@@ -769,6 +808,45 @@ export const SCENARIOS: ScenarioDefinition[] = [
     ],
   },
   {
+    id: 'candidate_intake_choose_role',
+    name: 'Candidate Intake: selección de rol + comuna',
+    description:
+      'Valida metadata applicationRole/applicationState y guía inicial por rol/comuna para Envío Rápido.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check candidate intake choose role',
+        expect: { candidateIntakeChooseRole: { workspaceId: 'scenario-candidate-intake-role' } },
+      },
+    ],
+  },
+  {
+    id: 'candidate_conductor_collect_cv_and_docs',
+    name: 'Candidate Conductor: CV + documentos etapa 2',
+    description:
+      'Valida que conductores avancen a etapa de revisión con metadata y stage EN_REVISION_OPERACION.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check candidate conductor collect cv and docs',
+        expect: { candidateConductorCollectCvAndDocs: { workspaceId: 'scenario-candidate-conductor-docs' } },
+      },
+    ],
+  },
+  {
+    id: 'candidate_peoneta_basic_flow',
+    name: 'Candidate Peoneta: flujo básico',
+    description:
+      'Valida flujo base de peoneta sin exigir documentos de conductor y con estado conversacional por metadata.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check candidate peoneta basic flow',
+        expect: { candidatePeonetaBasicFlow: { workspaceId: 'scenario-candidate-peoneta-flow' } },
+      },
+    ],
+  },
+  {
     id: 'staff_cases_new_includes_new_intake',
     name: 'STAFF: casos nuevos incluye NEW_INTAKE',
     description:
@@ -902,6 +980,162 @@ export const SCENARIOS: ScenarioDefinition[] = [
       'Valida que el resumen/notificación use availabilityParsed solo si availabilityConfirmedAt existe; si no, usa availabilityRaw.',
     steps: [
       { action: 'WORKSPACE_CHECK', inboundText: 'check availability confirm gating', expect: { availabilityConfirmedPreventsHallucination: { workspaceId: 'scenario-availability-confirm' } } },
+    ],
+  },
+  {
+    id: 'suggest_includes_draft_text',
+    name: 'ER-P1: Sugerir usa draftText',
+    description:
+      'Valida que AI_SUGGEST reciba draftText, lo use en contexto y mantenga modelResolved en gpt-4o-mini.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check suggest includes draft',
+        expect: { suggestIncludesDraftText: { workspaceId: 'scenario-er-p1-suggest-draft' } },
+      },
+    ],
+  },
+  {
+    id: 'suggest_uses_history_without_system_events',
+    name: 'ER-P1: Sugerir ignora eventos internos',
+    description:
+      'Valida que el contexto de AI_SUGGEST excluya mensajes internos/sistema y use solo conversación real.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check suggest history without internal events',
+        expect: { suggestUsesHistoryWithoutSystemEvents: { workspaceId: 'scenario-er-p1-context-filter' } },
+      },
+    ],
+  },
+  {
+    id: 'inbound_debounce_single_draft_for_multiple_msgs',
+    name: 'ER-P1: Debounce inbound (ráfaga => 1 run)',
+    description:
+      'Valida que múltiples inbound en pocos segundos generen un único AgentRun automático en modo REAL.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check inbound debounce single run',
+        expect: { inboundDebounceSingleDraftForMultipleMsgs: { workspaceId: 'scenario-er-p1-debounce' } },
+      },
+    ],
+  },
+  {
+    id: 'candidate_ok_does_not_restart_flow',
+    name: 'ER-P1: “ok/gracias” no reinicia flujo',
+    description:
+      'Valida que si el flujo ya está en progreso, un inbound corto “ok/gracias” no reinicie menú de cargo.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check candidate ok keeps flow',
+        expect: { candidateOkDoesNotRestartFlow: { workspaceId: 'scenario-er-p1-ok-flow' } },
+      },
+    ],
+  },
+  {
+    id: 'send_pdf_public_asset_ok',
+    name: 'ER-P1: SEND_PDF con asset PUBLIC',
+    description:
+      'Valida que SEND_PDF envíe documento (transport NULL) cuando el asset es PUBLIC y está dentro de 24h.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check send pdf public asset ok',
+        expect: { sendPdfPublicAssetOk: { workspaceId: 'scenario-er-p1-send-pdf' } },
+      },
+    ],
+  },
+  {
+    id: 'send_pdf_outside_24h_returns_blocked',
+    name: 'ER-P1: SEND_PDF fuera de 24h bloquea',
+    description:
+      'Valida bloqueo OUTSIDE_24H para SEND_PDF con sugerencia de plantilla menú.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check send pdf outside 24h blocked',
+        expect: { sendPdfOutside24hReturnsBlocked: { workspaceId: 'scenario-er-p1-send-pdf-24h' } },
+      },
+    ],
+  },
+  {
+    id: 'model_resolved_gpt4o_mini',
+    name: 'ER-P1: modelResolved default gpt-4o-mini',
+    description:
+      'Valida que AI_SUGGEST/INBOUND resuelvan gpt-4o-mini por default en AiUsageLog.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check model resolved gpt4o mini',
+        expect: { modelResolvedGpt4oMini: { workspaceId: 'scenario-er-p1-model' } },
+      },
+    ],
+  },
+  {
+    id: 'suggest_rewrites_slang_to_professional',
+    name: 'ER-P2: Sugerir reescribe modismos a tono profesional',
+    description:
+      'Valida que AI_SUGGEST reciba un draft con slang y devuelva texto profesional sin modismos bloqueados.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check suggest rewrite slang',
+        expect: { suggestRewritesSlangToProfessional: { workspaceId: 'scenario-er-p2-tone' } },
+      },
+    ],
+  },
+  {
+    id: 'menu_template_can_be_sent',
+    name: 'ER-P2: plantilla menú disponible y enviable',
+    description:
+      'Valida que enviorapido_postulacion_menu_v1 exista en catálogo y pueda ejecutarse por comando plantilla.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check menu template send',
+        expect: { menuTemplateCanBeSent: { workspaceId: 'scenario-er-p2-menu-template' } },
+      },
+    ],
+  },
+  {
+    id: 'inbound_unrouted_does_not_reply',
+    name: 'ER-P2: inbound sin routing no responde',
+    description:
+      'Valida que un inbound con waPhoneNumberId no mapeado se registre como UNROUTED_INBOUND y no genere outbound.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check inbound unrouted no reply',
+        expect: { inboundUnroutedDoesNotReply: true },
+      },
+    ],
+  },
+  {
+    id: 'deploy_does_not_touch_db',
+    name: 'ER-P2: deploy script protege DB/uploads',
+    description:
+      'Valida que ops/deploy_hunter_prod.sh incluya guardrails de backup, exclude dev.db/uploads y rollback por health.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check deploy db safety',
+        expect: { deployDoesNotTouchDb: true },
+      },
+    ],
+  },
+  {
+    id: 'deploy_creates_backup_before_restart',
+    name: 'ER-P3: deploy crea backup antes de reiniciar',
+    description:
+      'Valida (modo simulado) que el deploy invoque hunter_backup.sh y que exista manifest/checksums en script de backup.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check deploy backup before restart',
+        expect: { deployCreatesBackupBeforeRestart: true },
+      },
     ],
   },
 ];

@@ -22,6 +22,7 @@ import { isKnownActiveStage, normalizeStageSlug } from '../services/workspaceSta
 import { createInAppNotification } from '../services/notificationService';
 import { listWorkspaceTemplateCatalog } from '../services/whatsappTemplateCatalogService';
 import { repairMojibake } from '../utils/textEncoding';
+import { resolveUploadsBaseDir } from '../utils/statePaths';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -1056,7 +1057,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         return reply.code(502).send({ error: humanizeAttachmentSendError(sendResult.error) });
       }
 
-      const baseUploadsDir = path.resolve(process.cwd(), 'uploads', 'outbound', conversation.id);
+      const baseUploadsDir = path.resolve(resolveUploadsBaseDir(), 'outbound', conversation.id);
       fs.mkdirSync(baseUploadsDir, { recursive: true });
       const storedFileName = `${Date.now()}-${fileName}`;
       const absolutePath = path.join(baseUploadsDir, storedFileName);
