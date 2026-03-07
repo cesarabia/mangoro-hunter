@@ -2,6 +2,81 @@
 
 ## Qué está listo (hoy)
 
+### ER-P1 (Hunter PROD only) — estado actual
+- `Sugerir` ahora acepta `draftText` explícito y diferencia modo:
+  - con borrador: mejora redacción/tono sin perder intención,
+  - sin borrador: genera propuesta desde cero.
+- Context builder unificado `buildLLMContext(...)` reutilizado para inbound/suggest/compose.
+- Filtro de contexto endurecido: excluye eventos internos/notas/logs técnicos del historial que ve el LLM.
+- Debounce inbound persistente (DB scheduler + worker) activo: ráfagas de inbound consolidan una sola ejecución.
+- Plantilla menú agregada al catálogo conocido: `enviorapido_postulacion_menu_v1` (`es_CL`) y fallback sugerido fuera de 24h.
+- Workspace Assets + `SEND_PDF`:
+  - assets PDF por workspace (PUBLIC/INTERNAL),
+  - envío por tool con validación `OUTSIDE_24H`, SAFE MODE y auditoría en Outbound logs.
+- Guardrail de despliegue dedicado: `ops/deploy_hunter_prod.sh` aborta si detecta host viejo (`mangoro-prod` / `3.148.219.40`).
+- Validación local (2026-03-06) de smoke scenarios ER‑P1 + pendientes staff:
+  - PASS `staff_inbox_list_cases`
+  - PASS `staff_reply_to_notification_updates_case`
+  - PASS `staff_notification_template_variables`
+  - PASS `ssclinical_notification_requires_availability`
+  - PASS `suggest_includes_draft_text`
+  - PASS `suggest_uses_history_without_system_events`
+  - PASS `inbound_debounce_single_draft_for_multiple_msgs`
+  - PASS `candidate_ok_does_not_restart_flow`
+  - PASS `send_pdf_public_asset_ok`
+  - PASS `send_pdf_outside_24h_returns_blocked`
+  - PASS `model_resolved_gpt4o_mini`
+  - Resultado: **11/11 PASS**.
+
+### ER-P2 (Hunter PROD only) — estado actual
+- Deploy guardrails reforzados para host dedicado:
+  - `ops/deploy_hunter_prod.sh` exige destino `16.59.92.121`,
+  - valida marcador `ops/IS_NEW_SERVER=true`,
+  - aborta si detecta fingerprints del host antiguo.
+  - layout de releases: `/opt/hunter/releases/<sha-ts>` + symlink `/opt/hunter/current`.
+  - datos persistentes fuera del artifact: `/opt/hunter/shared/dev.db`, `/opt/hunter/shared/uploads`, `/opt/hunter/shared/assets`.
+  - backup previo a cada deploy:
+    - SQLite: `sqlite3 .backup` en `/opt/hunter/backups/dev.db.<ts>.bak`
+    - uploads: `/opt/hunter/backups/uploads.<ts>.tgz`
+    - retención: últimos 14 backups.
+  - guardrail anti data-loss:
+    - excluye `.db` y `backend/uploads` del artifact,
+    - aborta si detecta `.db` dentro del release,
+    - compara baseline de DB (size/conversations/messages) y hace rollback si cae abruptamente.
+  - rollback automático:
+    - si falla health post-restart, vuelve al symlink previo y reinicia solo `hunter-backend`.
+- Configuración de modelo en runtime y config global alineada a `gpt-4o-mini` (override + alias).
+- UI operativa:
+  - Tooltips consistentes (~1000ms) en controles críticos (`SAFE MODE`, `Stage`, `Sugerir`, `Silenciar IA`, `Mostrar/Ocultar plantillas`).
+  - Copilot en desktop con comportamiento “dock” real (reserva espacio lateral; no tapa el chat).
+  - Glosario rápido de stages en Configuración → Workspace → Estados.
+- Routing safety en PROD:
+  - inbound sin `waPhoneNumberId` o sin match ya no cae al workspace `default`,
+  - se registra evento `UNROUTED_INBOUND` y no se responde al candidato,
+  - inbound automático en workspace `default` se bloquea server-side con evento `DEFAULT_WORKSPACE_INBOUND_BLOCKED`.
+- Tone guard:
+  - `Sugerir` aplica filtro anti-modismos (ej: `wena`, `me tinca`, `bacán`, `compa`, `bro`, `cachai`),
+  - retry automático de reescritura profesional; si no pasa validación, retorna error técnico en vez de texto defectuoso.
+
+### ER-P3 (Deploy safety + restore) — implementado en repo (plan de ejecución pendiente)
+- Backup dedicado agregado: `ops/hunter_backup.sh`
+  - backup consistente SQLite (`sqlite3 .backup`) + `uploads.tar.gz`,
+  - `manifest.txt` + `SHA256SUMS.txt`,
+  - retención configurable (>14 días),
+  - soporte opcional a S3 (`S3_BACKUP_BUCKET`).
+- Restore controlado agregado: `ops/hunter_restore.sh`
+  - modo por defecto **PLAN ONLY** (no ejecuta),
+  - restore real solo con `--execute` + `HUNTER_RESTORE_CONFIRM=YES`.
+- Deploy PROD reforzado:
+  - `ops/deploy_hunter_prod.sh` invoca backup obligatorio antes de restart,
+  - migra/usa estado persistente en `/opt/hunter/state/{dev.db,uploads}`,
+  - aborta si `DATABASE_URL` apunta al árbol de código/releases,
+  - aborta si artifact incluye `.db` o `backend/uploads`.
+- Runtime con compatibilidad state/legacy:
+  - `backend/src/utils/statePaths.ts` resuelve DB/uploads en `state` con fallback temporal legacy + warnings explícitos.
+- Smoke nuevo:
+  - `deploy_creates_backup_before_restart` valida guardrails de backup en modo simulado.
+
 ### Agent OS v1 (core)
 - AgentRuntime + CommandExecutor con schema estricto (commands JSON) y guardrails.
 - Tools deterministas (normalize/resolve_location/validate_rut/pii sanitize).
@@ -59,6 +134,15 @@
   - stages de pipeline de reclutamiento,
   - automations base (`INBOUND_MESSAGE -> RUN_AGENT` + handoff `QUALIFIED/INTERVIEW_PENDING -> ASSIGN + NOTIFY_STAFF_WHATSAPP`),
   - saneo archive-only de seeds heredados (“ventas en terreno/alarmas”).
+- Rediseño LLM-first (postulación Envío Rápido):
+  - se eliminó el reemplazo técnico de borradores (ya no aparece la nota “borrador técnico reemplazado”),
+  - el runtime recupera texto del LLM en errores de parseo (`INVALID_SCHEMA`/`INVALID_SEMANTICS`) y ejecuta solo `SEND_MESSAGE`,
+  - metadata conversacional nueva: `conversation.applicationRole` + `conversation.applicationState` (comando `SET_APPLICATION_FLOW`),
+  - default de modelos en config/admin/interview a `gpt-4o-mini` + `candidateMaxOutputTokens` configurable.
+- Smoke scenarios agregados:
+  - `candidate_intake_choose_role`
+  - `candidate_conductor_collect_cv_and_docs`
+  - `candidate_peoneta_basic_flow`
 
 ## Qué falta (para “Agent OS v1 completo”)
 - (Opcional) Integraciones por workspace (OpenAI/WhatsApp) si se requiere multi‑cliente con credenciales separadas.

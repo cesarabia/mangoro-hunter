@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import fs from 'fs';
 import path from 'path';
 import { prisma } from '../db/client';
+import { resolveMediaPathCandidates } from '../utils/statePaths';
 
 export async function registerMessageRoutes(app: FastifyInstance) {
   app.get('/:id/download', { preValidation: [app.authenticate] }, async (request, reply) => {
@@ -12,11 +13,7 @@ export async function registerMessageRoutes(app: FastifyInstance) {
     }
 
     const mediaPath = String(message.mediaPath || '').trim();
-    const candidates = [
-      path.resolve(process.cwd(), mediaPath), // new storage (backend/uploads/...)
-      path.resolve(path.join(__dirname, '..'), mediaPath), // legacy storage under dist
-      path.resolve(process.cwd(), 'dist', mediaPath), // additional legacy fallback
-    ];
+    const candidates = resolveMediaPathCandidates(mediaPath);
     const absolutePath = candidates.find((p) => fs.existsSync(p));
 
     if (!absolutePath) {

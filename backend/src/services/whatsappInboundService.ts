@@ -56,6 +56,7 @@ import { ensurePartnerConversation, ensureStaffConversation } from "./staffConve
 import { stableHash } from "./agent/tools";
 import { resolveWorkspaceProgramForKind } from "./programRoutingService";
 import { normalizeChatCreateArgsForModel } from "./openAiChatCompletionService";
+import { resolveUploadsBaseDir } from "../utils/statePaths";
 
 interface InboundMedia {
   type: string;
@@ -80,7 +81,13 @@ interface InboundMessageParams {
 }
 
 // Persist uploads outside build artifacts. `dist` is recreated on each deploy.
-const UPLOADS_BASE = path.join(process.cwd(), "uploads");
+const UPLOADS_BASE = resolveUploadsBaseDir();
+
+function isProdRuntime(): boolean {
+  const nodeEnv = String(process.env.NODE_ENV || "").trim().toLowerCase();
+  const appEnv = String(process.env.HUNTER_ENV || process.env.APP_ENV || "").trim().toLowerCase();
+  return nodeEnv === "production" || appEnv === "production" || appEnv === "prod";
+}
 
 async function mergeOrCreateContact(params: { workspaceId: string; waId: string; preferredId?: string }) {
   const candidates = buildWaIdCandidates(params.waId);
@@ -195,7 +202,10 @@ export async function handleInboundWhatsAppMessage(
   params: InboundMessageParams,
 ): Promise<{ conversationId: string }> {
   const config = params.config ?? (await getSystemConfig());
-  const routing = await resolveInboundPhoneLineRouting({ waPhoneNumberId: params.waPhoneNumberId });
+  const routing = await resolveInboundPhoneLineRouting({
+    waPhoneNumberId: params.waPhoneNumberId,
+    allowDefaultFallback: false,
+  });
   if (routing.kind !== "RESOLVED") {
     await logInboundRoutingError({
       app,
@@ -896,6 +906,44 @@ export async function handleInboundWhatsAppMessage(
     where: { id: message.id },
   });
   const effectiveText = buildPolicyText(params, latestMessage);
+
+  if (
+    isProdRuntime() &&
+    String(workspaceId || "").trim().toLowerCase() === "default" &&
+    !conversation?.isAdmin
+  ) {
+    app.log.warn(
+      {
+        event: "DEFAULT_WORKSPACE_INBOUND_BLOCKED",
+        workspaceId,
+        conversationId: conversation?.id || null,
+        waPhoneNumberId: params.waPhoneNumberId || null,
+        waMessageId: params.waMessageId || null,
+        from: params.from,
+      },
+      "Inbound bloqueado para workspace default en PROD (sin respuesta automática).",
+    );
+    await prisma.automationRunLog
+      .create({
+        data: {
+          workspaceId,
+          ruleId: null,
+          conversationId: conversation?.id || null,
+          eventType: "DEFAULT_WORKSPACE_INBOUND_BLOCKED",
+          status: "BLOCKED",
+          inputJson: serializeJson({
+            waPhoneNumberId: params.waPhoneNumberId || null,
+            waMessageId: params.waMessageId || null,
+            from: params.from,
+            text: String(effectiveText || "").slice(0, 400),
+          }),
+          outputJson: null,
+          error: "Inbound automático bloqueado: workspace default no puede responder en PROD.",
+        } as any,
+      })
+      .catch(() => {});
+    return { conversationId: conversation.id };
+  }
 
   if (!isStaffConversation && !isPartnerConversation) {
     const optedIn = await maybeHandleOptIn(app, conversation, contact, effectiveText);
