@@ -301,7 +301,10 @@ mkdir -p "$release_dir"
 rsync -a --delete \
   --exclude='/.git' \
   --exclude='/dev.db' \
-  --exclude='/*.db' \
+  --exclude='*.db' \
+  --exclude='*.db-journal' \
+  --exclude='/tmp' \
+  --exclude='/source-clean' \
   --exclude='/releases' \
   --exclude='/current' \
   --exclude='/backend/uploads' \
