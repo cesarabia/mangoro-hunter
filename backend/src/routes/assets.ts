@@ -12,8 +12,82 @@ import {
 import { resolveWorkspaceAccess, isWorkspaceAdmin } from '../services/workspaceAuthService';
 import { prisma } from '../db/client';
 import { serializeJson } from '../utils/json';
+import { resolveMediaPathCandidates } from '../utils/statePaths';
 
 export async function registerAssetRoutes(app: FastifyInstance) {
+  app.get('/integrity', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    const rows = await listWorkspaceAssets(access.workspaceId, true);
+    const activeRows = rows.filter((r: any) => !r?.archivedAt);
+    const assetsPresent = activeRows.filter((r: any) => !Boolean((r as any).missing)).length;
+    const assetsMissing = activeRows.length - assetsPresent;
+
+    const attachmentRows = await prisma.message
+      .findMany({
+        where: {
+          mediaPath: { not: null },
+          conversation: { workspaceId: access.workspaceId },
+        } as any,
+        select: { id: true, mediaPath: true, conversationId: true },
+      })
+      .catch(() => []);
+    let attachmentPresent = 0;
+    let attachmentMissing = 0;
+    for (const row of attachmentRows) {
+      const mediaPath = String((row as any)?.mediaPath || '').trim();
+      if (!mediaPath) continue;
+      const exists = resolveMediaPathCandidates(mediaPath).some((p) => fs.existsSync(p));
+      if (exists) attachmentPresent += 1;
+      else attachmentMissing += 1;
+    }
+
+    const criticalBySlug = new Map(
+      activeRows.map((r: any) => [String(r.slug || '').trim().toLowerCase(), r]),
+    );
+    const criticalAssets = [
+      {
+        key: 'guia_postulacion',
+        label: 'Guía de Postulación',
+        expectedSlug: 'enviorapido_guia_postulacion_v1',
+      },
+      {
+        key: 'guia_pagos_conductores',
+        label: 'Guía de Pagos Conductores',
+        expectedSlug: 'enviorapido_guia_pagos_conductores_v1',
+      },
+      {
+        key: 'guia_pagos_vehiculo',
+        label: 'Guía de Pagos Vehículo Propio',
+        expectedSlug: 'enviorapido_guia_pagos_furgon_v1',
+      },
+    ].map((item) => {
+      const row = criticalBySlug.get(item.expectedSlug);
+      return {
+        ...item,
+        present: Boolean(row) && !Boolean((row as any)?.missing),
+        missing: !row || Boolean((row as any)?.missing),
+        audience: row?.audience || null,
+        title: row?.title || null,
+      };
+    });
+
+    return {
+      workspaceId: access.workspaceId,
+      generatedAt: new Date().toISOString(),
+      assets: {
+        active: activeRows.length,
+        present: assetsPresent,
+        missing: assetsMissing,
+      },
+      attachments: {
+        total: attachmentRows.length,
+        present: attachmentPresent,
+        missing: attachmentMissing,
+      },
+      criticalAssets,
+    };
+  });
+
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const includeArchived = String((request.query as any)?.includeArchived || '').trim() === '1';

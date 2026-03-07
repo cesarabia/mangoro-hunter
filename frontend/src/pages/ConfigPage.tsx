@@ -125,7 +125,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   }, [tab]);
 
   const workspaceId = typeof window !== 'undefined' ? localStorage.getItem('workspaceId') || 'default' : 'default';
-  const isDev = typeof import.meta !== 'undefined' ? import.meta.env.MODE !== 'production' : true;
+  const isDev = process.env.NODE_ENV !== 'production';
 
   const [workspaces, setWorkspaces] = useState<any[]>([]);
   const currentWorkspace = useMemo(() => workspaces.find((w) => String(w.id) === String(workspaceId)) || null, [workspaces, workspaceId]);
@@ -203,6 +203,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [workspaceAssets, setWorkspaceAssets] = useState<any[]>([]);
   const [workspaceAssetsLoading, setWorkspaceAssetsLoading] = useState(false);
   const [workspaceAssetsError, setWorkspaceAssetsError] = useState<string | null>(null);
+  const [workspaceAssetsIntegrity, setWorkspaceAssetsIntegrity] = useState<any | null>(null);
+  const [workspaceAssetsIntegrityLoading, setWorkspaceAssetsIntegrityLoading] = useState(false);
+  const [workspaceAssetsIntegrityError, setWorkspaceAssetsIntegrityError] = useState<string | null>(null);
   const [workspaceAssetsIncludeArchived, setWorkspaceAssetsIncludeArchived] = useState<boolean>(false);
   const [workspaceAssetUploadFile, setWorkspaceAssetUploadFile] = useState<File | null>(null);
   const [workspaceAssetTitleDraft, setWorkspaceAssetTitleDraft] = useState<string>('');
@@ -529,6 +532,20 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     }
   };
 
+  const loadWorkspaceAssetsIntegrity = async () => {
+    setWorkspaceAssetsIntegrityLoading(true);
+    setWorkspaceAssetsIntegrityError(null);
+    try {
+      const data: any = await apiClient.get('/api/assets/integrity');
+      setWorkspaceAssetsIntegrity(data || null);
+    } catch (err: any) {
+      setWorkspaceAssetsIntegrity(null);
+      setWorkspaceAssetsIntegrityError(err?.message || 'No se pudo cargar el reporte de integridad.');
+    } finally {
+      setWorkspaceAssetsIntegrityLoading(false);
+    }
+  };
+
   const archiveWorkspaceAsset = async (assetId: string, archived: boolean) => {
     if (!assetId || workspaceAssetArchivingId) return;
     setWorkspaceAssetArchivingId(assetId);
@@ -538,6 +555,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       await apiClient.patch(`/api/assets/${encodeURIComponent(assetId)}/archive`, { archived });
       setWorkspaceAssetUploadStatus(archived ? 'Asset archivado.' : 'Asset restaurado.');
       await loadWorkspaceAssets();
+      await loadWorkspaceAssetsIntegrity();
     } catch (err: any) {
       setWorkspaceAssetUploadError(err?.message || 'No se pudo actualizar el asset.');
     } finally {
@@ -588,6 +606,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setWorkspaceAssetDescriptionDraft('');
       setWorkspaceAssetAudienceDraft('PUBLIC');
       await loadWorkspaceAssets();
+      await loadWorkspaceAssetsIntegrity();
     } catch (err: any) {
       setWorkspaceAssetUploadError(err?.message || 'No se pudo subir el asset.');
     } finally {
@@ -1710,6 +1729,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     loadWorkspaceTemplateCatalog().catch(() => {});
     loadWorkspaceStages().catch(() => {});
     loadWorkspaceAssets().catch(() => {});
+    loadWorkspaceAssetsIntegrity().catch(() => {});
     loadPrograms().catch(() => {});
     loadPhoneLines().catch(() => {});
     loadAutomations().catch(() => {});
@@ -1725,6 +1745,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     loadWorkspaceTemplateCatalog().catch(() => {});
     loadWorkspaceStages().catch(() => {});
     loadWorkspaceAssets().catch(() => {});
+    loadWorkspaceAssetsIntegrity().catch(() => {});
   }, [workspaceId]);
 
   useEffect(() => {
@@ -1735,6 +1756,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   useEffect(() => {
     if (tab !== 'workspace') return;
     loadWorkspaceAssets({ includeArchived: workspaceAssetsIncludeArchived }).catch(() => {});
+    loadWorkspaceAssetsIntegrity().catch(() => {});
   }, [workspaceAssetsIncludeArchived]);
 
   useEffect(() => {
@@ -1743,6 +1765,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       loadWorkspaceTemplateCatalog().catch(() => {});
       loadWorkspaceStages().catch(() => {});
       loadWorkspaceAssets().catch(() => {});
+      loadWorkspaceAssetsIntegrity().catch(() => {});
       loadPrograms().catch(() => {});
       loadPhoneLines().catch(() => {});
       loadAutomations().catch(() => {});
@@ -3157,7 +3180,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 </label>
                 <button
                   type="button"
-                  onClick={() => loadWorkspaceAssets().catch(() => {})}
+                  onClick={() => {
+                    loadWorkspaceAssets().catch(() => {});
+                    loadWorkspaceAssetsIntegrity().catch(() => {});
+                  }}
                   style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
                 >
                   {workspaceAssetsLoading ? 'Cargando…' : 'Refrescar'}
@@ -3172,6 +3198,48 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               {workspaceAssetUploadStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{workspaceAssetUploadStatus}</div> : null}
               {workspaceAssetUploadError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{workspaceAssetUploadError}</div> : null}
               {workspaceAssetsError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{workspaceAssetsError}</div> : null}
+              {workspaceAssetsIntegrityError ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{workspaceAssetsIntegrityError}</div>
+              ) : null}
+
+              <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Reporte de integridad (solo diagnóstico)</div>
+                {workspaceAssetsIntegrityLoading ? (
+                  <div style={{ fontSize: 12, color: '#666' }}>Calculando integridad…</div>
+                ) : workspaceAssetsIntegrity ? (
+                  <>
+                    <div style={{ fontSize: 12, color: '#333' }}>
+                      Assets activos: <b>{Number(workspaceAssetsIntegrity?.assets?.active || 0)}</b> · presentes:{' '}
+                      <b>{Number(workspaceAssetsIntegrity?.assets?.present || 0)}</b> · faltantes:{' '}
+                      <b style={{ color: Number(workspaceAssetsIntegrity?.assets?.missing || 0) > 0 ? '#b93800' : '#1a7f37' }}>
+                        {Number(workspaceAssetsIntegrity?.assets?.missing || 0)}
+                      </b>
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 12, color: '#333' }}>
+                      Adjuntos chat: <b>{Number(workspaceAssetsIntegrity?.attachments?.total || 0)}</b> · presentes:{' '}
+                      <b>{Number(workspaceAssetsIntegrity?.attachments?.present || 0)}</b> · faltantes:{' '}
+                      <b style={{ color: Number(workspaceAssetsIntegrity?.attachments?.missing || 0) > 0 ? '#b93800' : '#1a7f37' }}>
+                        {Number(workspaceAssetsIntegrity?.attachments?.missing || 0)}
+                      </b>
+                    </div>
+                    {Array.isArray(workspaceAssetsIntegrity?.criticalAssets) ? (
+                      <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
+                        {workspaceAssetsIntegrity.criticalAssets.map((item: any) => {
+                          const missing = Boolean(item?.missing);
+                          return (
+                            <div key={String(item?.expectedSlug || item?.key)} style={{ fontSize: 12, color: missing ? '#b93800' : '#1a7f37' }}>
+                              {missing ? '⚠️' : '✅'} <b>{String(item?.label || item?.key || 'Asset crítico')}</b>{' '}
+                              {missing ? 'faltante (re-subir archivo).' : 'presente y listo para go-live.'}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#666' }}>Sin reporte de integridad aún.</div>
+                )}
+              </div>
 
               <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, maxHeight: 260, overflow: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -4628,7 +4696,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                                   checked={checked}
                                   onChange={() => {
                                     const normalized = current.map((v: any) => String(v).toUpperCase());
-                                    const next = checked ? normalized.filter((k) => k !== kind) : Array.from(new Set([...normalized, kind]));
+                                    const next = checked
+                                      ? normalized.filter((k: string) => k !== kind)
+                                      : Array.from(new Set([...normalized, kind]));
                                     setUserAllowedPersonaKindsDraft((prev) => ({ ...prev, [String(u.membershipId)]: next }));
                                   }}
                                 />

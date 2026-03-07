@@ -224,6 +224,27 @@ export type ScenarioStep = {
     menuTemplateCanBeSent?: {
       workspaceId?: string;
     };
+    conductorEmpresaCleanFlow?: {
+      workspaceId?: string;
+    };
+    conductorVehiculoCleanFlow?: {
+      workspaceId?: string;
+    };
+    peonetaCleanFlow?: {
+      workspaceId?: string;
+    };
+    noLegacyCopyLeaks?: {
+      workspaceId?: string;
+    };
+    programPromptIsEffective?: {
+      workspaceId?: string;
+    };
+    assetsPublicDownloadOk?: {
+      workspaceId?: string;
+    };
+    runtimeDebugPanelVisible?: {
+      workspaceId?: string;
+    };
     inboundUnroutedDoesNotReply?: boolean;
     deployDoesNotTouchDb?: boolean;
     deployCreatesBackupBeforeRestart?: boolean;
@@ -1347,6 +1368,97 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check deploy backup before restart',
         expect: { deployCreatesBackupBeforeRestart: true },
+      },
+    ],
+  },
+  {
+    id: 'conductor_empresa_clean_flow',
+    name: 'ER-P8: Conductor empresa (hilo limpio)',
+    description:
+      'Valida flujo limpio de postulación conductor empresa hasta OP_REVIEW sin contaminación legacy.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check conductor empresa clean flow',
+        expect: { candidateAutoReplyUntilOpReview: { workspaceId: 'scenario-er-p8-clean-conductor' } },
+      },
+    ],
+  },
+  {
+    id: 'conductor_vehiculo_clean_flow',
+    name: 'ER-P8: Conductor vehículo (hilo limpio)',
+    description:
+      'Valida flujo limpio para conductor con foco en captura de documentos y estado de avance.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check conductor vehiculo clean flow',
+        expect: { candidateConductorCollectCvAndDocs: { workspaceId: 'scenario-er-p8-clean-conductor-vehiculo' } },
+      },
+    ],
+  },
+  {
+    id: 'peoneta_clean_flow',
+    name: 'ER-P8: Peoneta (hilo limpio)',
+    description:
+      'Valida flujo limpio de peoneta sin forzar estados de revisión de conductor.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check peoneta clean flow',
+        expect: { candidatePeonetaBasicFlow: { workspaceId: 'scenario-er-p8-clean-peoneta' } },
+      },
+    ],
+  },
+  {
+    id: 'no_legacy_copy_leaks',
+    name: 'ER-P8: no fuga de copy legacy',
+    description:
+      'Valida que no haya copy legacy activo (“$600.000 líquidos”, “venta en terreno”) en fuentes runtime activas.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check no legacy copy leaks',
+        expect: { noLegacyCopyLeaks: { workspaceId: 'envio-rapido' } },
+      },
+    ],
+  },
+  {
+    id: 'program_prompt_is_effective',
+    name: 'ER-P8: Program prompt afecta runtime',
+    description:
+      'Valida que un cambio de prompt impacte el hash resuelto en contexto runtime.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check program prompt is effective',
+        expect: { programPromptIsEffective: { workspaceId: 'scenario-er-p8-prompt' } },
+      },
+    ],
+  },
+  {
+    id: 'assets_public_download_ok',
+    name: 'ER-P8: assets críticos PUBLIC descargables',
+    description:
+      'Valida que los 3 assets críticos para go-live estén presentes y descargables.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check assets public download ok',
+        expect: { assetsPublicDownloadOk: { workspaceId: 'envio-rapido' } },
+      },
+    ],
+  },
+  {
+    id: 'runtime_debug_panel_visible',
+    name: 'ER-P8: panel diagnóstico runtime visible',
+    description:
+      'Valida que /api/conversations/:id exponga runtimeDiagnostics para inspección UI.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check runtime debug panel visible',
+        expect: { runtimeDebugPanelVisible: { workspaceId: 'scenario-er-p8-runtime-panel' } },
       },
     ],
   },

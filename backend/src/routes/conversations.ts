@@ -6,7 +6,7 @@ import { sendWhatsAppAttachment, sendWhatsAppText, sendWhatsAppTemplate } from '
 import { serializeJson } from '../utils/json';
 import { createConversationAndMaybeSend } from '../services/conversationCreateService';
 import { loadTemplateConfig, resolveTemplateVariables } from '../services/templateService';
-import { getSystemConfig } from '../services/configService';
+import { getSystemConfig, getTestWaIdAllowlist } from '../services/configService';
 import {
   attemptScheduleInterview,
   confirmActiveReservation,
@@ -18,11 +18,13 @@ import { getContactDisplayName } from '../utils/contactDisplay';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { stableHash } from '../services/agent/tools';
 import { runAutomations } from '../services/automationRunnerService';
-import { isKnownActiveStage, normalizeStageSlug } from '../services/workspaceStageService';
+import { getWorkspaceDefaultStageSlug, isKnownActiveStage, normalizeStageSlug } from '../services/workspaceStageService';
 import { createInAppNotification } from '../services/notificationService';
 import { listWorkspaceTemplateCatalog } from '../services/whatsappTemplateCatalogService';
 import { repairMojibake } from '../utils/textEncoding';
 import { resolveMediaPathCandidates, resolveUploadsBaseDir } from '../utils/statePaths';
+import { archiveConversation } from '../services/conversationArchiveService';
+import { normalizeWhatsAppId } from '../utils/whatsapp';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -112,6 +114,15 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const trimmed = value.trim().replace(/\s+/g, ' ');
     if (!trimmed) return null;
     return trimmed;
+  };
+
+  const safeParseJson = (value: unknown): any => {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
   };
 
   const decodeBase64Payload = (value: unknown): Buffer | null => {
@@ -551,6 +562,133 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     };
   });
 
+  app.post('/qa/clean-thread', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const body = (request.body || {}) as { waId?: string };
+    const config = await getSystemConfig();
+    const configuredTestWa = getTestWaIdAllowlist(config)[0] || normalizeWhatsAppId((config as any)?.testPhoneNumber || '');
+    const targetWaId = normalizeWhatsAppId(String(body?.waId || '').trim()) || configuredTestWa;
+    if (!targetWaId) {
+      return reply.code(400).send({ error: 'No hay número QA configurado. Define el número de pruebas o envía waId.' });
+    }
+
+    const activeLine = await prisma.phoneLine.findFirst({
+      where: { workspaceId: access.workspaceId, archivedAt: null, isActive: true },
+      orderBy: [{ lastInboundAt: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true, defaultProgramId: true },
+    });
+    if (!activeLine?.id) {
+      return reply.code(400).send({ error: 'No hay PhoneLine activa en este workspace para crear hilo QA.' });
+    }
+
+    let contact = await prisma.contact.findFirst({
+      where: {
+        workspaceId: access.workspaceId,
+        OR: [{ waId: targetWaId }, { phone: targetWaId }, { phone: `+${targetWaId}` }],
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!contact) {
+      contact = await prisma.contact.create({
+        data: {
+          workspaceId: access.workspaceId,
+          waId: targetWaId,
+          phone: `+${targetWaId}`,
+          displayName: 'QA Test',
+          candidateName: null,
+          candidateNameManual: null,
+        } as any,
+      });
+    }
+
+    const activeConversations = await prisma.conversation.findMany({
+      where: {
+        workspaceId: access.workspaceId,
+        contactId: contact.id,
+        isAdmin: false,
+        archivedAt: null,
+      },
+      select: { id: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    for (const row of activeConversations) {
+      await archiveConversation({
+        conversationId: row.id,
+        reason: 'QA_THREAD_ARCHIVED_AND_RESET',
+        tags: ['QA', 'TEST'],
+        summary: 'Hilo QA archivado para validar runtime limpio (historial preservado).',
+      });
+    }
+
+    const defaultStage = await getWorkspaceDefaultStageSlug(access.workspaceId).catch(() => 'NEW_INTAKE');
+    const now = new Date();
+    const fresh = await prisma.conversation.create({
+      data: {
+        workspaceId: access.workspaceId,
+        phoneLineId: activeLine.id,
+        programId: activeLine.defaultProgramId || null,
+        contactId: contact.id,
+        status: 'NEW',
+        channel: 'whatsapp',
+        conversationKind: 'CLIENT',
+        conversationStage: defaultStage,
+        stageReason: 'QA_THREAD_ARCHIVED_AND_RESET',
+        stageChangedAt: now,
+        aiPaused: false,
+      } as any,
+      select: { id: true, conversationStage: true, programId: true },
+    });
+
+    await prisma.message
+      .create({
+        data: {
+          conversationId: fresh.id,
+          direction: 'OUTBOUND',
+          text: '🧪 QA_THREAD_ARCHIVED_AND_RESET: hilo limpio creado. Historial anterior quedó archivado.',
+          rawPayload: serializeJson({
+            system: true,
+            noteType: 'INTERNAL',
+            visibility: 'SYSTEM',
+            event: 'QA_THREAD_ARCHIVED_AND_RESET',
+            archivedConversationCount: activeConversations.length,
+            targetWaId,
+          }),
+          isInternalEvent: true as any,
+          timestamp: now,
+          read: true,
+        } as any,
+      })
+      .catch(() => {});
+
+    await prisma.automationRunLog
+      .create({
+        data: {
+          workspaceId: access.workspaceId,
+          ruleId: null,
+          conversationId: fresh.id,
+          eventType: 'QA_THREAD_ARCHIVED_AND_RESET',
+          status: 'EXECUTED',
+          inputJson: serializeJson({ targetWaId, archivedConversations: activeConversations.length }),
+          outputJson: serializeJson({ newConversationId: fresh.id, stage: fresh.conversationStage, programId: fresh.programId }),
+        } as any,
+      })
+      .catch(() => {});
+
+    return {
+      ok: true,
+      workspaceId: access.workspaceId,
+      waId: targetWaId,
+      archivedConversations: activeConversations.length,
+      conversationId: fresh.id,
+      stage: fresh.conversationStage,
+      programId: fresh.programId,
+    };
+  });
+
   app.get('/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
@@ -588,6 +726,86 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const normalizedMode = ['RECRUIT', 'INTERVIEW', 'SELLER', 'OFF'].includes(conversation.aiMode)
       ? conversation.aiMode
       : 'RECRUIT';
+    const workspaceSettings = await prisma.workspace
+      .findUnique({
+        where: { id: access.workspaceId },
+        select: { candidateReplyMode: true as any, adminNotifyMode: true as any, name: true },
+      })
+      .catch(() => null);
+    const lastAgentRun = await prisma.agentRunLog
+      .findFirst({
+        where: { workspaceId: access.workspaceId, conversationId: id },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          status: true,
+          error: true,
+          createdAt: true,
+          eventType: true,
+          inputContextJson: true,
+          resultsJson: true,
+        },
+      })
+      .catch(() => null);
+    const lastAiUsage = await prisma.aiUsageLog
+      .findFirst({
+        where: { workspaceId: access.workspaceId, conversationId: id },
+        orderBy: { createdAt: 'desc' },
+        select: { modelRequested: true, modelResolved: true, createdAt: true },
+      })
+      .catch(() => null);
+    const contextJson = safeParseJson(lastAgentRun?.inputContextJson);
+    const resultsJson = safeParseJson(lastAgentRun?.resultsJson);
+    const runtimeResolution = contextJson?.runtimeResolution || {};
+    const appFlow = contextJson?.applicationFlow || {};
+    const missingFields = Array.isArray(appFlow?.missingFields)
+      ? appFlow.missingFields.map((v: any) => String(v)).filter(Boolean)
+      : [];
+    const runtimeDiagnostics = {
+      resolvedWorkspace: runtimeResolution?.resolvedWorkspace || {
+        id: access.workspaceId,
+        name: workspaceSettings?.name || null,
+      },
+      resolvedPhoneLine: runtimeResolution?.resolvedPhoneLine || {
+        id: conversation?.phoneLine?.id || conversation.phoneLineId || null,
+        alias: conversation?.phoneLine?.alias || null,
+        waPhoneNumberId: null,
+      },
+      resolvedProgram: runtimeResolution?.resolvedProgram || {
+        id: conversation?.program?.id || conversation.programId || null,
+        slug: conversation?.program?.slug || null,
+        name: conversation?.program?.name || null,
+        promptHash: null,
+      },
+      promptHash:
+        runtimeResolution?.resolvedProgram?.promptHash ||
+        null,
+      applicationRole: String(
+        appFlow?.applicationRole || (conversation as any)?.applicationRole || '',
+      ).trim() || null,
+      applicationState: String(
+        appFlow?.applicationState || (conversation as any)?.applicationState || '',
+      ).trim() || null,
+      missingFields,
+      modelRequested:
+        String(lastAiUsage?.modelRequested || resultsJson?.modelRequested || '').trim() || null,
+      modelResolved:
+        String(lastAiUsage?.modelResolved || resultsJson?.modelResolved || '').trim() || null,
+      candidateReplyMode:
+        String((workspaceSettings as any)?.candidateReplyMode || '').trim().toUpperCase() || 'AUTO',
+      adminNotifyMode:
+        String((workspaceSettings as any)?.adminNotifyMode || '').trim().toUpperCase() || 'HITS_ONLY',
+      aiPaused: Boolean(conversation.aiPaused),
+      lastRunStatus: lastAgentRun
+        ? {
+            id: lastAgentRun.id,
+            eventType: lastAgentRun.eventType,
+            status: lastAgentRun.status,
+            error: lastAgentRun.error || null,
+            createdAt: lastAgentRun.createdAt?.toISOString?.() || null,
+          }
+        : null,
+    };
 
     const sanitizedContact = await sanitizeContact(conversation.contact);
     const conversationMessages = Array.isArray((conversation as any)?.messages)
@@ -619,7 +837,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       aiPaused: Boolean(conversation.aiPaused),
       lastInboundAt: lastInbound?.timestamp ?? null,
       within24h,
-      templates
+      templates,
+      runtimeDiagnostics,
     };
   });
 

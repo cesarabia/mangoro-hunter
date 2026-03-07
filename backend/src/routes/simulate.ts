@@ -7495,13 +7495,21 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const clientLocationFreeText =
         (step.expect as any)?.clientLocationFreeText || (step.expect as any)?.clientFreeTextFields;
       const candidateIntakeChooseRole = (step.expect as any)?.candidateIntakeChooseRole;
-      const candidateConductorCollectCvAndDocs = (step.expect as any)?.candidateConductorCollectCvAndDocs;
-      const candidatePeonetaBasicFlow = (step.expect as any)?.candidatePeonetaBasicFlow;
+      const conductorEmpresaCleanFlow = (step.expect as any)?.conductorEmpresaCleanFlow;
+      const conductorVehiculoCleanFlow = (step.expect as any)?.conductorVehiculoCleanFlow;
+      const peonetaCleanFlow = (step.expect as any)?.peonetaCleanFlow;
+      const candidateConductorCollectCvAndDocs =
+        (step.expect as any)?.candidateConductorCollectCvAndDocs || conductorVehiculoCleanFlow;
+      const candidatePeonetaBasicFlow = (step.expect as any)?.candidatePeonetaBasicFlow || peonetaCleanFlow;
       const postulacionDriverToReadyForOpReview =
-        (step.expect as any)?.postulacionDriverToReadyForOpReview || candidateAutoReplyUntilOpReview;
+        (step.expect as any)?.postulacionDriverToReadyForOpReview || candidateAutoReplyUntilOpReview || conductorEmpresaCleanFlow;
       const postulacionDriverToReadyForOpReviewEmail = (step.expect as any)?.postulacionDriverToReadyForOpReviewEmail;
       const opReviewDownloadPackageOk = (step.expect as any)?.opReviewDownloadPackageOk;
       const opReviewPauseAiAfterReady = (step.expect as any)?.opReviewPauseAiAfterReady;
+      const noLegacyCopyLeaks = (step.expect as any)?.noLegacyCopyLeaks;
+      const programPromptIsEffective = (step.expect as any)?.programPromptIsEffective;
+      const assetsPublicDownloadOk = (step.expect as any)?.assetsPublicDownloadOk;
+      const runtimeDebugPanelVisible = (step.expect as any)?.runtimeDebugPanelVisible;
       if (
         (candidateIntakeChooseRole && typeof candidateIntakeChooseRole === 'object') ||
         (candidateConductorCollectCvAndDocs && typeof candidateConductorCollectCvAndDocs === 'object') ||
@@ -8738,6 +8746,388 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
           await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
           await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      if (noLegacyCopyLeaks && typeof noLegacyCopyLeaks === 'object') {
+        const wsId = String((noLegacyCopyLeaks as any)?.workspaceId || 'envio-rapido').trim() || 'envio-rapido';
+        const workspace = await prisma.workspace
+          .findUnique({
+            where: { id: wsId },
+            select: { id: true, name: true, archivedAt: true },
+          })
+          .catch(() => null);
+        if (!workspace?.id || workspace.archivedAt) {
+          assertions.push({ ok: false, message: `noLegacyCopyLeaks: workspace no encontrado (${wsId})` });
+        } else {
+          const badRegex = /\$600\.?000|venta\s+en\s+terreno/i;
+          const configRow = await prisma.systemConfig.findFirst().catch(() => null);
+          const configLeak = badRegex.test(String((configRow as any)?.defaultJobTitle || '')) ||
+            badRegex.test(String((configRow as any)?.recruitJobSheet || '')) ||
+            badRegex.test(String((configRow as any)?.recruitFaq || ''));
+          assertions.push({
+            ok: !configLeak,
+            message: !configLeak
+              ? 'noLegacyCopyLeaks: SystemConfig sin copy legacy activo'
+              : 'noLegacyCopyLeaks: SystemConfig aún contiene copy legacy',
+          });
+          const activePrograms = await prisma.program
+            .findMany({
+              where: { workspaceId: wsId, archivedAt: null, isActive: true },
+              select: { id: true, slug: true, name: true, agentSystemPrompt: true },
+              take: 30,
+            })
+            .catch(() => []);
+          const leakyPrograms = activePrograms.filter((p: any) =>
+            badRegex.test(String(p?.agentSystemPrompt || '')),
+          );
+          assertions.push({
+            ok: leakyPrograms.length === 0,
+            message:
+              leakyPrograms.length === 0
+                ? 'noLegacyCopyLeaks: prompts activos sin frases legacy'
+                : `noLegacyCopyLeaks: prompts legacy detectados (${leakyPrograms.map((p: any) => p.slug || p.id).join(', ')})`,
+          });
+          const fallbackAllowedRaw = String(process.env.HUNTER_LEGACY_RECRUIT_FALLBACK_WORKSPACES || '').toLowerCase();
+          const fallbackAllowed = fallbackAllowedRaw
+            .split(',')
+            .map((v) => v.trim())
+            .filter(Boolean);
+          const fallbackBlockedForWs =
+            wsId.toLowerCase() === 'envio-rapido' && !fallbackAllowed.includes(wsId.toLowerCase()) && !fallbackAllowed.includes('*');
+          assertions.push({
+            ok: fallbackBlockedForWs,
+            message: fallbackBlockedForWs
+              ? 'noLegacyCopyLeaks: fallback legacy bloqueado para envio-rapido'
+              : 'noLegacyCopyLeaks: fallback legacy no está explícitamente bloqueado para envio-rapido',
+          });
+        }
+      }
+
+      if (programPromptIsEffective && typeof programPromptIsEffective === 'object') {
+        const wsId =
+          String((programPromptIsEffective as any)?.workspaceId || 'scenario-er-p8-prompt').trim() ||
+          'scenario-er-p8-prompt';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'programPromptIsEffective: userId missing' });
+        } else {
+          const lineId = `scenario-prompt-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Prompt Effective', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Prompt Effective', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+          const program = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'scenario-prompt-effective' } },
+              create: {
+                workspaceId: wsId,
+                name: 'Scenario Prompt Effective',
+                slug: 'scenario-prompt-effective',
+                agentSystemPrompt: 'PROMPT_VERSION_A',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: {
+                name: 'Scenario Prompt Effective',
+                agentSystemPrompt: 'PROMPT_VERSION_A',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const line = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Prompt Line',
+                waPhoneNumberId,
+                isActive: true,
+                defaultProgramId: program?.id || null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const contact = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, displayName: 'Scenario Prompt Contact', waId: `scenario-prompt-${Date.now()}` } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const convo =
+            line?.id && contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: line.id,
+                      programId: program?.id || null,
+                      contactId: contact.id,
+                      status: 'OPEN',
+                      channel: 'sandbox',
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'NEW_INTAKE',
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+          if (!program?.id || !convo?.id) {
+            assertions.push({ ok: false, message: 'programPromptIsEffective: setup incompleto' });
+          } else {
+            const ctxA = await buildLLMContext({
+              workspaceId: wsId,
+              conversationId: convo.id,
+              mode: 'INBOUND',
+              eventType: 'INBOUND_MESSAGE',
+              windowStatus: 'IN_24H',
+              inboundMessageId: null,
+              draftText: null,
+            }).catch(() => null);
+            const hashA = String((ctxA as any)?.contextJson?.runtimeResolution?.resolvedProgram?.promptHash || '');
+            await prisma.program
+              .update({
+                where: { id: program.id },
+                data: { agentSystemPrompt: 'PROMPT_VERSION_B', updatedAt: new Date() } as any,
+              })
+              .catch(() => {});
+            const ctxB = await buildLLMContext({
+              workspaceId: wsId,
+              conversationId: convo.id,
+              mode: 'INBOUND',
+              eventType: 'INBOUND_MESSAGE',
+              windowStatus: 'IN_24H',
+              inboundMessageId: null,
+              draftText: null,
+            }).catch(() => null);
+            const hashB = String((ctxB as any)?.contextJson?.runtimeResolution?.resolvedProgram?.promptHash || '');
+            const hashChanged = Boolean(hashA) && Boolean(hashB) && hashA !== hashB;
+            assertions.push({
+              ok: hashChanged,
+              message: hashChanged
+                ? `programPromptIsEffective: promptHash cambió (${hashA} -> ${hashB})`
+                : `programPromptIsEffective: promptHash no cambió (${hashA} -> ${hashB})`,
+            });
+          }
+
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.program.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      if (assetsPublicDownloadOk && typeof assetsPublicDownloadOk === 'object') {
+        const wsId = String((assetsPublicDownloadOk as any)?.workspaceId || 'envio-rapido').trim() || 'envio-rapido';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const integrityRes = await app.inject({
+          method: 'GET',
+          url: '/api/assets/integrity',
+          headers: { authorization: authHeader, 'x-workspace-id': wsId },
+        });
+        let integrityJson: any = null;
+        try {
+          integrityJson = JSON.parse(String(integrityRes.body || '{}'));
+        } catch {
+          integrityJson = null;
+        }
+        assertions.push({
+          ok: integrityRes.statusCode === 200 && integrityJson?.workspaceId === wsId,
+          message:
+            integrityRes.statusCode === 200 && integrityJson?.workspaceId === wsId
+              ? 'assetsPublicDownloadOk: endpoint integrity disponible'
+              : `assetsPublicDownloadOk: fallo endpoint integrity (status=${integrityRes.statusCode})`,
+        });
+        const critical = Array.isArray(integrityJson?.criticalAssets) ? integrityJson.criticalAssets : [];
+        const criticalMissing = critical.filter((it: any) => Boolean(it?.missing));
+        assertions.push({
+          ok: critical.length >= 3 && criticalMissing.length === 0,
+          message:
+            critical.length >= 3 && criticalMissing.length === 0
+              ? 'assetsPublicDownloadOk: 3 assets críticos presentes'
+              : `assetsPublicDownloadOk: faltan assets críticos (${criticalMissing.map((it: any) => it?.expectedSlug || it?.key).join(', ') || 'sin detalle'})`,
+        });
+      }
+
+      if (runtimeDebugPanelVisible && typeof runtimeDebugPanelVisible === 'object') {
+        const wsId =
+          String((runtimeDebugPanelVisible as any)?.workspaceId || 'scenario-er-p8-runtime-panel').trim() ||
+          'scenario-er-p8-runtime-panel';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+        if (!userId || !authHeader) {
+          assertions.push({ ok: false, message: 'runtimeDebugPanelVisible: auth/user missing' });
+        } else {
+          const lineId = `scenario-runtime-panel-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Runtime Panel', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Runtime Panel', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+          const program = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'scenario-runtime-panel' } },
+              create: {
+                workspaceId: wsId,
+                name: 'Scenario Runtime Panel Program',
+                slug: 'scenario-runtime-panel',
+                agentSystemPrompt: 'Prompt runtime panel scenario',
+                isActive: true,
+              } as any,
+              update: {
+                name: 'Scenario Runtime Panel Program',
+                agentSystemPrompt: 'Prompt runtime panel scenario',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const line = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario Runtime Panel Line',
+                waPhoneNumberId,
+                isActive: true,
+                defaultProgramId: program?.id || null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const contact = await prisma.contact
+            .create({
+              data: { workspaceId: wsId, displayName: 'Scenario Runtime Panel Contact', waId: `scenario-runtime-${Date.now()}` } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const convo =
+            line?.id && contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: line.id,
+                      programId: program?.id || null,
+                      contactId: contact.id,
+                      status: 'OPEN',
+                      channel: 'sandbox',
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'NEW_INTAKE',
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+          if (!convo?.id) {
+            assertions.push({ ok: false, message: 'runtimeDebugPanelVisible: setup incompleto' });
+          } else {
+            const run = await prisma.agentRunLog
+              .create({
+                data: {
+                  workspaceId: wsId,
+                  conversationId: convo.id,
+                  phoneLineId: line?.id || null,
+                  programId: program?.id || null,
+                  eventType: 'INBOUND_MESSAGE',
+                  status: 'SUCCESS',
+                  inputContextJson: JSON.stringify({
+                    runtimeResolution: {
+                      resolvedWorkspace: { id: wsId, name: 'Scenario Runtime Panel' },
+                      resolvedPhoneLine: { id: line?.id || null, alias: 'Scenario Runtime Panel Line', waPhoneNumberId },
+                      resolvedProgram: { id: program?.id || null, slug: 'scenario-runtime-panel', name: 'Scenario Runtime Panel Program', promptHash: 'scenariohash' },
+                    },
+                    applicationFlow: {
+                      applicationRole: 'CONDUCTOR',
+                      applicationState: 'COLLECT_MIN_INFO',
+                      missingFields: ['availability', 'experience'],
+                    },
+                  }),
+                  resultsJson: JSON.stringify({ modelRequested: 'gpt-4o-mini', modelResolved: 'gpt-4o-mini' }),
+                } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            if (run?.id) {
+              await prisma.aiUsageLog
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    conversationId: convo.id,
+                    agentRunId: run.id,
+                    actor: 'AGENT',
+                    model: 'gpt-4o-mini',
+                    modelRequested: 'gpt-4o-mini',
+                    modelResolved: 'gpt-4o-mini',
+                    inputTokens: 10,
+                    outputTokens: 10,
+                    totalTokens: 20,
+                  } as any,
+                })
+                .catch(() => {});
+            }
+
+            const detailRes = await app.inject({
+              method: 'GET',
+              url: `/api/conversations/${encodeURIComponent(convo.id)}`,
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+            });
+            let detailJson: any = null;
+            try {
+              detailJson = JSON.parse(String(detailRes.body || '{}'));
+            } catch {
+              detailJson = null;
+            }
+            const diag = detailJson?.runtimeDiagnostics;
+            const diagOk =
+              detailRes.statusCode === 200 &&
+              Boolean(diag?.resolvedWorkspace) &&
+              Boolean(diag?.resolvedProgram) &&
+              typeof diag?.candidateReplyMode === 'string' &&
+              typeof diag?.adminNotifyMode === 'string';
+            assertions.push({
+              ok: diagOk,
+              message: diagOk
+                ? 'runtimeDebugPanelVisible: runtimeDiagnostics disponible en API de conversación'
+                : `runtimeDebugPanelVisible: runtimeDiagnostics incompleto (status=${detailRes.statusCode})`,
+            });
+          }
+
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.program.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
           await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
           await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
         }

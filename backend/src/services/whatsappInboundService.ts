@@ -89,6 +89,78 @@ function isProdRuntime(): boolean {
   return nodeEnv === "production" || appEnv === "production" || appEnv === "prod";
 }
 
+const LEGACY_FALLBACK_ALWAYS_BLOCKED_WORKSPACES = new Set(["envio-rapido"]);
+
+function canUseLegacyRecruitFallback(workspaceId: string): boolean {
+  const normalized = String(workspaceId || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (LEGACY_FALLBACK_ALWAYS_BLOCKED_WORKSPACES.has(normalized)) return false;
+  const raw = String(process.env.HUNTER_LEGACY_RECRUIT_FALLBACK_WORKSPACES || "").trim();
+  if (!raw) return false;
+  const allowed = raw
+    .split(",")
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean);
+  if (allowed.includes("*")) return true;
+  return allowed.includes(normalized);
+}
+
+async function logLegacyFallbackBlocked(params: {
+  workspaceId: string;
+  conversationId: string;
+  inboundMessageId?: string | null;
+  reason: string;
+  inboundText: string;
+}) {
+  const now = new Date();
+  await prisma.conversation
+    .update({
+      where: { id: params.conversationId },
+      data: {
+        adminPendingAction: "NEEDS_HUMAN",
+        updatedAt: now,
+      } as any,
+    })
+    .catch(() => {});
+  await prisma.message
+    .create({
+      data: {
+        conversationId: params.conversationId,
+        direction: "OUTBOUND",
+        text: "⚠️ NO_RUNTIME_REPLY_FALLBACK_BLOCKED: la conversación requiere revisión humana.",
+        rawPayload: serializeJson({
+          system: true,
+          noteType: "INTERNAL",
+          visibility: "SYSTEM",
+          code: "NO_RUNTIME_REPLY_FALLBACK_BLOCKED",
+          reason: params.reason,
+          inboundMessageId: params.inboundMessageId || null,
+        }),
+        isInternalEvent: true as any,
+        timestamp: now,
+        read: true,
+      } as any,
+    })
+    .catch(() => {});
+  await prisma.automationRunLog
+    .create({
+      data: {
+        workspaceId: params.workspaceId,
+        ruleId: null,
+        conversationId: params.conversationId,
+        eventType: "NO_RUNTIME_REPLY_FALLBACK_BLOCKED",
+        status: "BLOCKED",
+        inputJson: serializeJson({
+          inboundMessageId: params.inboundMessageId || null,
+          inboundText: String(params.inboundText || "").slice(0, 500),
+        }),
+        outputJson: null,
+        error: params.reason,
+      } as any,
+    })
+    .catch(() => {});
+}
+
 async function mergeOrCreateContact(params: { workspaceId: string; waId: string; preferredId?: string }) {
   const candidates = buildWaIdCandidates(params.waId);
   let contacts = await prisma.contact.findMany({
@@ -1060,24 +1132,54 @@ export async function handleInboundWhatsAppMessage(
 
   // Agent OS: if there are enabled automations for inbound messages, let them handle the reply
   // and avoid running the legacy candidate pipeline (name extraction, missing-fields, etc).
+  const legacyFallbackAllowed = canUseLegacyRecruitFallback(conversation.workspaceId);
   const hasAgentAutomations = await prisma.automationRule.count({
     where: { workspaceId: conversation.workspaceId, trigger: "INBOUND_MESSAGE", enabled: true, archivedAt: null },
   });
   if (hasAgentAutomations > 0 && config.botAutoReply && !conversation.aiPaused) {
-    await runAutomations({
-      app,
-      workspaceId: conversation.workspaceId,
-      eventType: "INBOUND_MESSAGE",
-      conversationId: conversation.id,
-      inboundMessageId: message.id,
-      inboundText: effectiveText,
-      transportMode: "REAL",
-    });
+    try {
+      await runAutomations({
+        app,
+        workspaceId: conversation.workspaceId,
+        eventType: "INBOUND_MESSAGE",
+        conversationId: conversation.id,
+        inboundMessageId: message.id,
+        inboundText: effectiveText,
+        transportMode: "REAL",
+      });
+    } catch (err) {
+      if (!legacyFallbackAllowed) {
+        app.log.warn(
+          { err, workspaceId: conversation.workspaceId, conversationId: conversation.id },
+          "RUN_AGENT falló y fallback legacy está bloqueado; se marca NEEDS_HUMAN.",
+        );
+        await logLegacyFallbackBlocked({
+          workspaceId: conversation.workspaceId,
+          conversationId: conversation.id,
+          inboundMessageId: message.id,
+          reason: "RUN_AGENT_FAILED_LEGACY_BLOCKED",
+          inboundText: effectiveText,
+        });
+        return { conversationId: conversation.id };
+      }
+      throw err;
+    }
     return { conversationId: conversation.id };
   }
 
   if (isStaffConversation || isPartnerConversation) {
     // Staff conversations should not fall back to legacy candidate pipelines.
+    return { conversationId: conversation.id };
+  }
+
+  if (!legacyFallbackAllowed) {
+    await logLegacyFallbackBlocked({
+      workspaceId: conversation.workspaceId,
+      conversationId: conversation.id,
+      inboundMessageId: message.id,
+      reason: "LEGACY_FALLBACK_DISABLED_FOR_WORKSPACE",
+      inboundText: effectiveText,
+    });
     return { conversationId: conversation.id };
   }
 

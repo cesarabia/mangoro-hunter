@@ -130,6 +130,11 @@ export const ReviewPage: React.FC<{
   const [reviewPackLoading, setReviewPackLoading] = useState(false);
   const [reviewPackError, setReviewPackError] = useState<string | null>(null);
   const [reviewPackStatus, setReviewPackStatus] = useState<string | null>(null);
+  const [qaCleanLoading, setQaCleanLoading] = useState(false);
+  const [qaCleanStatus, setQaCleanStatus] = useState<string | null>(null);
+  const [qaCleanError, setQaCleanError] = useState<string | null>(null);
+  const [assetsIntegrity, setAssetsIntegrity] = useState<any | null>(null);
+  const [assetsIntegrityError, setAssetsIntegrityError] = useState<string | null>(null);
 
   const allowedNumbers = useMemo(() => new Set(['56982345846', '56994830202']), []);
 
@@ -340,6 +345,39 @@ export const ReviewPage: React.FC<{
     }
   };
 
+  const refreshAssetsIntegrity = async () => {
+    setAssetsIntegrityError(null);
+    try {
+      const data = await apiClient.get('/api/assets/integrity');
+      setAssetsIntegrity(data || null);
+    } catch (err: any) {
+      setAssetsIntegrity(null);
+      setAssetsIntegrityError(err.message || 'No se pudo cargar integridad de assets/adjuntos');
+    }
+  };
+
+  const createQaCleanThread = async () => {
+    setQaCleanLoading(true);
+    setQaCleanError(null);
+    setQaCleanStatus(null);
+    try {
+      const data: any = await apiClient.post('/api/conversations/qa/clean-thread', {});
+      const nextConversationId = String(data?.conversationId || '').trim();
+      setQaCleanStatus(
+        `Hilo QA limpio creado. Archivadas: ${Number(data?.archivedConversations || 0)}. ConversationId: ${nextConversationId || '—'}`,
+      );
+      if (nextConversationId) {
+        setOutboundConversationId(nextConversationId);
+        setLogTab('outbound');
+      }
+      await refreshLogs(nextConversationId || undefined);
+    } catch (err: any) {
+      setQaCleanError(err.message || 'No se pudo crear hilo QA limpio');
+    } finally {
+      setQaCleanLoading(false);
+    }
+  };
+
   const refreshLogs = async (conversationIdOverride?: string) => {
     setLogsLoading(true);
     setLogsError(null);
@@ -446,6 +484,7 @@ export const ReviewPage: React.FC<{
     refreshSetup().catch(() => {});
     refreshReleaseNotes().catch(() => {});
     refreshLogs(preloadConversationId).catch(() => {});
+    refreshAssetsIntegrity().catch(() => {});
     apiClient
       .get('/api/simulate/scenarios')
       .then((data) => setScenarios(Array.isArray(data) ? data : []))
@@ -1599,6 +1638,66 @@ export const ReviewPage: React.FC<{
               </div>
             </details>
             {workspaceConnectorsError ? <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>{workspaceConnectorsError}</div> : null}
+          </div>
+
+          <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 800 }}>Hilo QA limpio (sin borrar historial)</div>
+              <button
+                onClick={() => createQaCleanThread().catch(() => {})}
+                disabled={qaCleanLoading}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
+              >
+                {qaCleanLoading ? 'Creando…' : 'Crear hilo QA limpio'}
+              </button>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+              Archiva el hilo QA anterior (preservado) y crea uno nuevo para validación limpia de runtime.
+            </div>
+            {qaCleanStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{qaCleanStatus}</div> : null}
+            {qaCleanError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{qaCleanError}</div> : null}
+          </div>
+
+          <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 800 }}>Integridad de archivos (assets + adjuntos)</div>
+              <button
+                onClick={() => refreshAssetsIntegrity().catch(() => {})}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff' }}
+              >
+                Refresh
+              </button>
+            </div>
+            {assetsIntegrityError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{assetsIntegrityError}</div> : null}
+            {assetsIntegrity ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: '#333', lineHeight: 1.5 }}>
+                <div>
+                  Assets activos: <b>{Number(assetsIntegrity?.assets?.active || 0)}</b> · presentes{' '}
+                  <b>{Number(assetsIntegrity?.assets?.present || 0)}</b> · faltantes{' '}
+                  <b style={{ color: Number(assetsIntegrity?.assets?.missing || 0) > 0 ? '#b93800' : '#1a7f37' }}>
+                    {Number(assetsIntegrity?.assets?.missing || 0)}
+                  </b>
+                </div>
+                <div>
+                  Adjuntos chat: <b>{Number(assetsIntegrity?.attachments?.total || 0)}</b> · presentes{' '}
+                  <b>{Number(assetsIntegrity?.attachments?.present || 0)}</b> · faltantes{' '}
+                  <b style={{ color: Number(assetsIntegrity?.attachments?.missing || 0) > 0 ? '#b93800' : '#1a7f37' }}>
+                    {Number(assetsIntegrity?.attachments?.missing || 0)}
+                  </b>
+                </div>
+                {Array.isArray(assetsIntegrity?.criticalAssets) ? (
+                  <div style={{ marginTop: 6 }}>
+                    {assetsIntegrity.criticalAssets.map((item: any) => (
+                      <div key={String(item?.expectedSlug || item?.key)} style={{ color: item?.missing ? '#b93800' : '#1a7f37' }}>
+                        {item?.missing ? '⚠️' : '✅'} {String(item?.label || item?.key || 'Asset crítico')}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>Sin reporte disponible.</div>
+            )}
           </div>
 
           <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>

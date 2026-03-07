@@ -782,6 +782,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     if (key && glossary[key]) return glossary[key];
     return 'Stage indica la etapa del caso y qué sigue en el flujo.';
   }, [normalizedStage, rawStage]);
+  const runtimeDiagnostics = conversation?.runtimeDiagnostics || null;
+  const runtimeMissingFields = Array.isArray(runtimeDiagnostics?.missingFields)
+    ? runtimeDiagnostics.missingFields.map((v: any) => String(v)).filter(Boolean)
+    : [];
+  const runtimeLastRun = runtimeDiagnostics?.lastRunStatus || null;
 
   useEffect(() => {
     if (!conversation || isAdmin) {
@@ -1271,6 +1276,38 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   )}
                 </div>
               )
+            ) : null}
+            {detailsOpen && runtimeDiagnostics ? (
+              <details style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, padding: 10, background: '#fafafa', maxWidth: 720 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+                  Diagnóstico runtime
+                </summary>
+                <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr', gap: 8, fontSize: 12, color: '#444' }}>
+                  <div>Workspace: <b>{String(runtimeDiagnostics?.resolvedWorkspace?.name || runtimeDiagnostics?.resolvedWorkspace?.id || '—')}</b></div>
+                  <div>PhoneLine: <b>{String(runtimeDiagnostics?.resolvedPhoneLine?.alias || runtimeDiagnostics?.resolvedPhoneLine?.id || '—')}</b></div>
+                  <div>Program: <b>{String(runtimeDiagnostics?.resolvedProgram?.name || runtimeDiagnostics?.resolvedProgram?.slug || runtimeDiagnostics?.resolvedProgram?.id || '—')}</b></div>
+                  <div>Program slug: <b>{String(runtimeDiagnostics?.resolvedProgram?.slug || '—')}</b></div>
+                  <div>Prompt hash: <b style={{ fontFamily: 'monospace' }}>{String(runtimeDiagnostics?.promptHash || runtimeDiagnostics?.resolvedProgram?.promptHash || '—')}</b></div>
+                  <div>Role / State: <b>{String(runtimeDiagnostics?.applicationRole || '—')} / {String(runtimeDiagnostics?.applicationState || '—')}</b></div>
+                  <div>Modelo: <b>{String(runtimeDiagnostics?.modelResolved || runtimeDiagnostics?.modelRequested || '—')}</b></div>
+                  <div>Requested: <b>{String(runtimeDiagnostics?.modelRequested || '—')}</b></div>
+                  <div>candidateReplyMode: <b>{String(runtimeDiagnostics?.candidateReplyMode || 'AUTO')}</b></div>
+                  <div>adminNotifyMode: <b>{String(runtimeDiagnostics?.adminNotifyMode || 'HITS_ONLY')}</b></div>
+                  <div>aiPaused: <b>{runtimeDiagnostics?.aiPaused ? 'Sí' : 'No'}</b></div>
+                  <div>Last run: <b>{runtimeLastRun ? `${String(runtimeLastRun.status || '—')} (${String(runtimeLastRun.eventType || '—')})` : '—'}</b></div>
+                  <div style={{ gridColumn: isNarrow ? '1' : '1 / span 2' }}>
+                    missingFields:{' '}
+                    <b>
+                      {runtimeMissingFields.length > 0 ? runtimeMissingFields.join(', ') : '—'}
+                    </b>
+                  </div>
+                  {runtimeLastRun?.error ? (
+                    <div style={{ gridColumn: isNarrow ? '1' : '1 / span 2', color: '#b93800' }}>
+                      error: <b>{String(runtimeLastRun.error)}</b>
+                    </div>
+                  ) : null}
+                </div>
+              </details>
             ) : null}
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
