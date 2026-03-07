@@ -68,15 +68,33 @@ safe_stat_bytes() {
 sqlite_metric() {
   local db_file="${1:-}"
   local sql="${2:-}"
-  sqlite3 "$db_file" "$sql" 2>/dev/null || echo 0
+  local attempts="${HUNTER_SQLITE_METRIC_RETRIES:-6}"
+  local sleep_seconds="${HUNTER_SQLITE_METRIC_RETRY_SLEEP_SEC:-1}"
+  local timeout_ms="${HUNTER_SQLITE_METRIC_TIMEOUT_MS:-5000}"
+  local attempt=1
+  local value=""
+  while [[ "$attempt" -le "$attempts" ]]; do
+    value="$(sqlite3 -cmd ".timeout $timeout_ms" "$db_file" "$sql" 2>/dev/null || true)"
+    if [[ -n "$value" ]]; then
+      echo "$value"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep "$sleep_seconds"
+  done
+  return 1
 }
 
 db_metrics() {
   local db_file="${1:-}"
   local size_bytes conv_count msg_count
   size_bytes="$(safe_stat_bytes "$db_file")"
-  conv_count="$(sqlite_metric "$db_file" 'select count(*) from Conversation;')"
-  msg_count="$(sqlite_metric "$db_file" 'select count(*) from Message;')"
+  conv_count="$(sqlite_metric "$db_file" 'select count(*) from Conversation;' || true)"
+  msg_count="$(sqlite_metric "$db_file" 'select count(*) from Message;' || true)"
+  if [[ -z "$conv_count" || -z "$msg_count" ]]; then
+    echo "ERROR: no se pudieron leer métricas de DB (Conversation/Message)" >&2
+    exit 1
+  fi
   echo "$size_bytes,$conv_count,$msg_count"
 }
 
