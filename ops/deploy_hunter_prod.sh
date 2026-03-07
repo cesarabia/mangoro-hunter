@@ -265,12 +265,14 @@ if [[ -n "$(git -C "$SOURCE_DIR" status --porcelain 2>/dev/null || true)" ]]; th
   git -C "$SOURCE_DIR" diff > "${snapshot_prefix}.diff.patch" || true
   git -C "$SOURCE_DIR" diff --staged > "${snapshot_prefix}.staged.patch" || true
   git -C "$SOURCE_DIR" status --porcelain > "${snapshot_prefix}.status.txt" || true
-  git -C "$SOURCE_DIR" ls-files --others --exclude-standard > "${snapshot_prefix}.untracked.txt" || true
+  git -C "$SOURCE_DIR" ls-files --others --exclude-standard \
+    | grep -Ev '^(state/|backups/|releases/|shared/|current$|frontend/dist/)' \
+    > "${snapshot_prefix}.untracked.txt" || true
   if [[ -s "${snapshot_prefix}.untracked.txt" ]]; then
-    tar -czf "${snapshot_prefix}.untracked.tgz" -C "$SOURCE_DIR" -T "${snapshot_prefix}.untracked.txt" || true
+    tar --ignore-failed-read -czf "${snapshot_prefix}.untracked.tgz" -C "$SOURCE_DIR" -T "${snapshot_prefix}.untracked.txt" || true
   fi
   git -C "$SOURCE_DIR" reset --hard HEAD
-  git -C "$SOURCE_DIR" clean -fd
+  git -C "$SOURCE_DIR" clean -fd -e state/ -e backups/ -e releases/ -e shared/ -e current -e frontend/dist/
 fi
 git fetch origin main
 git checkout main
@@ -300,6 +302,8 @@ rsync -a --delete \
   --exclude='/.git' \
   --exclude='/dev.db' \
   --exclude='/*.db' \
+  --exclude='/releases' \
+  --exclude='/current' \
   --exclude='/backend/uploads' \
   --exclude='/state' \
   --exclude='/shared' \
