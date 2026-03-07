@@ -25,6 +25,10 @@ Se deben mantener dos tags de control:
 - `hunter-prod-pre-er-p7`
 - `hunter-prod-post-er-p7`
 
+Estado actual:
+- `hunter-prod-pre-er-p7` → `096736b`
+- `hunter-prod-post-er-p7` → `9c1e527`
+
 Uso:
 - `pre`: referencia estable antes de aplicar ER-P7.
 - `post`: referencia de código luego de auditoría/instrumentación ER-P7.
@@ -57,4 +61,3 @@ Formato backup esperado (ER-P3):
   2. verificar manifest/checksums,
   3. validar conteos mínimos (`Conversation`, `Message`) y tamaño DB,
   4. recién después reiniciar `hunter-backend`.
-
