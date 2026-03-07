@@ -274,13 +274,13 @@ npm run build
 log "Preparar release: $release_id"
 mkdir -p "$release_dir"
 rsync -a --delete \
-  --exclude='.git' \
-  --exclude='dev.db' \
-  --exclude='*.db' \
-  --exclude='backend/uploads' \
-  --exclude='state' \
-  --exclude='shared' \
-  --exclude='backups' \
+  --exclude='/.git' \
+  --exclude='/dev.db' \
+  --exclude='/*.db' \
+  --exclude='/backend/uploads' \
+  --exclude='/state' \
+  --exclude='/shared' \
+  --exclude='/backups' \
   "$SOURCE_DIR/" "$release_dir/"
 
 if find "$release_dir" -type f \( -name 'dev.db' -o -name '*.db' \) | grep -q .; then
