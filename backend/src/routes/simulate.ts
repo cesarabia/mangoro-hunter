@@ -7673,7 +7673,12 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
                   ? `candidateFlow: applicationRole=${String((convoUpdated as any)?.applicationRole || '')}`
                   : `candidateFlow: role mismatch (${String((convoUpdated as any)?.applicationRole || '—')})`,
               });
-              const stateOk = String((convoUpdated as any)?.applicationState || '').toUpperCase() === targetState;
+              const actualState = String((convoUpdated as any)?.applicationState || '').toUpperCase();
+              let stateOk = actualState === targetState;
+              if (!stateOk && candidateConductorCollectCvAndDocs && targetState === 'READY_FOR_OP_REVIEW') {
+                // En algunos flujos READY_FOR_OP_REVIEW activa inmediatamente WAITING_OP_RESULT.
+                stateOk = actualState === 'WAITING_OP_RESULT';
+              }
               assertions.push({
                 ok: stateOk,
                 message: stateOk
