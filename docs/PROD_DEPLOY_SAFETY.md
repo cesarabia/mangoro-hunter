@@ -10,6 +10,7 @@ Documento operativo para despliegues en PROD con SQLite + uploads en estado pers
 ## Rutas de estado (aisladas)
 - DB: `/opt/hunter/state/dev.db`
 - Uploads: `/opt/hunter/state/uploads/`
+- Assets PDF: `/opt/hunter/state/assets/`
 - Backups: `/opt/hunter/backups/<YYYY-MM-DD_HH-mm-ss>/`
 - Código release: `/opt/hunter/releases/<sha-ts>/`
 - Symlink activo: `/opt/hunter/current`

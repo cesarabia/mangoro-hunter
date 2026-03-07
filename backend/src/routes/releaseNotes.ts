@@ -215,6 +215,11 @@ export async function registerReleaseNotesRoutes(app: FastifyInstance) {
       'bulk_template_batch_send_null',
       // P0.9: Inbox consistencia (Todos + jobRole + stages no mapeados)
       'inbox_todos_stage_jobrole_consistency',
+      // ER-P5: OP_REVIEW en sistema + assets
+      'upload_public_asset_ok',
+      'postulacion_driver_to_ready_for_op_review',
+      'op_review_download_package_ok',
+      'op_review_pause_ai_after_ready',
     ];
 
     const scenarioRuns = await prisma.scenarioRunLog

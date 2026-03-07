@@ -60,6 +60,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     | 'ALL'
     | 'NEW_INTAKE'
     | 'SCREENING'
+    | 'OP_REVIEW'
     | 'INTERVIEW_PENDING'
     | 'INTERVIEW_SCHEDULED'
     | 'HIRED_DRIVER'
@@ -75,6 +76,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         saved === 'ALL' ||
         saved === 'NEW_INTAKE' ||
         saved === 'SCREENING' ||
+        saved === 'OP_REVIEW' ||
         saved === 'INTERVIEW_PENDING' ||
         saved === 'INTERVIEW_SCHEDULED' ||
         saved === 'HIRED_DRIVER' ||
@@ -127,6 +129,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   const mapStageToView = (stageRaw: string): StageViewKey | null => {
     const stage = String(stageRaw || '').trim().toUpperCase();
     if (!stage || stage === 'NEW_INTAKE' || stage === 'NUEVO') return 'NEW_INTAKE';
+    if (stage === 'OP_REVIEW') return 'OP_REVIEW';
     if (['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'INTERESADO'].includes(stage)) return 'SCREENING';
     if (['INTERVIEW_PENDING', 'EN_COORDINACION'].includes(stage)) return 'INTERVIEW_PENDING';
     if (['INTERVIEW_SCHEDULED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) return 'INTERVIEW_SCHEDULED';
@@ -141,6 +144,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     const map: Record<string, string> = {
       NEW_INTAKE: 'Nuevo',
       SCREENING: 'Screening',
+      OP_REVIEW: 'Revisión operación',
       INTERVIEW_PENDING: 'Entrevista pendiente',
       INTERVIEW_SCHEDULED: 'Entrevista agendada',
       HIRED_DRIVER: 'Contratado',
@@ -154,6 +158,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
     { key: 'ALL', label: 'Todos' },
     { key: 'NEW_INTAKE', label: 'Nuevos' },
     { key: 'SCREENING', label: 'Screening' },
+    { key: 'OP_REVIEW', label: 'Revisión operación' },
     { key: 'INTERVIEW_PENDING', label: 'Entrevista pendiente' },
     { key: 'INTERVIEW_SCHEDULED', label: 'Entrevista agendada' },
     { key: 'HIRED_DRIVER', label: 'Contratados' },

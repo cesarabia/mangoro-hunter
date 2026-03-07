@@ -30,6 +30,9 @@ import { registerCandidateRoutes } from './routes/candidates';
 import { isWorkspaceAdmin, isWorkspaceOwner, resolveWorkspaceAccess } from './services/workspaceAuthService';
 import { checkRateLimit } from './services/rateLimitService';
 import { runPhoneLinePhoneE164Hygiene } from './services/phoneLineHygieneService';
+import { startInboundDebounceWorker } from './services/automationRunnerService';
+import { registerAssetRoutes, registerPublicAssetRoutes } from './routes/assets';
+import { registerOpReviewRoutes } from './routes/opReview';
 
 export async function buildServer() {
   const app = Fastify({
@@ -114,6 +117,7 @@ export async function buildServer() {
     app.log.warn({ err }, 'PhoneLine hygiene failed');
   });
   startWorkflowSchedulers(app);
+  startInboundDebounceWorker(app);
 
   app.register(registerAuthRoutes, { prefix: '/api/auth' });
   app.register(registerHealthRoutes, { prefix: '/api' });
@@ -137,8 +141,11 @@ export async function buildServer() {
   app.register(registerMessageRoutes, { prefix: '/api/messages' });
   app.register(registerNotificationRoutes, { prefix: '/api/notifications' });
   app.register(registerCandidateRoutes, { prefix: '/api/candidates' });
+  app.register(registerAssetRoutes, { prefix: '/api/assets' });
+  app.register(registerOpReviewRoutes, { prefix: '/api/op-review' });
   app.register(registerPlatformRoutes, { prefix: '/api/platform' });
   registerWhatsAppWebhookRoutes(app);
+  registerPublicAssetRoutes(app);
 
   return app;
 }

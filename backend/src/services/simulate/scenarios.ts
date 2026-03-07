@@ -127,6 +127,21 @@ export type ScenarioStep = {
     candidatePeonetaBasicFlow?: {
       workspaceId?: string;
     };
+    postulacionDriverToReadyForOpReviewEmail?: {
+      workspaceId?: string;
+    };
+    postulacionDriverToReadyForOpReview?: {
+      workspaceId?: string;
+    };
+    opReviewDownloadPackageOk?: {
+      workspaceId?: string;
+    };
+    opReviewPauseAiAfterReady?: {
+      workspaceId?: string;
+    };
+    uploadPublicAssetOk?: {
+      workspaceId?: string;
+    };
     clientRepeatedMessagesNoCannedRepeat?: {
       workspaceId?: string;
     };
@@ -843,6 +858,71 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check candidate peoneta basic flow',
         expect: { candidatePeonetaBasicFlow: { workspaceId: 'scenario-candidate-peoneta-flow' } },
+      },
+    ],
+  },
+  {
+    id: 'postulacion_driver_to_ready_for_op_review_email',
+    name: 'ER-P4: Driver a OP_REVIEW + resumen/email',
+    description:
+      'Valida transición de conductor a OP_REVIEW con resumen interno, log de email y pausa de IA.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check postulacion driver ready for op review email',
+        expect: { postulacionDriverToReadyForOpReviewEmail: { workspaceId: 'scenario-er-p4-postulacion-review' } },
+      },
+    ],
+  },
+  {
+    id: 'postulacion_driver_to_ready_for_op_review',
+    name: 'ER-P5: Driver a OP_REVIEW (cola interna)',
+    description:
+      'Valida transición a OP_REVIEW con resumen interno y estado listo para revisión de operación dentro del sistema.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check postulacion driver ready for op review',
+        expect: { postulacionDriverToReadyForOpReview: { workspaceId: 'scenario-er-p5-postulacion-review' } },
+      },
+    ],
+  },
+  {
+    id: 'op_review_download_package_ok',
+    name: 'ER-P5: OP_REVIEW descarga paquete',
+    description:
+      'Valida que el endpoint de paquete en OP_REVIEW devuelva ZIP con resumen/documentos para el staff.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check op review package',
+        expect: { opReviewDownloadPackageOk: { workspaceId: 'scenario-er-p5-opreview-package' } },
+      },
+    ],
+  },
+  {
+    id: 'op_review_pause_ai_after_ready',
+    name: 'ER-P5: OP_REVIEW pausa IA',
+    description:
+      'Valida que al llegar a OP_REVIEW la conversación quede con aiPaused=true para evitar respuestas automáticas.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check op review pause ai',
+        expect: { opReviewPauseAiAfterReady: { workspaceId: 'scenario-er-p5-opreview-pause' } },
+      },
+    ],
+  },
+  {
+    id: 'upload_public_asset_ok',
+    name: 'ER-P5: Upload asset PUBLIC',
+    description:
+      'Valida subida de PDF público en Assets y persistencia en storage del workspace.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check upload public asset',
+        expect: { uploadPublicAssetOk: { workspaceId: 'scenario-er-p5-upload-asset' } },
       },
     ],
   },

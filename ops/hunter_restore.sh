@@ -6,6 +6,7 @@ STATE_DIR="${HUNTER_STATE_DIR:-$APP_ROOT/state}"
 BACKUP_ROOT="${HUNTER_BACKUP_ROOT:-$APP_ROOT/backups}"
 DB_PATH="${HUNTER_DB_PATH:-$STATE_DIR/dev.db}"
 UPLOADS_PATH="${HUNTER_UPLOADS_PATH:-$STATE_DIR/uploads}"
+ASSETS_PATH="${HUNTER_ASSETS_PATH:-$STATE_DIR/assets}"
 PROCESS_NAME="${HUNTER_PM2_PROCESS:-hunter-backend}"
 
 usage() {
@@ -58,6 +59,13 @@ echo "   install -m 640 \"$backup_dir/dev.db\" \"$DB_PATH\""
 echo "5) Restaurar uploads:"
 echo "   rm -rf \"$UPLOADS_PATH\" && mkdir -p \"$UPLOADS_PATH\""
 echo "   tar -xzf \"$backup_dir/uploads.tar.gz\" -C \"$STATE_DIR\""
+if [[ -f "$backup_dir/assets.tar.gz" ]]; then
+  echo "5.1) Restaurar assets:"
+  echo "   rm -rf \"$ASSETS_PATH\" && mkdir -p \"$ASSETS_PATH\""
+  echo "   tar -xzf \"$backup_dir/assets.tar.gz\" -C \"$STATE_DIR\""
+else
+  echo "5.1) Restaurar assets: omitido (backup antiguo sin assets.tar.gz)"
+fi
 echo "6) Levantar backend y validar:"
 echo "   pm2 start \"$PROCESS_NAME\""
 echo "   curl -fsS http://127.0.0.1:4101/api/health"
@@ -93,6 +101,12 @@ install -m 640 "$backup_dir/dev.db" "$DB_PATH"
 rm -rf "$UPLOADS_PATH"
 mkdir -p "$UPLOADS_PATH"
 tar -xzf "$backup_dir/uploads.tar.gz" -C "$STATE_DIR"
+
+if [[ -f "$backup_dir/assets.tar.gz" ]]; then
+  rm -rf "$ASSETS_PATH"
+  mkdir -p "$ASSETS_PATH"
+  tar -xzf "$backup_dir/assets.tar.gz" -C "$STATE_DIR"
+fi
 
 echo "[RESTORE] Levantando $PROCESS_NAME..."
 pm2 start "$PROCESS_NAME" || pm2 restart "$PROCESS_NAME"

@@ -12,8 +12,9 @@ import { executeAgentResponse } from '../services/agent/commandExecutorService';
 import { resolveInboundPhoneLineRouting } from '../services/phoneLineRoutingService';
 import { normalizeWorkspaceTemplateId, seedWorkspaceTemplate } from '../services/workspaceTemplateService';
 import { attemptScheduleInterview } from '../services/interviewSchedulerService';
-import { createWorkspaceAsset } from '../services/workspaceAssetService';
+import { createWorkspaceAsset, resolveWorkspaceAssetAbsolutePath } from '../services/workspaceAssetService';
 import { listWorkspaceTemplateCatalog } from '../services/whatsappTemplateCatalogService';
+import { triggerReadyForOpReview } from '../services/postulacionReviewService';
 import fs from 'fs/promises';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
@@ -2666,6 +2667,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const inboundDebounceSingleDraftForMultipleMsgs =
         (step.expect as any)?.inboundDebounceSingleDraftForMultipleMsgs;
       const candidateOkDoesNotRestartFlow = (step.expect as any)?.candidateOkDoesNotRestartFlow;
+      const uploadPublicAssetOk = (step.expect as any)?.uploadPublicAssetOk;
       const sendPdfPublicAssetOk = (step.expect as any)?.sendPdfPublicAssetOk;
       const sendPdfOutside24hReturnsBlocked = (step.expect as any)?.sendPdfOutside24hReturnsBlocked;
       const modelResolvedGpt4oMini = (step.expect as any)?.modelResolvedGpt4oMini;
@@ -4550,11 +4552,13 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       }
 
       if (
+        (uploadPublicAssetOk && typeof uploadPublicAssetOk === 'object') ||
         (sendPdfPublicAssetOk && typeof sendPdfPublicAssetOk === 'object') ||
         (sendPdfOutside24hReturnsBlocked && typeof sendPdfOutside24hReturnsBlocked === 'object')
       ) {
         const wsId = String(
-          (sendPdfPublicAssetOk as any)?.workspaceId ||
+          (uploadPublicAssetOk as any)?.workspaceId ||
+            (sendPdfPublicAssetOk as any)?.workspaceId ||
             (sendPdfOutside24hReturnsBlocked as any)?.workspaceId ||
             'scenario-er-p1-send-pdf',
         ).trim() || 'scenario-er-p1-send-pdf';
@@ -4670,6 +4674,23 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             if (!asset?.id) {
               assertions.push({ ok: false, message: 'sendPdf: no se pudo crear asset PUBLIC' });
             } else {
+              if (uploadPublicAssetOk && typeof uploadPublicAssetOk === 'object') {
+                const absolute = resolveWorkspaceAssetAbsolutePath(asset as any);
+                const exists = absolute
+                  ? await fs
+                      .access(absolute)
+                      .then(() => true)
+                      .catch(() => false)
+                  : false;
+                assertions.push({
+                  ok: Boolean(asset.publicUrl) && exists,
+                  message:
+                    Boolean(asset.publicUrl) && exists
+                      ? 'uploadPublicAssetOk: asset PUBLIC subido y persistido en disco'
+                      : 'uploadPublicAssetOk: asset sin publicUrl o archivo no persistido',
+                });
+              }
+
               if (sendPdfPublicAssetOk && typeof sendPdfPublicAssetOk === 'object') {
                 await prisma.message
                   .create({
@@ -7466,6 +7487,10 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const candidateIntakeChooseRole = (step.expect as any)?.candidateIntakeChooseRole;
       const candidateConductorCollectCvAndDocs = (step.expect as any)?.candidateConductorCollectCvAndDocs;
       const candidatePeonetaBasicFlow = (step.expect as any)?.candidatePeonetaBasicFlow;
+      const postulacionDriverToReadyForOpReview = (step.expect as any)?.postulacionDriverToReadyForOpReview;
+      const postulacionDriverToReadyForOpReviewEmail = (step.expect as any)?.postulacionDriverToReadyForOpReviewEmail;
+      const opReviewDownloadPackageOk = (step.expect as any)?.opReviewDownloadPackageOk;
+      const opReviewPauseAiAfterReady = (step.expect as any)?.opReviewPauseAiAfterReady;
       if (
         (candidateIntakeChooseRole && typeof candidateIntakeChooseRole === 'object') ||
         (candidateConductorCollectCvAndDocs && typeof candidateConductorCollectCvAndDocs === 'object') ||
@@ -7655,6 +7680,260 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
                     : 'candidatePeonetaBasicFlow: etapa incorrecta para peoneta',
                 });
               }
+            }
+          }
+
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      if (
+        (postulacionDriverToReadyForOpReviewEmail && typeof postulacionDriverToReadyForOpReviewEmail === 'object') ||
+        (postulacionDriverToReadyForOpReview && typeof postulacionDriverToReadyForOpReview === 'object') ||
+        (opReviewDownloadPackageOk && typeof opReviewDownloadPackageOk === 'object') ||
+        (opReviewPauseAiAfterReady && typeof opReviewPauseAiAfterReady === 'object')
+      ) {
+        const wsId =
+          String(
+            (postulacionDriverToReadyForOpReviewEmail as any)?.workspaceId ||
+              (postulacionDriverToReadyForOpReview as any)?.workspaceId ||
+              (opReviewDownloadPackageOk as any)?.workspaceId ||
+              (opReviewPauseAiAfterReady as any)?.workspaceId ||
+              'scenario-er-p4-postulacion-review',
+          ).trim() ||
+          'scenario-er-p4-postulacion-review';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'postulacionDriverToReadyForOpReviewEmail: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'postulacionDriverToReadyForOpReviewEmail: auth header missing' });
+        } else {
+          const lineId = `scenario-er-p4-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: {
+                id: wsId,
+                name: 'Scenario ER-P4 Postulación Review',
+                isSandbox: true,
+                reviewEmailTo: null as any,
+                reviewEmailFrom: null as any,
+                archivedAt: null,
+              } as any,
+              update: {
+                name: 'Scenario ER-P4 Postulación Review',
+                isSandbox: true,
+                archivedAt: null,
+              } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario ER-P4 (temp)',
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+                needsAttention: false,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const contact = await prisma.contact
+            .create({
+              data: {
+                workspaceId: wsId,
+                displayName: 'Juan Pérez',
+                waId: `scenario-er-p4-${Date.now()}`,
+                candidateName: 'Juan Pérez',
+                comuna: 'Providencia',
+                availabilityText: 'Mañana entre 10:00 y 12:00',
+                experienceYears: 3,
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const convo =
+            phoneLine?.id && contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      contactId: contact.id,
+                      status: 'OPEN',
+                      channel: 'sandbox',
+                      isAdmin: false,
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'DOCS_PENDING',
+                      applicationRole: 'DRIVER_COMPANY' as any,
+                      applicationState: 'REQUEST_OP_DOCS' as any,
+                      applicationDataJson: JSON.stringify({
+                        roleIntent: 'DRIVER_COMPANY',
+                        comuna: 'Providencia',
+                        availability: 'Mañana entre 10:00 y 12:00',
+                        experience: '3 años reparto urbano',
+                        yearsExperience: 3,
+                        hasLicenseB: true,
+                        hasParking: true,
+                      }),
+                      availabilityRaw: 'Mañana entre 10:00 y 12:00',
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+          if (!contact?.id || !convo?.id) {
+            assertions.push({ ok: false, message: 'postulacionDriverToReadyForOpReviewEmail: setup incompleto' });
+          } else {
+            const addInboundDoc = async (label: string, fileName: string) => {
+              await prisma.message
+                .create({
+                  data: {
+                    conversationId: convo.id,
+                    direction: 'INBOUND',
+                    text: label,
+                    mediaType: 'document',
+                    mediaMime: 'application/pdf',
+                    mediaPath: `/tmp/${fileName}`,
+                    rawPayload: JSON.stringify({
+                      simulated: true,
+                      scenario: 'postulacion_driver_to_ready_for_op_review_email',
+                      attachment: { fileName },
+                    }),
+                    timestamp: new Date(),
+                    read: true,
+                  },
+                })
+                .catch(() => null);
+            };
+            await addInboundDoc('Adjunto CV actualizado', 'cv_juan_perez.pdf');
+            await addInboundDoc('Adjunto carnet frente y reverso', 'carnet_juan_perez.pdf');
+            await addInboundDoc('Adjunto licencia clase B', 'licencia_juan_perez.pdf');
+
+            const result = await triggerReadyForOpReview({
+              app,
+              workspaceId: wsId,
+              conversationId: convo.id,
+              reason: 'scenario_er_p4',
+            }).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : 'unknown_error' }));
+
+            const convoUpdated = await prisma.conversation
+              .findUnique({
+                where: { id: convo.id },
+                select: {
+                  conversationStage: true,
+                  applicationState: true as any,
+                  aiPaused: true,
+                  opReviewSummarySentAt: true as any,
+                  opReviewEmailSentAt: true as any,
+                },
+              })
+              .catch(() => null);
+            const summaryMessage = await prisma.message
+              .findFirst({
+                where: { conversationId: convo.id, isInternalEvent: true as any, text: { contains: 'RESUMEN INTERNO' } as any },
+                orderBy: { createdAt: 'desc' },
+                select: { id: true, text: true },
+              })
+              .catch(() => null);
+            const emailLog = await prisma.emailOutboundLog
+              .findFirst({
+                where: { workspaceId: wsId, conversationId: convo.id, channel: 'EMAIL' } as any,
+                orderBy: { createdAt: 'desc' },
+                select: { id: true, status: true, error: true },
+              })
+              .catch(() => null);
+
+            const stageOk = String((convoUpdated as any)?.conversationStage || '').toUpperCase() === 'OP_REVIEW';
+            const stateOk = String((convoUpdated as any)?.applicationState || '').toUpperCase() === 'WAITING_OP_RESULT';
+            const pausedOk = Boolean((convoUpdated as any)?.aiPaused);
+            const summaryOk = Boolean(summaryMessage?.id) && /POSTULANTE[\s\S]*DOCUMENTOS[\s\S]*OPERACIÓN\/PAGO/i.test(String(summaryMessage?.text || ''));
+            const emailOk = Boolean(emailLog?.id) && ['SENT', 'SKIPPED', 'ERROR'].includes(String(emailLog?.status || '').toUpperCase());
+            const cvLinkIncluded = /\/api\/messages\/.+\/download/.test(String(summaryMessage?.text || ''));
+
+            assertions.push({
+              ok: (result as any)?.ok !== false,
+              message:
+                (result as any)?.ok !== false
+                  ? 'postulacionDriverToReadyForOpReviewEmail: trigger READY_FOR_OP_REVIEW OK'
+                  : `postulacionDriverToReadyForOpReviewEmail: trigger falló (${String((result as any)?.error || 'error')})`,
+            });
+            assertions.push({
+              ok: stageOk && stateOk && pausedOk,
+              message:
+                stageOk && stateOk && pausedOk
+                  ? 'postulacionDriverToReadyForOpReviewEmail: stage=OP_REVIEW + WAITING_OP_RESULT + aiPaused OK'
+                  : `postulacionDriverToReadyForOpReviewEmail: transición inválida stage=${String((convoUpdated as any)?.conversationStage || '—')} state=${String((convoUpdated as any)?.applicationState || '—')} paused=${String((convoUpdated as any)?.aiPaused)}`,
+            });
+            assertions.push({
+              ok: summaryOk && cvLinkIncluded,
+              message:
+                summaryOk && cvLinkIncluded
+                  ? 'postulacionDriverToReadyForOpReviewEmail: resumen interno con secciones y links OK'
+                  : 'postulacionDriverToReadyForOpReviewEmail: resumen interno incompleto',
+            });
+            assertions.push({
+              ok: emailOk,
+              message: emailOk
+                ? `postulacionDriverToReadyForOpReviewEmail: email log ${String(emailLog?.status || '—')}`
+                : 'postulacionDriverToReadyForOpReviewEmail: faltó EmailOutboundLog',
+            });
+
+            if (postulacionDriverToReadyForOpReview && typeof postulacionDriverToReadyForOpReview === 'object') {
+              const ok = stageOk && stateOk && summaryOk;
+              assertions.push({
+                ok,
+                message: ok
+                  ? 'postulacionDriverToReadyForOpReview: transición a OP_REVIEW + resumen interno OK'
+                  : 'postulacionDriverToReadyForOpReview: transición/resumen incompletos',
+              });
+            }
+
+            if (opReviewPauseAiAfterReady && typeof opReviewPauseAiAfterReady === 'object') {
+              assertions.push({
+                ok: pausedOk,
+                message: pausedOk
+                  ? 'opReviewPauseAiAfterReady: aiPaused=true al entrar en OP_REVIEW'
+                  : 'opReviewPauseAiAfterReady: faltó pausar IA en OP_REVIEW',
+              });
+            }
+
+            if (opReviewDownloadPackageOk && typeof opReviewDownloadPackageOk === 'object') {
+              const pkgRes = await app.inject({
+                method: 'GET',
+                url: `/api/op-review/${encodeURIComponent(convo.id)}/package`,
+                headers: { authorization: authHeader, 'x-workspace-id': wsId },
+              });
+              const header = String(pkgRes.headers['content-type'] || '');
+              const zipSig = String(pkgRes.rawPayload?.slice(0, 2) || '') === 'PK';
+              const ok = pkgRes.statusCode === 200 && header.includes('application/zip') && zipSig;
+              assertions.push({
+                ok,
+                message: ok
+                  ? 'opReviewDownloadPackageOk: paquete ZIP descargable OK'
+                  : `opReviewDownloadPackageOk: descarga falló (status=${pkgRes.statusCode}, ct=${header})`,
+              });
             }
           }
 

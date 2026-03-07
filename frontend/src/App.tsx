@@ -9,12 +9,14 @@ import { ConfigPage } from './pages/ConfigPage';
 import { SimulatorPage } from './pages/SimulatorPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { PlatformPage } from './pages/PlatformPage';
+import { OpReviewPage } from './pages/OpReviewPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CopilotWidget } from './components/CopilotWidget';
 import { GuideOverlay, GuideSpec } from './components/GuideOverlay';
 import { NotificationBell } from './components/NotificationBell';
+import { Tooltip } from './components/Tooltip';
 
-type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review' | 'platform';
+type View = 'inbox' | 'inactive' | 'simulator' | 'agenda' | 'config' | 'review' | 'platform' | 'opReview';
 
 const CONFIG_TABS = new Set([
   'workspace',
@@ -38,6 +40,7 @@ const parseRouteFromPath = (pathname: string): { view: View; configTab?: string 
   if (path === '/agenda') return { view: 'agenda' };
   if (path === '/review') return { view: 'review' };
   if (path === '/platform') return { view: 'platform' };
+  if (path === '/op-review') return { view: 'opReview' };
 
   if (path === '/config') return { view: 'config' };
   if (path.startsWith('/config/')) {
@@ -57,6 +60,7 @@ const pathForView = (view: View): string => {
   if (view === 'agenda') return '/agenda';
   if (view === 'review') return '/review';
   if (view === 'platform') return '/platform';
+  if (view === 'opReview') return '/op-review';
   if (view === 'config') {
     try {
       const stored = localStorage.getItem('configSelectedTab');
@@ -169,6 +173,7 @@ export const App: React.FC = () => {
   const canAccessReview = isAdmin;
   const canAccessSimulator = isAdmin;
   const canAccessPlatform = platformOwner;
+  const canAccessOpReview = isAdmin;
 
   useEffect(() => {
     if (view === 'config' && !canAccessConfig) setView('inbox');
@@ -176,7 +181,8 @@ export const App: React.FC = () => {
     if (view === 'simulator' && !canAccessSimulator) setView('inbox');
     if (view === 'review' && !canAccessReview) setView('inbox');
     if (view === 'platform' && !canAccessPlatform) setView('inbox');
-  }, [view, canAccessConfig, canAccessAgenda, canAccessSimulator, canAccessReview, canAccessPlatform]);
+    if (view === 'opReview' && !canAccessOpReview) setView('inbox');
+  }, [view, canAccessConfig, canAccessAgenda, canAccessSimulator, canAccessReview, canAccessPlatform, canAccessOpReview]);
 
   const loadWorkspaces = useCallback(async () => {
     if (!token) return;
@@ -307,6 +313,7 @@ export const App: React.FC = () => {
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
         canAccessPlatform={canAccessPlatform}
+        canAccessOpReview={canAccessOpReview}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -332,6 +339,7 @@ export const App: React.FC = () => {
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
         canAccessPlatform={canAccessPlatform}
+        canAccessOpReview={canAccessOpReview}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -357,6 +365,7 @@ export const App: React.FC = () => {
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
         canAccessPlatform={canAccessPlatform}
+        canAccessOpReview={canAccessOpReview}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -382,6 +391,7 @@ export const App: React.FC = () => {
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
         canAccessPlatform={canAccessPlatform}
+        canAccessOpReview={canAccessOpReview}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -409,6 +419,32 @@ export const App: React.FC = () => {
     );
   }
 
+  if (view === 'opReview' && canAccessOpReview) {
+    return (
+      <Layout
+        view={view}
+        setView={setView}
+        onLogout={handleLogout}
+        isAdmin={isAdmin}
+        canAccessAgenda={canAccessAgenda}
+        canAccessConfig={canAccessConfig}
+        canAccessReview={canAccessReview}
+        canAccessSimulator={canAccessSimulator}
+        canAccessPlatform={canAccessPlatform}
+        canAccessOpReview={canAccessOpReview}
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        setWorkspaceId={setWorkspaceId}
+        outboundPolicy={outboundPolicy}
+        versionInfo={versionInfo}
+        userEmail={currentUserEmail}
+        workspaceRole={workspaceRoleUpper}
+      >
+        <OpReviewPage />
+      </Layout>
+    );
+  }
+
   if (view === 'platform' && canAccessPlatform) {
     return (
       <Layout
@@ -421,6 +457,7 @@ export const App: React.FC = () => {
         canAccessReview={canAccessReview}
         canAccessSimulator={canAccessSimulator}
         canAccessPlatform={canAccessPlatform}
+        canAccessOpReview={canAccessOpReview}
         workspaces={workspaces}
         workspaceId={workspaceId}
         setWorkspaceId={setWorkspaceId}
@@ -445,6 +482,7 @@ export const App: React.FC = () => {
       canAccessReview={canAccessReview}
       canAccessSimulator={canAccessSimulator}
       canAccessPlatform={canAccessPlatform}
+      canAccessOpReview={canAccessOpReview}
       workspaces={workspaces}
       workspaceId={workspaceId}
       setWorkspaceId={setWorkspaceId}
@@ -476,6 +514,7 @@ const Layout: React.FC<{
   canAccessReview: boolean;
   canAccessSimulator: boolean;
   canAccessPlatform: boolean;
+  canAccessOpReview: boolean;
   workspaces: Array<{ id: string; name: string; isSandbox?: boolean; role?: string | null }>;
   workspaceId: string;
   setWorkspaceId: (id: string) => void;
@@ -484,7 +523,7 @@ const Layout: React.FC<{
   userEmail?: string | null;
   workspaceRole?: string | null;
   children: React.ReactNode;
-}> = ({ view, setView, onLogout, isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, canAccessPlatform, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, userEmail, workspaceRole, children }) => {
+}> = ({ view, setView, onLogout, isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, canAccessPlatform, canAccessOpReview, workspaces, workspaceId, setWorkspaceId, outboundPolicy, versionInfo, userEmail, workspaceRole, children }) => {
   const [isNarrow, setIsNarrow] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 980;
@@ -492,6 +531,12 @@ const Layout: React.FC<{
   const [menuOpen, setMenuOpen] = useState(false);
   const [guide, setGuide] = useState<GuideSpec | null>(null);
   const [workspaceToast, setWorkspaceToast] = useState<string | null>(null);
+  const [copilotDockState, setCopilotDockState] = useState<{ open: boolean; isMobile: boolean; dockSide: 'left' | 'right'; widthPx: number }>({
+    open: false,
+    isMobile: true,
+    dockSide: 'right',
+    widthPx: 420,
+  });
 
   useEffect(() => {
     const onResize = () => setIsNarrow(window.innerWidth < 980);
@@ -534,6 +579,7 @@ const Layout: React.FC<{
       { view: 'inbox', label: 'Inbox' },
       { view: 'inactive', label: 'Inactivos' },
       { view: 'review', label: 'Ayuda / QA', adminOnly: true },
+      { view: 'opReview', label: 'Revisión operación', adminOnly: true },
       { view: 'simulator', label: 'Simulador', adminOnly: true },
       { view: 'agenda', label: 'Agenda', adminOnly: true },
       { view: 'platform', label: 'Clientes', adminOnly: true },
@@ -545,11 +591,12 @@ const Layout: React.FC<{
       if (i.view === 'agenda') return canAccessAgenda;
       if (i.view === 'config') return canAccessConfig;
       if (i.view === 'review') return canAccessReview;
+      if (i.view === 'opReview') return canAccessOpReview;
       if (i.view === 'simulator') return canAccessSimulator;
       if (i.view === 'platform') return canAccessPlatform;
       return !i.adminOnly || isAdmin;
     });
-  }, [isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessSimulator, canAccessPlatform, onLogout]);
+  }, [isAdmin, canAccessAgenda, canAccessConfig, canAccessReview, canAccessOpReview, canAccessSimulator, canAccessPlatform, onLogout]);
 
   const versionStamp = useMemo(() => {
     const sha = typeof versionInfo?.gitSha === 'string' ? versionInfo.gitSha : null;
@@ -577,6 +624,11 @@ const Layout: React.FC<{
     return email || role || null;
   }, [userEmail, workspaceRole]);
 
+  const dockReservedWidth = useMemo(() => {
+    if (!copilotDockState.open || copilotDockState.isMobile) return 0;
+    return Math.min(Math.max(Number(copilotDockState.widthPx) || 420, 320), 560);
+  }, [copilotDockState]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', minHeight: '100vh', overflowX: 'hidden' }}>
       <header
@@ -603,36 +655,37 @@ const Layout: React.FC<{
             ))}
           </select>
           {outboundPolicy ? (
-            <button
-              type="button"
-              onClick={() => {
-                if (!isAdmin) return;
-                try {
-                  localStorage.setItem('configSelectedTab', 'workspace');
-                } catch {
-                  // ignore
-                }
-                setView('config');
-              }}
-              style={{
-                padding: '4px 8px',
-                borderRadius: 8,
-                border: '1px solid #b93800',
-                background: outboundPolicy === 'ALLOW_ALL' ? '#fff7f1' : '#b93800',
-                color: '#fff',
-                fontSize: 12,
-                fontWeight: 700,
-                whiteSpace: 'nowrap',
-                cursor: isAdmin ? 'pointer' : 'default'
-              }}
-              title="Outbound policy: click para abrir SAFE MODE (Configuración → Workspace)."
-            >
-              <span style={{ color: outboundPolicy === 'ALLOW_ALL' ? '#b93800' : '#fff' }}>
-                {outboundPolicy === 'ALLOW_ALL'
-                  ? 'SAFE MODE OFF (allow all)'
-                  : `SAFE MODE: ${outboundPolicy === 'BLOCK_ALL' ? 'block all' : 'allowlist only'}`}
-              </span>
-            </button>
+            <Tooltip content="SAFE MODE controla solo respuestas automáticas de IA. Click para abrir Configuración → Workspace." delayMs={1000}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isAdmin) return;
+                  try {
+                    localStorage.setItem('configSelectedTab', 'workspace');
+                  } catch {
+                    // ignore
+                  }
+                  setView('config');
+                }}
+                style={{
+                  padding: '4px 8px',
+                  borderRadius: 8,
+                  border: '1px solid #b93800',
+                  background: outboundPolicy === 'ALLOW_ALL' ? '#fff7f1' : '#b93800',
+                  color: '#fff',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  whiteSpace: 'nowrap',
+                  cursor: isAdmin ? 'pointer' : 'default'
+                }}
+              >
+                <span style={{ color: outboundPolicy === 'ALLOW_ALL' ? '#b93800' : '#fff' }}>
+                  {outboundPolicy === 'ALLOW_ALL'
+                    ? 'SAFE MODE OFF (allow all)'
+                    : `SAFE MODE: ${outboundPolicy === 'BLOCK_ALL' ? 'block all' : 'allowlist only'}`}
+                </span>
+              </button>
+            </Tooltip>
           ) : null}
           {versionStamp.label ? (
             <div
@@ -689,6 +742,7 @@ const Layout: React.FC<{
               {navButton('inbox', 'Inbox')}
               {navButton('inactive', 'Inactivos')}
               {canAccessReview && navButton('review', 'Ayuda / QA')}
+              {canAccessOpReview && navButton('opReview', 'Revisión operación')}
               {canAccessSimulator && navButton('simulator', 'Simulador')}
               {canAccessAgenda && navButton('agenda', 'Agenda')}
               {canAccessPlatform && navButton('platform', 'Clientes')}
@@ -793,7 +847,16 @@ const Layout: React.FC<{
           )}
         </div>
       </header>
-      <div style={{ flex: 1, minHeight: 0 }}>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          paddingLeft: dockReservedWidth > 0 && copilotDockState.dockSide === 'left' ? dockReservedWidth : 0,
+          paddingRight: dockReservedWidth > 0 && copilotDockState.dockSide === 'right' ? dockReservedWidth : 0,
+          transition: 'padding 160ms ease',
+          boxSizing: 'border-box',
+        }}
+      >
         <ErrorBoundary title="No se pudo renderizar la vista">
           <div key={`ws:${workspaceId}`} style={{ height: '100%', minHeight: 0 }}>
             {children}
@@ -826,6 +889,7 @@ const Layout: React.FC<{
       <CopilotWidget
         currentView={view}
         isAdmin={isAdmin}
+        onDockStateChange={(next) => setCopilotDockState(next)}
         onNavigate={(action, ctx) => {
           if (action.type === 'GUIDE') {
             const steps = Array.isArray((action as any).steps) ? (action as any).steps : [];

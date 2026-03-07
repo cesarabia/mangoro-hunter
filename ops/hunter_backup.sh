@@ -6,6 +6,7 @@ STATE_DIR="${HUNTER_STATE_DIR:-$APP_ROOT/state}"
 BACKUP_ROOT="${HUNTER_BACKUP_ROOT:-$APP_ROOT/backups}"
 DB_PATH="${HUNTER_DB_PATH:-$STATE_DIR/dev.db}"
 UPLOADS_PATH="${HUNTER_UPLOADS_PATH:-$STATE_DIR/uploads}"
+ASSETS_PATH="${HUNTER_ASSETS_PATH:-$STATE_DIR/assets}"
 RETENTION_DAYS="${HUNTER_BACKUP_RETENTION_DAYS:-14}"
 S3_BUCKET="${S3_BACKUP_BUCKET:-}"
 S3_PREFIX="${S3_BACKUP_PREFIX:-hunter}"
@@ -32,11 +33,15 @@ mkdir -p "$backup_dir"
 
 [[ -f "$DB_PATH" ]] || fail "DB no encontrada en $DB_PATH"
 [[ -d "$UPLOADS_PATH" ]] || fail "Uploads no encontrado en $UPLOADS_PATH"
+if [[ ! -d "$ASSETS_PATH" ]]; then
+  mkdir -p "$ASSETS_PATH"
+fi
 
 log "Creando backup en $backup_dir"
 
 sqlite3 "$DB_PATH" ".backup '$backup_dir/dev.db'"
 tar -czf "$backup_dir/uploads.tar.gz" -C "$STATE_DIR" "$(basename "$UPLOADS_PATH")"
+tar -czf "$backup_dir/assets.tar.gz" -C "$STATE_DIR" "$(basename "$ASSETS_PATH")"
 
 git_sha="unknown"
 if [[ -d "$APP_ROOT/.git" ]]; then
@@ -55,8 +60,10 @@ df -hT > "$disk_file" || true
   echo "state_dir=$STATE_DIR"
   echo "db_path=$DB_PATH"
   echo "uploads_path=$UPLOADS_PATH"
+  echo "assets_path=$ASSETS_PATH"
   echo "db_size_bytes=$(stat -c%s "$backup_dir/dev.db" 2>/dev/null || echo 0)"
   echo "uploads_tar_size_bytes=$(stat -c%s "$backup_dir/uploads.tar.gz" 2>/dev/null || echo 0)"
+  echo "assets_tar_size_bytes=$(stat -c%s "$backup_dir/assets.tar.gz" 2>/dev/null || echo 0)"
   echo ""
   echo "[df -hT]"
   cat "$disk_file"
@@ -64,7 +71,7 @@ df -hT > "$disk_file" || true
 
 (
   cd "$backup_dir"
-  sha256sum dev.db uploads.tar.gz > "$sha_file"
+  sha256sum dev.db uploads.tar.gz assets.tar.gz > "$sha_file"
 )
 
 find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +"$RETENTION_DAYS" -print0 | xargs -0r rm -rf --

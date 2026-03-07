@@ -2,6 +2,26 @@
 
 ## Qué está listo (hoy)
 
+### ER-P5 (Hunter PROD only) — avance de implementación
+- Fix de storage assets en runtime:
+  - `WorkspaceAsset` ya no depende de `/var/lib/hunter/assets`,
+  - usa ruta persistente de estado (`/opt/hunter/state/assets`) vía `HUNTER_ASSETS_DIR` / `HUNTER_WORKSPACE_ASSETS_DIR` y fallback controlado.
+- Nuevo módulo backend `OP_REVIEW`:
+  - `GET /api/op-review/queue` (cola de revisión),
+  - `GET /api/op-review/:conversationId` (detalle + resumen + docs),
+  - `POST /api/op-review/:conversationId/action` (aceptar/rechazar/volver screening/pedir doc/regenerar resumen),
+  - `GET /api/op-review/:conversationId/package` (ZIP con resumen + documentos detectados).
+- Nueva vista frontend “Revisión operación” (dock en navegación principal):
+  - cola operativa de casos en `OP_REVIEW`,
+  - detalle de postulante (cargo/comuna/disponibilidad/experiencia/documentos),
+  - acciones directas de operación y descarga de paquete.
+- Smoke scenarios añadidos para ER‑P5:
+  - `upload_public_asset_ok`
+  - `postulacion_driver_to_ready_for_op_review`
+  - `op_review_download_package_ok`
+  - `op_review_pause_ai_after_ready`
+- DoD automático (`/api/release-notes/evaluate-dod`) actualizado para considerar estos escenarios.
+
 ### ER-P1 (Hunter PROD only) — estado actual
 - `Sugerir` ahora acepta `draftText` explícito y diferencia modo:
   - con borrador: mejora redacción/tono sin perder intención,

@@ -262,6 +262,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const viewKey =
       viewKeyRaw === 'NEW_INTAKE' ||
       viewKeyRaw === 'SCREENING' ||
+      viewKeyRaw === 'OP_REVIEW' ||
       viewKeyRaw === 'INTERVIEW_PENDING' ||
       viewKeyRaw === 'INTERVIEW_SCHEDULED' ||
       viewKeyRaw === 'HIRED_DRIVER' ||
@@ -278,6 +279,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       if (!raw || raw === 'NUEVO') return 'NEW_INTAKE';
       if (raw === 'WAITING_CANDIDATE' || raw === 'INFO') return 'SCREENING';
       if (raw === 'AGENDADO' || raw === 'CONFIRMED') return 'INTERVIEW_SCHEDULED';
+      if (raw === 'EN_REVISION_OPERACION') return 'OP_REVIEW';
       if (raw === 'DESCARTADO') return 'REJECTED';
       return raw;
     };
@@ -285,7 +287,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const mapStageToView = (stageRaw: string): string | null => {
       const stage = String(stageRaw || '').trim().toUpperCase();
       if (!stage || stage === 'NEW_INTAKE' || stage === 'NUEVO') return 'NEW_INTAKE';
-      if (['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'INTERESADO'].includes(stage)) return 'SCREENING';
+      if (stage === 'OP_REVIEW') return 'OP_REVIEW';
+      if (['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'INTERESADO', 'DOCS_PENDING'].includes(stage)) return 'SCREENING';
       if (['INTERVIEW_PENDING', 'EN_COORDINACION'].includes(stage)) return 'INTERVIEW_PENDING';
       if (['INTERVIEW_SCHEDULED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) return 'INTERVIEW_SCHEDULED';
       if (['HIRED_DRIVER', 'HIRED', 'COMPLETADO'].includes(stage)) return 'HIRED_DRIVER';
@@ -296,7 +299,8 @@ export async function registerConversationRoutes(app: FastifyInstance) {
 
     const inferJobRoleFromConversation = (conversation: any): 'CONDUCTOR' | 'PEONETA' => {
       const explicit = String(conversation?.contact?.jobRole || '').trim().toUpperCase();
-      if (explicit === 'PEONETA' || explicit === 'CONDUCTOR') return explicit;
+      if (explicit === 'PEONETA') return 'PEONETA';
+      if (explicit === 'CONDUCTOR' || explicit === 'CONDUCTOR_FLOTA' || explicit === 'DRIVER_COMPANY' || explicit === 'DRIVER_OWN_VAN') return 'CONDUCTOR';
       const source = `${String(conversation?.program?.slug || '')} ${String(conversation?.program?.name || '')}`.toLowerCase();
       if (source.includes('peoneta') || source.includes('ayudante') || source.includes('cargador')) return 'PEONETA';
       return 'CONDUCTOR';
@@ -311,7 +315,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       if (['INTERVIEW_PENDING', 'INTERVIEW_SCHEDULED', 'INTERVIEWED', 'AGENDADO', 'CONFIRMADO'].includes(stage)) {
         return 'CITADO';
       }
-      if (status === 'OPEN' || ['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'EN_COORDINACION', 'INTERESADO'].includes(stage)) {
+      if (status === 'OPEN' || ['SCREENING', 'INFO', 'CALIFICADO', 'QUALIFIED', 'EN_COORDINACION', 'INTERESADO', 'DOCS_PENDING', 'OP_REVIEW'].includes(stage)) {
         return 'CONTACTADO';
       }
       return 'NUEVO';

@@ -6,12 +6,15 @@ const DEFAULT_LEGACY_DB = '/opt/hunter/dev.db';
 
 let databaseWarningPrinted = false;
 let uploadsWarningPrinted = false;
+let assetsWarningPrinted = false;
 
-function warnOnce(kind: 'db' | 'uploads', message: string): void {
+function warnOnce(kind: 'db' | 'uploads' | 'assets', message: string): void {
   if (kind === 'db' && databaseWarningPrinted) return;
   if (kind === 'uploads' && uploadsWarningPrinted) return;
+  if (kind === 'assets' && assetsWarningPrinted) return;
   if (kind === 'db') databaseWarningPrinted = true;
   if (kind === 'uploads') uploadsWarningPrinted = true;
+  if (kind === 'assets') assetsWarningPrinted = true;
   console.warn(`[hunter-state] ${message}`);
 }
 
@@ -48,8 +51,24 @@ export function getStateUploadsPath(): string {
   return String(process.env.HUNTER_STATE_UPLOADS_PATH || '').trim() || path.join(getStateRootDir(), 'uploads');
 }
 
+export function getStateAssetsPath(): string {
+  const configured = String(process.env.HUNTER_ASSETS_DIR || process.env.HUNTER_WORKSPACE_ASSETS_DIR || '').trim();
+  if (!configured) return path.join(getStateRootDir(), 'assets');
+  const normalized = path.resolve(configured);
+  // Compatibilidad: ruta legacy que suele fallar por permisos en PROD.
+  if (normalized.startsWith('/var/lib/hunter')) {
+    warnOnce('assets', `Assets legacy (${normalized}) detectado. Se usará ${path.join(getStateRootDir(), 'assets')}.`);
+    return path.join(getStateRootDir(), 'assets');
+  }
+  return configured;
+}
+
 export function getLegacyUploadsPath(): string {
   return path.resolve(process.cwd(), 'uploads');
+}
+
+export function getLegacyAssetsPath(): string {
+  return '/var/lib/hunter/assets';
 }
 
 /**
@@ -118,6 +137,22 @@ export function resolveUploadsBaseDir(): string {
   }
 
   return stateUploads;
+}
+
+export function resolveAssetsBaseDir(): string {
+  const stateAssets = getStateAssetsPath();
+  if (fs.existsSync(stateAssets)) return stateAssets;
+
+  const legacyAssets = getLegacyAssetsPath();
+  if (fs.existsSync(legacyAssets)) {
+    warnOnce(
+      'assets',
+      `Directorio state/assets no existe. Fallback temporal a assets legacy ${legacyAssets}.`,
+    );
+    return legacyAssets;
+  }
+
+  return stateAssets;
 }
 
 export function resolveMediaPathCandidates(mediaPath: string): string[] {
