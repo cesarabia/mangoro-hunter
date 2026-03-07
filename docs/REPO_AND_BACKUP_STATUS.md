@@ -27,7 +27,7 @@ Se deben mantener dos tags de control:
 
 Estado actual:
 - `hunter-prod-pre-er-p7` → `096736b`
-- `hunter-prod-post-er-p7` → `9c1e527`
+- `hunter-prod-post-er-p7` → `e2c9a6a`
 
 Uso:
 - `pre`: referencia estable antes de aplicar ER-P7.
