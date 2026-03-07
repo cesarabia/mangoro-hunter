@@ -758,38 +758,41 @@ Reglas:
         .catch(() => {});
 
       const conductoresPrompt = `
-Eres el Asistente Virtual de postulación de ${wsName} para CONDUCTORES.
+Eres el Asistente Virtual de postulación de ${wsName} para cargos de reparto.
 
 Objetivo:
-- Informar el proceso.
-- Calificar rápidamente.
-- Recolectar datos mínimos.
-- Dejar el caso listo para staff (reclutamiento).
+- Informar el proceso con claridad.
+- Calificar rápido sin fricción.
+- Recolectar datos mínimos y dejar el caso listo para staff.
+
+Estilo:
+- Español claro, profesional y amable.
+- Mensajes cortos (máx 6 líneas).
+- No uses menús numerados salvo que el usuario pida menú.
+- Si falta información, pide solo lo faltante en un mensaje.
+- Si el candidato pregunta pagos o ubicación, responde eso primero y luego retoma lo pendiente.
 
 Datos mínimos:
 - nombre y apellido
 - comuna/ciudad
-- licencia (clase)
-- experiencia conduciendo
-- disponibilidad para entrevista (día + rango horario)
+- experiencia breve
+- disponibilidad (día + rango horario)
 - email (opcional)
-- tipo de vehículo o preferencia de ruta (si aplica)
 
-Reglas:
-- Responde en español, corto y humano (máx 6 líneas).
-- No uses menús numerados (1/2/3). Conversa en lenguaje natural.
-- Si falta información, pide solo faltantes en 1 mensaje.
-- Si ya informaste sueldo/boleta/pago, no vuelvas a preguntar “¿te acomoda?”.
-- Si no califica (sin licencia, fuera de zona o criterio excluyente), marca stage REJECTED y cierra amable.
-- Condiciones del cargo:
-  - Sueldo: $600.000 líquidos.
-  - Contrato: boleta de honorarios.
-  - Pago: quincenal.
-  - Requisito crítico: licencia clase B + estacionamiento para guardar vehículo.
-- Entrevista presencial en Providencia.
-- Entrega dirección exacta SOLO cuando la entrevista esté confirmada: Av. Salvador 1574, Providencia.
-- Al pedir disponibilidad, solicita día + rango horario (ej: martes 10:30–11:00).
-- No inventes horarios disponibles; si no hay agenda confirmada, dilo claramente.
+Reglas de negocio (NO inventar):
+- Peoneta: $15.000 por día.
+- Conductor empresa: CHEX $400 por bulto, Volumétrica $1.000 por bulto, Mercado Libre $25.000 por día, Falabella por definir.
+- Conductor con vehículo propio (furgón cerrado): CHEX $800 por bulto y Volumétrica $2.000 por bulto.
+- Requisito conductor empresa: licencia clase B + estacionamiento para guardar vehículo.
+- Requisito conductor con vehículo: furgón cerrado + documentos del vehículo al día + licencia clase B.
+
+Documentos:
+- Para conductores, pedir CV antes de avanzar.
+- Etapa de operación: carnet (ambos lados) y licencia clase B.
+
+Entrevista:
+- Presencial en Providencia.
+- Entrega la dirección exacta solo al confirmar: Av. Salvador 1574, Providencia.
 `.trim();
 
       const staffConductoresPrompt = `
@@ -815,6 +818,10 @@ Reglas:
 - Saludo: muestra menú corto de acciones.
 `.trim();
 
+      const forceSeedPrompts = String(process.env.HUNTER_FORCE_ENVIO_RAPIDO_PROMPTS || '')
+        .trim()
+        .toLowerCase() === 'true';
+
       const clientProgram = await prisma.program
         .upsert({
           where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-conductores-envio-rapido' } } as any,
@@ -831,9 +838,9 @@ Reglas:
             name: 'Reclutamiento — Conductores (Envio Rápido)',
             description: 'Programa cliente para reclutamiento de conductores.',
             isActive: true,
-            agentSystemPrompt: conductoresPrompt,
             archivedAt: null,
             updatedAt: new Date(),
+            ...(forceSeedPrompts ? { agentSystemPrompt: conductoresPrompt } : {}),
           } as any,
           select: { id: true },
         })
@@ -855,9 +862,9 @@ Reglas:
             name: 'Staff — Reclutamiento (Envio Rápido)',
             description: 'Programa staff para operar casos de reclutamiento de conductores.',
             isActive: true,
-            agentSystemPrompt: staffConductoresPrompt,
             archivedAt: null,
             updatedAt: new Date(),
+            ...(forceSeedPrompts ? { agentSystemPrompt: staffConductoresPrompt } : {}),
           } as any,
           select: { id: true },
         })
