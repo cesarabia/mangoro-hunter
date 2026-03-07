@@ -237,6 +237,9 @@ elif [[ -f "$APP_ROOT/.env" ]]; then
   set +a
 fi
 
+# Forzar Prisma sobre la DB persistente de producción (nunca sobre clones/releases).
+export DATABASE_URL="file:$STATE_DIR/dev.db"
+
 log "Preflight: baseline de DB"
 guard_database_url_not_in_code_tree "$SOURCE_DIR/.env"
 IFS=',' read -r db_size_before conv_before msg_before <<< "$(db_metrics "$STATE_DIR/dev.db")"
