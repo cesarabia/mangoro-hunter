@@ -105,6 +105,61 @@ function isInternalEventMessage(m: {
   return false;
 }
 
+function detectMissingFields(params: {
+  conversation: any;
+  contact: any;
+  messages: Array<{ direction?: string | null; mediaType?: string | null; text?: string | null; transcriptText?: string | null; rawPayload?: string | null }>;
+}): { missingFields: string[]; nextStep: string } {
+  const roleRaw = String((params.conversation as any)?.applicationRole || '').trim().toUpperCase();
+  const role = roleRaw === 'CONDUCTOR_FLOTA' || roleRaw === 'DRIVER_OWN_VAN'
+    ? 'CONDUCTOR_FLOTA'
+    : roleRaw === 'CONDUCTOR' || roleRaw === 'DRIVER_COMPANY'
+      ? 'CONDUCTOR'
+      : roleRaw === 'PEONETA'
+        ? 'PEONETA'
+        : '';
+  const state = String((params.conversation as any)?.applicationState || '').trim().toUpperCase();
+  const appData = parseJsonLoose((params.conversation as any)?.applicationDataJson) || {};
+  const comuna = String((params.contact as any)?.comuna || appData?.comuna || '').trim();
+  const availability = String((params.conversation as any)?.availabilityRaw || (params.contact as any)?.availabilityText || appData?.availability || '').trim();
+  const experience = String(appData?.experience || '').trim();
+  const years = Number((params.contact as any)?.experienceYears || appData?.yearsExperience || 0);
+  const hasExperience = Boolean(experience) || (Number.isFinite(years) && years > 0);
+
+  const docsText = params.messages
+    .filter((m) => String(m.direction || '').toUpperCase() === 'INBOUND' && String(m.mediaType || '').trim() !== '')
+    .map((m) => `${String(m.text || '')} ${String(m.transcriptText || '')}`)
+    .join(' ')
+    .toLowerCase();
+  const hasCv = /\bcv\b|curriculum|curr[ií]cul/.test(docsText);
+  const hasCarnet = /carnet|c[eé]dula|dni/.test(docsText);
+  const hasLicense = /licencia/.test(docsText);
+  const hasVehicleDocs = /padron|padr[oó]n|permiso de circulaci[oó]n|revisi[oó]n t[eé]cnica|seguro/.test(docsText);
+
+  const missing: string[] = [];
+  if (!role) missing.push('cargo');
+  if (!comuna) missing.push('comuna');
+  if (!availability) missing.push('disponibilidad');
+  if (!hasExperience) missing.push('experiencia');
+  if ((role === 'CONDUCTOR' || role === 'CONDUCTOR_FLOTA') && !hasCv) missing.push('cv');
+  if ((role === 'CONDUCTOR' || role === 'CONDUCTOR_FLOTA') && state === 'REQUEST_OP_DOCS') {
+    if (!hasCarnet) missing.push('carnet');
+    if (!hasLicense) missing.push('licencia');
+    if (role === 'CONDUCTOR_FLOTA' && !hasVehicleDocs) missing.push('docs_vehiculo');
+  }
+
+  const nextStep = (() => {
+    if (state === 'WAITING_OP_RESULT' || state === 'READY_FOR_OP_REVIEW') return 'Esperar revisión de operación (sin auto reply).';
+    if (state === 'REQUEST_OP_DOCS') return 'Solicitar solo documentos faltantes de operación.';
+    if ((role === 'CONDUCTOR' || role === 'CONDUCTOR_FLOTA') && !hasCv) return 'Solicitar CV antes de avanzar.';
+    if (!role) return 'Definir cargo (Peoneta / Conductor / Conductor con vehículo) y comuna.';
+    if (missing.length > 0) return `Pedir siguiente dato faltante: ${missing[0]}.`;
+    return 'Continuar al siguiente estado del flujo.';
+  })();
+
+  return { missingFields: missing, nextStep };
+}
+
 async function resolveProgramContext(params: {
   workspaceId: string;
   conversation: any;
@@ -330,6 +385,11 @@ export async function buildLLMContext(params: BuildLlmContextParams): Promise<Bu
     : null;
 
   const programContext = await resolveProgramContext({ workspaceId: params.workspaceId, conversation });
+  const appFlow = detectMissingFields({
+    conversation,
+    contact: conversation.contact,
+    messages: conversational as any,
+  });
 
   const contextJson = {
     workspaceId: params.workspaceId,
@@ -359,6 +419,7 @@ export async function buildLLMContext(params: BuildLlmContextParams): Promise<Bu
         ? new Date((conversation as any).availabilityConfirmedAt).toISOString()
         : null,
     },
+    applicationFlow: appFlow,
     staff: params.staffContext || null,
     relatedConversation: relatedConversationPayload,
     contact: {

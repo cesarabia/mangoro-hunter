@@ -274,6 +274,27 @@ export async function registerAiRoutes(app: FastifyInstance) {
     }
 
     try {
+      const appState = String((conversation as any)?.applicationState || '').trim().toUpperCase();
+      const stage = String((conversation as any)?.conversationStage || '').trim().toUpperCase();
+      const waitingOp =
+        appState === 'WAITING_OP_RESULT' ||
+        appState === 'READY_FOR_OP_REVIEW' ||
+        stage === 'OP_REVIEW' ||
+        Boolean((conversation as any)?.aiPaused);
+      if (waitingOp && !usedDraftText) {
+        const suggestedText =
+          'Este caso está en revisión de operación. Por defecto no se envía nada automático al candidato. Si necesitas contacto manual, escribe un borrador y vuelve a usar Sugerir.';
+        return {
+          suggestedText,
+          suggestion: suggestedText,
+          meta: {
+            usedDraftText,
+            mode: String(body?.mode || 'SUGGEST').trim() || 'SUGGEST',
+            conversationId: conversation.id,
+            internalSuggestion: true,
+          },
+        };
+      }
       const lastInbound = (conversation.messages || [])
         .slice()
         .reverse()

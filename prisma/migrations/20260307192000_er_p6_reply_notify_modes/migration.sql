@@ -1,0 +1,2 @@
+ALTER TABLE "Workspace" ADD COLUMN "candidateReplyMode" TEXT NOT NULL DEFAULT 'AUTO';
+ALTER TABLE "Workspace" ADD COLUMN "adminNotifyMode" TEXT NOT NULL DEFAULT 'HITS_ONLY';

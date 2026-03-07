@@ -2,6 +2,32 @@
 
 ## Qué está listo (hoy)
 
+### ER-P6 (Pre-GoLive Reclutamiento) — implementado
+- Modo explícito de respuesta por workspace:
+  - `candidateReplyMode = AUTO | HYBRID`
+  - `adminNotifyMode = HITS_ONLY | EVERY_DRAFT`
+  - UI y API de Workspace actualizadas (fallback compatible con `hybridApprovalEnabled` legado).
+- Runtime inbound más robusto:
+  - métricas de cola en `/api/health`: `inboundPlannedCount`, `oldestPlannedAgeMs`
+  - recuperación de PLANNED atascados (`STUCK_PLANNED_RECOVERED`) con unlock seguro.
+- `Sugerir` state-aware:
+  - en `OP_REVIEW/WAITING_OP_RESULT` sin borrador retorna guía interna (no mensaje al candidato).
+  - contexto incluye `applicationFlow.missingFields` + `nextStep`.
+- Notificaciones admin por hitos:
+  - `HITS_ONLY` suprime ruido no crítico.
+- Inbox más operable:
+  - preview prioriza último mensaje conversacional real (oculta eventos internos),
+  - modo compacto persistente (localStorage) para operar con menos ruido.
+- Smoke scenarios ER-P6 añadidos y validados localmente:
+  - `inbound_planned_drains_to_executed`
+  - `candidate_auto_reply_until_op_review`
+  - `docs_missing_reactivates_ai_and_requests_exact_missing_docs`
+  - `accepted_moves_to_interview_pending`
+  - `rejected_moves_to_rejected_and_ai_pauses`
+  - `suggest_respects_application_state`
+  - `conversation_preview_hides_internal_events`
+  - `tone_no_slang_in_auto_and_suggest`
+
 ### ER-P5 (Hunter PROD only) — avance de implementación
 - Fix de storage assets en runtime:
   - `WorkspaceAsset` ya no depende de `/var/lib/hunter/assets`,

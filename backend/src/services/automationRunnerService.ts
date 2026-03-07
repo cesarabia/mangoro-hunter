@@ -3776,6 +3776,7 @@ const MAX_INBOUND_DEBOUNCE_MS = 12_000;
 const INBOUND_DEBOUNCE_LOCK_MS = 60_000;
 const INBOUND_DEBOUNCE_POLL_MS = 1_500;
 const INBOUND_DEBOUNCE_BATCH_MAX = 20;
+const INBOUND_STUCK_PLANNED_MAX_AGE_MS = 20_000;
 let inboundDebounceWorkerStarted = false;
 
 function isProdRuntime(): boolean {
@@ -3787,6 +3788,81 @@ function isProdRuntime(): boolean {
 function clampInboundDebounceMs(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_INBOUND_DEBOUNCE_MS;
   return Math.max(MIN_INBOUND_DEBOUNCE_MS, Math.min(MAX_INBOUND_DEBOUNCE_MS, Math.floor(value)));
+}
+
+export async function getInboundQueueHealthSnapshot(): Promise<{
+  inboundPlannedCount: number;
+  oldestPlannedAgeMs: number | null;
+}> {
+  const now = Date.now();
+  const [plannedCount, oldest] = await Promise.all([
+    prisma.conversation
+      .count({
+        where: {
+          archivedAt: null,
+          pendingInboundAiRunAt: { not: null },
+        } as any,
+      })
+      .catch(() => 0),
+    prisma.conversation
+      .findFirst({
+        where: {
+          archivedAt: null,
+          pendingInboundAiRunAt: { not: null },
+        } as any,
+        select: { pendingInboundAiRunAt: true },
+        orderBy: { pendingInboundAiRunAt: 'asc' },
+      })
+      .catch(() => null),
+  ]);
+  const oldestDate = oldest?.pendingInboundAiRunAt ? new Date(oldest.pendingInboundAiRunAt).getTime() : null;
+  const oldestPlannedAgeMs = oldestDate && Number.isFinite(oldestDate) ? Math.max(0, now - oldestDate) : null;
+  return { inboundPlannedCount: plannedCount, oldestPlannedAgeMs };
+}
+
+async function recoverStuckPlannedRows(app: FastifyInstance): Promise<void> {
+  const threshold = new Date(Date.now() - INBOUND_STUCK_PLANNED_MAX_AGE_MS);
+  const staleRows = await prisma.conversation
+    .findMany({
+      where: {
+        archivedAt: null,
+        pendingInboundAiRunAt: { lte: threshold },
+        aiRunInFlight: true,
+      } as any,
+      select: { id: true, workspaceId: true, pendingInboundAiRunAt: true, aiRunLockUntil: true },
+      take: INBOUND_DEBOUNCE_BATCH_MAX,
+      orderBy: { pendingInboundAiRunAt: 'asc' },
+    })
+    .catch(() => []);
+  if (!staleRows.length) return;
+
+  let recovered = 0;
+  for (const row of staleRows) {
+    const updated = await prisma.conversation
+      .updateMany({
+        where: {
+          id: row.id,
+          aiRunInFlight: true,
+          pendingInboundAiRunAt: { lte: threshold },
+        } as any,
+        data: {
+          aiRunInFlight: false,
+          aiRunLockUntil: null,
+          pendingInboundAiRunReason: 'INBOUND_DEBOUNCE_RECOVERED',
+        } as any,
+      })
+      .catch(() => ({ count: 0 }));
+    if (updated.count > 0) recovered += 1;
+  }
+  if (recovered > 0) {
+    app.log.warn(
+      {
+        recovered,
+        thresholdMs: INBOUND_STUCK_PLANNED_MAX_AGE_MS,
+      },
+      'STUCK_PLANNED_RECOVERED',
+    );
+  }
 }
 
 async function runAutomationsWithInboundDebounce(params: RunAutomationsParams): Promise<void> {
@@ -3827,8 +3903,13 @@ function mergeInboundTexts(rows: Array<{ text?: string | null; transcriptText?: 
   return chunks.length > 0 ? chunks.join('\n') : null;
 }
 
-async function flushInboundDebounceRow(app: FastifyInstance, row: { id: string; workspaceId: string }): Promise<void> {
+async function flushInboundDebounceRow(
+  app: FastifyInstance,
+  row: { id: string; workspaceId: string; pendingInboundAiRunAt?: Date | null },
+): Promise<void> {
   const now = new Date();
+  const plannedAtMs = row.pendingInboundAiRunAt ? new Date(row.pendingInboundAiRunAt).getTime() : null;
+  const plannedAgeMs = plannedAtMs && Number.isFinite(plannedAtMs) ? Math.max(0, Date.now() - plannedAtMs) : null;
   const lockUntil = new Date(Date.now() + INBOUND_DEBOUNCE_LOCK_MS);
   const claimed = await prisma.conversation
     .updateMany({
@@ -3888,6 +3969,7 @@ async function flushInboundDebounceRow(app: FastifyInstance, row: { id: string; 
         inboundBatchCount: batchCount,
         debounceMs: clampInboundDebounceMs(DEFAULT_INBOUND_DEBOUNCE_MS),
         lastInboundAt,
+        plannedAgeMs,
       },
       'Inbound debounce flush (single RUN_AGENT execution)',
     );
@@ -3917,6 +3999,7 @@ async function flushInboundDebounceRow(app: FastifyInstance, row: { id: string; 
 }
 
 async function flushInboundDebounceQueue(app: FastifyInstance): Promise<void> {
+  await recoverStuckPlannedRows(app).catch(() => {});
   const now = new Date();
   const rows = await prisma.conversation
     .findMany({
@@ -3925,11 +4008,22 @@ async function flushInboundDebounceQueue(app: FastifyInstance): Promise<void> {
         pendingInboundAiRunAt: { lte: now },
         OR: [{ aiRunInFlight: false }, { aiRunLockUntil: null }, { aiRunLockUntil: { lt: now } }],
       } as any,
-      select: { id: true, workspaceId: true },
+      select: { id: true, workspaceId: true, pendingInboundAiRunAt: true },
       orderBy: { pendingInboundAiRunAt: 'asc' },
       take: INBOUND_DEBOUNCE_BATCH_MAX,
     })
     .catch(() => []);
+  if (rows.length > 0) {
+    const oldest = rows[0]?.pendingInboundAiRunAt ? new Date(rows[0].pendingInboundAiRunAt).getTime() : null;
+    const oldestPlannedAgeMs = oldest && Number.isFinite(oldest) ? Math.max(0, Date.now() - oldest) : null;
+    app.log.info(
+      {
+        inboundPlannedCount: rows.length,
+        oldestPlannedAgeMs,
+      },
+      'Inbound debounce queue cycle',
+    );
+  }
   for (const row of rows) {
     await flushInboundDebounceRow(app, row as any);
   }
@@ -4967,10 +5061,24 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
           const workspaceHybrid = await prisma.workspace
             .findUnique({
               where: { id: params.workspaceId },
-              select: { hybridApprovalEnabled: true as any },
+              select: {
+                candidateReplyMode: true as any,
+                adminNotifyMode: true as any,
+                hybridApprovalEnabled: true as any,
+              },
             })
             .catch(() => null);
-          const hybridEnabled = Boolean((workspaceHybrid as any)?.hybridApprovalEnabled);
+          const candidateReplyMode = (() => {
+            const raw = String((workspaceHybrid as any)?.candidateReplyMode || '').trim().toUpperCase();
+            if (raw === 'HYBRID') return 'HYBRID';
+            if (raw === 'AUTO') return 'AUTO';
+            return Boolean((workspaceHybrid as any)?.hybridApprovalEnabled) ? 'HYBRID' : 'AUTO';
+          })();
+          const adminNotifyMode =
+            String((workspaceHybrid as any)?.adminNotifyMode || '').trim().toUpperCase() === 'EVERY_DRAFT'
+              ? 'EVERY_DRAFT'
+              : 'HITS_ONLY';
+          const hybridEnabled = candidateReplyMode === 'HYBRID';
           const isClientInboundHybrid =
             hybridEnabled &&
             params.transportMode === 'REAL' &&
@@ -5028,6 +5136,8 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
             action: 'RUN_AGENT',
             agentRunId: agentRun.runId,
             hybridApproval: true,
+            candidateReplyMode,
+            adminNotifyMode,
             drafts,
             results: nonSendExec.results,
           });

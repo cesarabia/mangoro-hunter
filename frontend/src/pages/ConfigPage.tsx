@@ -158,8 +158,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [staffDefaultProgramSaving, setStaffDefaultProgramSaving] = useState(false);
   const [staffDefaultProgramStatus, setStaffDefaultProgramStatus] = useState<string | null>(null);
   const [staffDefaultProgramError, setStaffDefaultProgramError] = useState<string | null>(null);
-  const [hybridApprovalEnabledDraft, setHybridApprovalEnabledDraft] = useState<boolean>(false);
   const [hybridApprovalAdminWaIdDraft, setHybridApprovalAdminWaIdDraft] = useState<string>('');
+  const [candidateReplyModeDraft, setCandidateReplyModeDraft] = useState<'AUTO' | 'HYBRID'>('AUTO');
+  const [adminNotifyModeDraft, setAdminNotifyModeDraft] = useState<'HITS_ONLY' | 'EVERY_DRAFT'>('HITS_ONLY');
   const [hybridApprovalSaving, setHybridApprovalSaving] = useState<boolean>(false);
   const [hybridApprovalStatus, setHybridApprovalStatus] = useState<string | null>(null);
   const [hybridApprovalError, setHybridApprovalError] = useState<string | null>(null);
@@ -453,9 +454,20 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       });
       const staffProgramId = typeof data?.staffDefaultProgramId === 'string' ? data.staffDefaultProgramId : '';
       setStaffDefaultProgramIdDraft(staffProgramId || '');
-      setHybridApprovalEnabledDraft(Boolean(data?.hybridApprovalEnabled));
       setHybridApprovalAdminWaIdDraft(
         typeof data?.hybridApprovalAdminWaId === 'string' ? data.hybridApprovalAdminWaId : '',
+      );
+      setCandidateReplyModeDraft(
+        String(data?.candidateReplyMode || '').trim().toUpperCase() === 'HYBRID'
+          ? 'HYBRID'
+          : Boolean(data?.hybridApprovalEnabled)
+            ? 'HYBRID'
+            : 'AUTO',
+      );
+      setAdminNotifyModeDraft(
+        String(data?.adminNotifyMode || '').trim().toUpperCase() === 'EVERY_DRAFT'
+          ? 'EVERY_DRAFT'
+          : 'HITS_ONLY',
       );
       const clientProgramId = typeof data?.clientDefaultProgramId === 'string' ? data.clientDefaultProgramId : '';
       setClientDefaultProgramIdDraft(clientProgramId || '');
@@ -640,10 +652,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         waValue = normalized;
       }
       await apiClient.patch('/api/workspaces/current', {
-        hybridApprovalEnabled: Boolean(hybridApprovalEnabledDraft),
+        candidateReplyMode: candidateReplyModeDraft,
+        adminNotifyMode: adminNotifyModeDraft,
+        hybridApprovalEnabled: candidateReplyModeDraft === 'HYBRID',
         hybridApprovalAdminWaId: waValue,
       });
-      setHybridApprovalStatus('Modo híbrido guardado.');
+      setHybridApprovalStatus('Modo de respuesta guardado.');
       await loadWorkspaceDetails();
     } catch (err: any) {
       setHybridApprovalError(err.message || 'No se pudo guardar modo híbrido');
@@ -2793,19 +2807,38 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
           {isWorkspaceAdmin ? (
             <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>Modo híbrido (aprobación manual)</div>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Modo de respuesta candidatos</div>
               <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
-                Cuando está activo, los mensajes automáticos de candidatos quedan como borrador y se envían solo si el admin responde
-                <b> ENVIAR id</b>, <b>EDITAR id: texto</b> o <b>CANCELAR id</b> por WhatsApp.
+                Define si el candidato recibe respuesta automática (AUTO) o por aprobación manual (HYBRID), y cómo se notifica al staff.
               </div>
-              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555', marginBottom: 10 }}>
-                <input
-                  type="checkbox"
-                  checked={hybridApprovalEnabledDraft}
-                  onChange={(e) => setHybridApprovalEnabledDraft(e.target.checked)}
-                />
-                Activar aprobación híbrida (no enviar sin aprobación)
-              </label>
+              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  candidateReplyMode
+                  <select
+                    value={candidateReplyModeDraft}
+                    onChange={(e) => setCandidateReplyModeDraft(String(e.target.value || 'AUTO').toUpperCase() === 'HYBRID' ? 'HYBRID' : 'AUTO')}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  >
+                    <option value="AUTO">AUTO · responder automáticamente hasta OP_REVIEW</option>
+                    <option value="HYBRID">HYBRID · crear borradores para aprobación</option>
+                  </select>
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  adminNotifyMode
+                  <select
+                    value={adminNotifyModeDraft}
+                    onChange={(e) =>
+                      setAdminNotifyModeDraft(
+                        String(e.target.value || 'HITS_ONLY').toUpperCase() === 'EVERY_DRAFT' ? 'EVERY_DRAFT' : 'HITS_ONLY',
+                      )
+                    }
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  >
+                    <option value="HITS_ONLY">HITS_ONLY · notificar solo hitos</option>
+                    <option value="EVERY_DRAFT">EVERY_DRAFT · notificar cada borrador</option>
+                  </select>
+                </label>
+              </div>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
                 WhatsApp admin para recibir borradores
                 <input
@@ -2834,8 +2867,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 </button>
                 <div style={{ fontSize: 12, color: '#666' }}>
                   Estado actual:{' '}
-                  <b>{workspaceDetails?.hybridApprovalEnabled ? 'ACTIVO' : 'INACTIVO'}</b>{' '}
-                  {workspaceDetails?.hybridApprovalAdminWaId ? `· Admin: ${workspaceDetails.hybridApprovalAdminWaId}` : ''}
+                  <b>{String(workspaceDetails?.candidateReplyMode || '').toUpperCase() === 'HYBRID' ? 'HYBRID' : 'AUTO'}</b>{' '}
+                  · Notificaciones: <b>{String(workspaceDetails?.adminNotifyMode || 'HITS_ONLY')}</b>{' '}
+                  {workspaceDetails?.hybridApprovalAdminWaId ? `· Admin WA: ${workspaceDetails.hybridApprovalAdminWaId}` : ''}
                 </div>
               </div>
               {hybridApprovalStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{hybridApprovalStatus}</div> : null}

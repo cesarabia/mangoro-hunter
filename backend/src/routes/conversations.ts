@@ -250,6 +250,25 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     return role === 'MEMBER' && Boolean(access?.assignedOnly) && Boolean(userId);
   };
 
+  const isInternalPreviewMessage = (message: any): boolean => {
+    if (Boolean((message as any)?.isInternalEvent)) return true;
+    const text = String(message?.text || '').trim().toLowerCase();
+    if (text.startsWith('📝 respuesta propuesta enviada a revisión')) return true;
+    if (text.startsWith('🏷️ stage actualizado')) return true;
+    if (text.startsWith('✏️ nombre manual guardado')) return true;
+    const payloadRaw = String(message?.rawPayload || '').trim();
+    if (!payloadRaw) return false;
+    try {
+      const payload = JSON.parse(payloadRaw) as any;
+      if (payload?.internalEvent === true || payload?.systemEvent === true) return true;
+      if (payload?.system === true && !payload?.sendResult && !payload?.attachment && !payload?.templateVars) return true;
+      if (payload?.noteType === 'INTERNAL' || payload?.visibility === 'SYSTEM') return true;
+    } catch {
+      // ignore malformed payload
+    }
+    return false;
+  };
+
   app.get('/', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const userId = (request as any)?.user?.userId ? String((request as any).user.userId) : null;
@@ -372,7 +391,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         phoneLine: { select: { id: true, alias: true } },
         messages: {
           orderBy: { timestamp: 'desc' },
-          take: 1
+          take: 8
         }
       },
       orderBy: { updatedAt: 'desc' }
@@ -422,21 +441,28 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       })
     );
 
-    return sanitizedContacts.map(conversation => ({
-      ...conversation,
-      contact: conversation.contact
-        ? {
-            ...conversation.contact,
-            displayNameManual: conversation.contact.candidateNameManual || null,
-            displayNameAuto:
-              conversation.contact.candidateName ||
-              conversation.contact.displayName ||
-              conversation.contact.name ||
-              null,
-          }
-        : conversation.contact,
-      unreadCount: unreadMap[conversation.id] || 0
-    }));
+    return sanitizedContacts.map(conversation => {
+      const realPreview =
+        (conversation.messages || []).find((m: any) => !isInternalPreviewMessage(m)) ||
+        (conversation.messages || [])[0] ||
+        null;
+      return {
+        ...conversation,
+        messages: realPreview ? [realPreview] : [],
+        contact: conversation.contact
+          ? {
+              ...conversation.contact,
+              displayNameManual: conversation.contact.candidateNameManual || null,
+              displayNameAuto:
+                conversation.contact.candidateName ||
+                conversation.contact.displayName ||
+                conversation.contact.name ||
+                null,
+            }
+          : conversation.contact,
+        unreadCount: unreadMap[conversation.id] || 0
+      };
+    });
   });
 
   app.post('/create-and-send', { preValidation: [app.authenticate] }, async (request, reply) => {

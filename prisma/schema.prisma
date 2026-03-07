@@ -71,6 +71,8 @@ model Workspace {
   clientProgramMenuIdsJson String?
   partnerProgramMenuIdsJson String?
   partnerPhoneE164sJson String?
+  candidateReplyMode String @default("AUTO")
+  adminNotifyMode String @default("HITS_ONLY")
   hybridApprovalEnabled Boolean @default(false)
   hybridApprovalAdminWaId String?
   archivedAt  DateTime?

@@ -3,6 +3,7 @@ import { prisma } from '../db/client';
 import { execSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import { getInboundQueueHealthSnapshot } from '../services/automationRunnerService';
 
 const startedAt = new Date().toISOString();
 let gitSha: string | null = String(process.env.HUNTER_BUILD_SHA || '').trim() || null;
@@ -42,13 +43,19 @@ export async function registerHealthRoutes(app: FastifyInstance) {
   app.get('/health', async (_request, reply) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
+      const inboundQueue = await getInboundQueueHealthSnapshot().catch(() => ({
+        inboundPlannedCount: 0,
+        oldestPlannedAgeMs: null,
+      }));
       return {
         ok: true,
         timestamp: new Date().toISOString(),
         startedAt,
         gitSha,
         repoDirty,
-        backendVersion
+        backendVersion,
+        inboundPlannedCount: inboundQueue.inboundPlannedCount,
+        oldestPlannedAgeMs: inboundQueue.oldestPlannedAgeMs,
       };
     } catch (err) {
       app.log.error({ err }, 'Health check failed');

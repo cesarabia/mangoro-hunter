@@ -270,6 +270,40 @@ export async function sendAdminNotification(options: {
   }
 
   const eventKey = `${eventType}:${contact?.id || contact?.waId || contact?.phone || ''}:${reservationId || ''}:${interviewDay || ''}:${interviewTime || ''}:${interviewLocation || ''}`;
+  const isHitEvent = (() => {
+    const normalized = String(eventType || '').trim().toUpperCase();
+    if (!normalized) return false;
+    return (
+      normalized.includes('NEEDS_HUMAN') ||
+      normalized.includes('CV') ||
+      normalized.includes('DOC') ||
+      normalized.includes('LICENCIA') ||
+      normalized.includes('CARNET') ||
+      normalized.includes('READY_FOR_OP_REVIEW') ||
+      normalized.includes('POSTULACION_READY_FOR_OP_REVIEW') ||
+      normalized.includes('INTERVIEW_PENDING') ||
+      normalized.includes('INTERVIEW_SCHEDULED') ||
+      normalized.includes('INTERVIEW_CONFIRMED') ||
+      normalized.includes('INTERVIEW_ON_HOLD') ||
+      normalized.includes('INTERVIEW_CANCELLED') ||
+      normalized.includes('OP_ACCEPTED') ||
+      normalized.includes('OP_REJECTED')
+    );
+  })();
+  const workspaceNotifyMode = await prisma.workspace
+    .findUnique({
+      where: { id: workspaceId },
+      select: { adminNotifyMode: true as any },
+    })
+    .then((row: any) => (String(row?.adminNotifyMode || '').trim().toUpperCase() === 'EVERY_DRAFT' ? 'EVERY_DRAFT' : 'HITS_ONLY'))
+    .catch(() => 'HITS_ONLY');
+  if (workspaceNotifyMode === 'HITS_ONLY' && !isHitEvent) {
+    app.log.info(
+      { workspaceId, eventType, contactId: contact?.id || null },
+      'Admin notification skipped (HITS_ONLY, non-hit event)',
+    );
+    return;
+  }
 
   const displayName = getContactDisplayName(contact);
   const waId = normalizeWhatsAppId(contact?.waId || contact?.phone || '') || '';

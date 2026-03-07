@@ -194,6 +194,30 @@ export type ScenarioStep = {
     modelResolvedGpt4oMini?: {
       workspaceId?: string;
     };
+    inboundPlannedDrainsToExecuted?: {
+      workspaceId?: string;
+    };
+    candidateAutoReplyUntilOpReview?: {
+      workspaceId?: string;
+    };
+    docsMissingReactivatesAiAndRequestsExactMissingDocs?: {
+      workspaceId?: string;
+    };
+    acceptedMovesToInterviewPending?: {
+      workspaceId?: string;
+    };
+    rejectedMovesToRejectedAndAiPauses?: {
+      workspaceId?: string;
+    };
+    suggestRespectsApplicationState?: {
+      workspaceId?: string;
+    };
+    conversationPreviewHidesInternalEvents?: {
+      workspaceId?: string;
+    };
+    toneNoSlangInAutoAndSuggest?: {
+      workspaceId?: string;
+    };
     suggestRewritesSlangToProfessional?: {
       workspaceId?: string;
     };
@@ -1150,6 +1174,114 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check model resolved gpt4o mini',
         expect: { modelResolvedGpt4oMini: { workspaceId: 'scenario-er-p1-model' } },
+      },
+    ],
+  },
+  {
+    id: 'inbound_planned_drains_to_executed',
+    name: 'ER-P6: PLANNED inbound drena a ejecutado',
+    description:
+      'Valida que la cola inbound (debounce) no quede pegada en PLANNED y drene correctamente.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check inbound planned drains to executed',
+        expect: { inboundPlannedDrainsToExecuted: { workspaceId: 'scenario-er-p6-drain' } },
+      },
+    ],
+  },
+  {
+    id: 'candidate_auto_reply_until_op_review',
+    name: 'ER-P6: auto-reply hasta OP_REVIEW',
+    description:
+      'Valida que el flujo candidato avance automáticamente hasta OP_REVIEW y pause IA al quedar esperando operación.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check candidate auto reply until op review',
+        expect: { candidateAutoReplyUntilOpReview: { workspaceId: 'scenario-er-p6-auto-opreview' } },
+      },
+    ],
+  },
+  {
+    id: 'docs_missing_reactivates_ai_and_requests_exact_missing_docs',
+    name: 'ER-P6: docs faltantes reactiva IA con pedido exacto',
+    description:
+      'Valida que al volver desde OP_REVIEW con documentos faltantes, la IA retome y pida solo lo faltante.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check docs missing reactivates ai',
+        expect: {
+          docsMissingReactivatesAiAndRequestsExactMissingDocs: {
+            workspaceId: 'scenario-er-p6-docs-missing',
+          },
+        },
+      },
+    ],
+  },
+  {
+    id: 'accepted_moves_to_interview_pending',
+    name: 'ER-P6: accepted mueve a INTERVIEW_PENDING',
+    description:
+      'Valida que al marcar aceptado en revisión operación la conversación pase a INTERVIEW_PENDING y reanude IA.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check accepted moves to interview pending',
+        expect: { acceptedMovesToInterviewPending: { workspaceId: 'scenario-er-p6-accepted' } },
+      },
+    ],
+  },
+  {
+    id: 'rejected_moves_to_rejected_and_ai_pauses',
+    name: 'ER-P6: rejected mueve a REJECTED y pausa IA',
+    description:
+      'Valida que al marcar rechazado en revisión operación la conversación quede en REJECTED con IA pausada.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check rejected moves to rejected and ai pauses',
+        expect: { rejectedMovesToRejectedAndAiPauses: { workspaceId: 'scenario-er-p6-rejected' } },
+      },
+    ],
+  },
+  {
+    id: 'suggest_respects_application_state',
+    name: 'ER-P6: sugerir respeta estado de aplicación',
+    description:
+      'Valida que Sugerir se mantenga dentro del estado del flujo y no reinicie etapas.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check suggest respects application state',
+        expect: { suggestRespectsApplicationState: { workspaceId: 'scenario-er-p6-suggest-state' } },
+      },
+    ],
+  },
+  {
+    id: 'conversation_preview_hides_internal_events',
+    name: 'ER-P6: preview de Inbox oculta eventos internos',
+    description:
+      'Valida que el preview en listado use último mensaje conversacional real y no eventos internos.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check conversation preview hides internal events',
+        expect: { conversationPreviewHidesInternalEvents: { workspaceId: 'scenario-er-p6-preview' } },
+      },
+    ],
+  },
+  {
+    id: 'tone_no_slang_in_auto_and_suggest',
+    name: 'ER-P6: tono profesional sin modismos',
+    description:
+      'Valida que auto reply y sugerencias no usen slang/modismos y mantengan tono profesional.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check tone no slang in auto and suggest',
+        expect: { toneNoSlangInAutoAndSuggest: { workspaceId: 'scenario-er-p6-tone' } },
       },
     ],
   },

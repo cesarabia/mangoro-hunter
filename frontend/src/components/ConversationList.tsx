@@ -56,6 +56,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   const STAGE_VIEW_STORAGE_KEY = `inboxStageView:${workspaceId}:${mode}`;
   const JOB_ROLE_FILTER_STORAGE_KEY = `inboxJobRoleFilter:${workspaceId}:${mode}`;
   const ALL_STAGE_FILTER_STORAGE_KEY = `inboxAllStageFilter:${workspaceId}:${mode}`;
+  const COMPACT_MODE_STORAGE_KEY = `inboxCompactMode:${workspaceId}:${mode}`;
   type StageViewKey =
     | 'ALL'
     | 'NEW_INTAKE'
@@ -106,6 +107,14 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       return String(localStorage.getItem(ALL_STAGE_FILTER_STORAGE_KEY) || '').trim().toUpperCase();
     } catch {
       return '';
+    }
+  });
+  const [compactMode, setCompactMode] = useState<boolean>(() => {
+    try {
+      const saved = String(localStorage.getItem(COMPACT_MODE_STORAGE_KEY) || '').trim().toLowerCase();
+      return saved === '1' || saved === 'true';
+    } catch {
+      return false;
     }
   });
   const [importBatchFilter, setImportBatchFilter] = useState<string>(() => {
@@ -192,6 +201,15 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       // ignore
     }
   }, [allStageFilter, ALL_STAGE_FILTER_STORAGE_KEY]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COMPACT_MODE_STORAGE_KEY, compactMode ? '1' : '0');
+    } catch {
+      // ignore
+    }
+    if (compactMode) setStageView('ALL');
+  }, [compactMode, COMPACT_MODE_STORAGE_KEY]);
 
   const candidateBucket = (conversation: any): 'NUEVO' | 'CONTACTADO' | 'CITADO' | 'DESCARTADO' => {
     const stage = String(normalizeStage(conversation) || '').toUpperCase();
@@ -347,58 +365,64 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee' }}>
         <h2 style={{ margin: 0 }}>Conversaciones</h2>
       </div>
-      <div style={{ padding: '8px 12px', borderBottom: '1px solid #f2f2f2', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {stageViews.map(item => (
-          <button
-            key={item.key}
-            onClick={() => setStageView(item.key)}
-            style={{
-              padding: '4px 10px',
-              borderRadius: 999,
-              border: stageView === item.key ? '1px solid #111' : '1px solid #dcdcdc',
-              background: stageView === item.key ? '#111' : '#fff',
-              color: stageView === item.key ? '#fff' : '#333',
-              fontSize: 12,
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-            }}
-          >
-            {item.label}
-            <span
+      {!compactMode ? (
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #f2f2f2', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {stageViews.map(item => (
+            <button
+              key={item.key}
+              onClick={() => setStageView(item.key)}
               style={{
-                fontSize: 11,
+                padding: '4px 10px',
                 borderRadius: 999,
-                padding: '0 6px',
-                background: stageView === item.key ? 'rgba(255,255,255,0.2)' : '#f3f3f3',
-                color: stageView === item.key ? '#fff' : '#444',
-                minWidth: 16,
-                textAlign: 'center',
+                border: stageView === item.key ? '1px solid #111' : '1px solid #dcdcdc',
+                background: stageView === item.key ? '#111' : '#fff',
+                color: stageView === item.key ? '#fff' : '#333',
+                fontSize: 12,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
               }}
             >
-              {countByView[item.key]?.total || 0}
-            </span>
-            {(countByView[item.key]?.unread || 0) > 0 ? (
+              {item.label}
               <span
-                title="Sin leer"
                 style={{
                   fontSize: 11,
                   borderRadius: 999,
                   padding: '0 6px',
-                  background: '#fff1f0',
-                  color: '#a8071a',
-                  border: '1px solid #ffa39e',
+                  background: stageView === item.key ? 'rgba(255,255,255,0.2)' : '#f3f3f3',
+                  color: stageView === item.key ? '#fff' : '#444',
                   minWidth: 16,
                   textAlign: 'center',
                 }}
               >
-                {countByView[item.key]?.unread || 0}
+                {countByView[item.key]?.total || 0}
               </span>
-            ) : null}
-          </button>
-        ))}
-      </div>
+              {(countByView[item.key]?.unread || 0) > 0 ? (
+                <span
+                  title="Sin leer"
+                  style={{
+                    fontSize: 11,
+                    borderRadius: 999,
+                    padding: '0 6px',
+                    background: '#fff1f0',
+                    color: '#a8071a',
+                    border: '1px solid #ffa39e',
+                    minWidth: 16,
+                    textAlign: 'center',
+                  }}
+                >
+                  {countByView[item.key]?.unread || 0}
+                </span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #f2f2f2', fontSize: 12, color: '#666' }}>
+          Modo compacto activo: mostrando <b>Todos</b>. Usa “Filtrar por stage” para afinar.
+        </div>
+      )}
       <div style={{ padding: '8px 12px', borderBottom: '1px solid #f2f2f2', display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
         {[
           { key: 'ALL', label: 'Todos' },
@@ -451,6 +475,22 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             </button>
           </span>
         ) : null}
+        <button
+          onClick={() => setCompactMode((prev) => !prev)}
+          style={{
+            marginLeft: 'auto',
+            padding: '4px 10px',
+            borderRadius: 999,
+            border: compactMode ? '1px solid #111' : '1px solid #dcdcdc',
+            background: compactMode ? '#111' : '#fff',
+            color: compactMode ? '#fff' : '#333',
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+          title="Oculta la grilla de tabs por stage y deja filtros operativos"
+        >
+          {compactMode ? 'Compacto: ON' : 'Compacto: OFF'}
+        </button>
       </div>
       <div style={{ padding: '8px 12px', borderBottom: '1px solid #f2f2f2' }}>
         <input

@@ -55,6 +55,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         clientProgramMenuIdsJson: true as any,
         partnerProgramMenuIdsJson: true as any,
         partnerPhoneE164sJson: true as any,
+        candidateReplyMode: true as any,
+        adminNotifyMode: true as any,
         hybridApprovalEnabled: true as any,
         hybridApprovalAdminWaId: true as any,
         createdAt: true,
@@ -123,6 +125,18 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
           return [];
         }
       })(),
+      candidateReplyMode: (() => {
+        const raw = String((workspace as any).candidateReplyMode || '').trim().toUpperCase();
+        if (raw === 'HYBRID') return 'HYBRID';
+        if (raw === 'AUTO') return 'AUTO';
+        return Boolean((workspace as any).hybridApprovalEnabled) ? 'HYBRID' : 'AUTO';
+      })(),
+      adminNotifyMode: (() => {
+        const raw = String((workspace as any).adminNotifyMode || '').trim().toUpperCase();
+        if (raw === 'EVERY_DRAFT') return 'EVERY_DRAFT';
+        if (raw === 'HITS_ONLY') return 'HITS_ONLY';
+        return 'HITS_ONLY';
+      })(),
       hybridApprovalEnabled:
         typeof (workspace as any).hybridApprovalEnabled === 'boolean'
           ? Boolean((workspace as any).hybridApprovalEnabled)
@@ -155,6 +169,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       clientProgramMenuIds?: string[] | null;
       partnerProgramMenuIds?: string[] | null;
       partnerPhoneE164s?: string[] | null;
+      candidateReplyMode?: 'AUTO' | 'HYBRID';
+      adminNotifyMode?: 'EVERY_DRAFT' | 'HITS_ONLY';
       hybridApprovalEnabled?: boolean;
       hybridApprovalAdminWaId?: string | null;
     };
@@ -174,6 +190,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const hasClientMenu = Object.prototype.hasOwnProperty.call(body || {}, 'clientProgramMenuIds');
     const hasPartnerMenu = Object.prototype.hasOwnProperty.call(body || {}, 'partnerProgramMenuIds');
     const hasPartnerPhones = Object.prototype.hasOwnProperty.call(body || {}, 'partnerPhoneE164s');
+    const hasCandidateReplyMode = Object.prototype.hasOwnProperty.call(body || {}, 'candidateReplyMode');
+    const hasAdminNotifyMode = Object.prototype.hasOwnProperty.call(body || {}, 'adminNotifyMode');
     const hasHybridApprovalEnabled = Object.prototype.hasOwnProperty.call(body || {}, 'hybridApprovalEnabled');
     const hasHybridApprovalAdminWaId = Object.prototype.hasOwnProperty.call(body || {}, 'hybridApprovalAdminWaId');
     if (
@@ -193,6 +211,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       !hasClientMenu &&
       !hasPartnerMenu &&
       !hasPartnerPhones &&
+      !hasCandidateReplyMode &&
+      !hasAdminNotifyMode &&
       !hasHybridApprovalEnabled &&
       !hasHybridApprovalAdminWaId
     ) {
@@ -334,6 +354,24 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         : typeof body.hybridApprovalAdminWaId === 'string'
           ? body.hybridApprovalAdminWaId.trim() || null
           : null;
+    const nextCandidateReplyMode = (() => {
+      if (!hasCandidateReplyMode) return null;
+      const raw = String((body as any).candidateReplyMode || '').trim().toUpperCase();
+      if (!raw) return null;
+      return raw === 'HYBRID' ? 'HYBRID' : 'AUTO';
+    })();
+    const nextAdminNotifyMode = (() => {
+      if (!hasAdminNotifyMode) return null;
+      const raw = String((body as any).adminNotifyMode || '').trim().toUpperCase();
+      if (!raw) return null;
+      return raw === 'EVERY_DRAFT' ? 'EVERY_DRAFT' : 'HITS_ONLY';
+    })();
+    if (hasCandidateReplyMode && !nextCandidateReplyMode) {
+      return reply.code(400).send({ error: 'candidateReplyMode inválido. Usa AUTO o HYBRID.' });
+    }
+    if (hasAdminNotifyMode && !nextAdminNotifyMode) {
+      return reply.code(400).send({ error: 'adminNotifyMode inválido. Usa EVERY_DRAFT o HITS_ONLY.' });
+    }
 
     const existing = await prisma.workspace.findUnique({
       where: { id: access.workspaceId },
@@ -356,6 +394,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         clientProgramMenuIdsJson: true as any,
         partnerProgramMenuIdsJson: true as any,
         partnerPhoneE164sJson: true as any,
+        candidateReplyMode: true as any,
+        adminNotifyMode: true as any,
         hybridApprovalEnabled: true as any,
         hybridApprovalAdminWaId: true as any,
       } as any,
@@ -429,6 +469,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         ...(hasClientMenu ? { clientProgramMenuIdsJson: nextClientMenuIds && nextClientMenuIds.length > 0 ? serializeJson(nextClientMenuIds) : null } : {}),
         ...(hasPartnerMenu ? { partnerProgramMenuIdsJson: nextPartnerMenuIds && nextPartnerMenuIds.length > 0 ? serializeJson(nextPartnerMenuIds) : null } : {}),
         ...(hasPartnerPhones ? { partnerPhoneE164sJson: nextPartnerPhones && nextPartnerPhones.length > 0 ? serializeJson(nextPartnerPhones) : null } : {}),
+        ...(hasCandidateReplyMode && nextCandidateReplyMode ? { candidateReplyMode: nextCandidateReplyMode } : {}),
+        ...(hasAdminNotifyMode && nextAdminNotifyMode ? { adminNotifyMode: nextAdminNotifyMode } : {}),
         ...(hasHybridApprovalEnabled && nextHybridApprovalEnabled !== null ? { hybridApprovalEnabled: nextHybridApprovalEnabled } : {}),
         ...(hasHybridApprovalAdminWaId ? { hybridApprovalAdminWaId: nextHybridApprovalAdminWaId } : {}),
         updatedAt: new Date(),
@@ -451,6 +493,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         clientProgramMenuIdsJson: true as any,
         partnerProgramMenuIdsJson: true as any,
         partnerPhoneE164sJson: true as any,
+        candidateReplyMode: true as any,
+        adminNotifyMode: true as any,
         hybridApprovalEnabled: true as any,
         hybridApprovalAdminWaId: true as any,
         updatedAt: true,
@@ -560,7 +604,7 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         .catch(() => {});
     }
 
-    if (hasHybridApprovalEnabled || hasHybridApprovalAdminWaId) {
+    if (hasHybridApprovalEnabled || hasHybridApprovalAdminWaId || hasCandidateReplyMode || hasAdminNotifyMode) {
       await prisma.configChangeLog
         .create({
           data: {
@@ -568,10 +612,30 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
             userId,
             type: 'WORKSPACE_HYBRID_APPROVAL',
             beforeJson: serializeJson({
+              candidateReplyMode:
+                String((existing as any).candidateReplyMode || '').trim().toUpperCase() === 'HYBRID'
+                  ? 'HYBRID'
+                  : Boolean((existing as any).hybridApprovalEnabled)
+                    ? 'HYBRID'
+                    : 'AUTO',
+              adminNotifyMode:
+                String((existing as any).adminNotifyMode || '').trim().toUpperCase() === 'EVERY_DRAFT'
+                  ? 'EVERY_DRAFT'
+                  : 'HITS_ONLY',
               hybridApprovalEnabled: Boolean((existing as any).hybridApprovalEnabled),
               hybridApprovalAdminWaId: String((existing as any).hybridApprovalAdminWaId || '').trim() || null,
             }),
             afterJson: serializeJson({
+              candidateReplyMode:
+                String((updated as any).candidateReplyMode || '').trim().toUpperCase() === 'HYBRID'
+                  ? 'HYBRID'
+                  : Boolean((updated as any).hybridApprovalEnabled)
+                    ? 'HYBRID'
+                    : 'AUTO',
+              adminNotifyMode:
+                String((updated as any).adminNotifyMode || '').trim().toUpperCase() === 'EVERY_DRAFT'
+                  ? 'EVERY_DRAFT'
+                  : 'HITS_ONLY',
               hybridApprovalEnabled: Boolean((updated as any).hybridApprovalEnabled),
               hybridApprovalAdminWaId: String((updated as any).hybridApprovalAdminWaId || '').trim() || null,
             }),
@@ -638,6 +702,16 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
           return [];
         }
       })(),
+      candidateReplyMode:
+        String((updated as any).candidateReplyMode || '').trim().toUpperCase() === 'HYBRID'
+          ? 'HYBRID'
+          : Boolean((updated as any).hybridApprovalEnabled)
+            ? 'HYBRID'
+            : 'AUTO',
+      adminNotifyMode:
+        String((updated as any).adminNotifyMode || '').trim().toUpperCase() === 'EVERY_DRAFT'
+          ? 'EVERY_DRAFT'
+          : 'HITS_ONLY',
       hybridApprovalEnabled: Boolean((updated as any).hybridApprovalEnabled),
       hybridApprovalAdminWaId: String((updated as any).hybridApprovalAdminWaId || '').trim() || null,
       updatedAt: new Date((updated as any).updatedAt).toISOString(),

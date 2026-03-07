@@ -3,12 +3,13 @@ import { handleInboundWhatsAppMessage } from '../services/whatsappInboundService
 import { getAdminWaIdAllowlist, getSystemConfig, getTestWaIdAllowlist } from '../services/configService';
 import { normalizeWhatsAppId } from '../utils/whatsapp';
 import { prisma } from '../db/client';
-import { runAutomations } from '../services/automationRunnerService';
+import { getInboundQueueHealthSnapshot, runAutomations } from '../services/automationRunnerService';
 import { piiSanitizeText, stableHash } from '../services/agent/tools';
 import { isWorkspaceAdmin, resolveWorkspaceAccess } from '../services/workspaceAuthService';
 import { SCENARIOS, getScenario, ScenarioDefinition, ScenarioStep } from '../services/simulate/scenarios';
 import { resolveReplyContextForInboundMessage, runAgent } from '../services/agent/agentRuntimeService';
 import { executeAgentResponse } from '../services/agent/commandExecutorService';
+import { buildLLMContext } from '../services/agent/llmContextBuilderService';
 import { resolveInboundPhoneLineRouting } from '../services/phoneLineRoutingService';
 import { normalizeWorkspaceTemplateId, seedWorkspaceTemplate } from '../services/workspaceTemplateService';
 import { attemptScheduleInterview } from '../services/interviewSchedulerService';
@@ -2664,13 +2665,22 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const staffConfirmTemplateHasNoPorDefinir = (step.expect as any)?.staffConfirmTemplateHasNoPorDefinir;
       const suggestIncludesDraftText = (step.expect as any)?.suggestIncludesDraftText;
       const suggestUsesHistoryWithoutSystemEvents = (step.expect as any)?.suggestUsesHistoryWithoutSystemEvents;
+      const inboundPlannedDrainsToExecuted = (step.expect as any)?.inboundPlannedDrainsToExecuted;
       const inboundDebounceSingleDraftForMultipleMsgs =
-        (step.expect as any)?.inboundDebounceSingleDraftForMultipleMsgs;
+        (step.expect as any)?.inboundDebounceSingleDraftForMultipleMsgs || inboundPlannedDrainsToExecuted;
       const candidateOkDoesNotRestartFlow = (step.expect as any)?.candidateOkDoesNotRestartFlow;
       const uploadPublicAssetOk = (step.expect as any)?.uploadPublicAssetOk;
       const sendPdfPublicAssetOk = (step.expect as any)?.sendPdfPublicAssetOk;
       const sendPdfOutside24hReturnsBlocked = (step.expect as any)?.sendPdfOutside24hReturnsBlocked;
       const modelResolvedGpt4oMini = (step.expect as any)?.modelResolvedGpt4oMini;
+      const candidateAutoReplyUntilOpReview = (step.expect as any)?.candidateAutoReplyUntilOpReview;
+      const docsMissingReactivatesAiAndRequestsExactMissingDocs =
+        (step.expect as any)?.docsMissingReactivatesAiAndRequestsExactMissingDocs;
+      const acceptedMovesToInterviewPending = (step.expect as any)?.acceptedMovesToInterviewPending;
+      const rejectedMovesToRejectedAndAiPauses = (step.expect as any)?.rejectedMovesToRejectedAndAiPauses;
+      const suggestRespectsApplicationState = (step.expect as any)?.suggestRespectsApplicationState;
+      const conversationPreviewHidesInternalEvents = (step.expect as any)?.conversationPreviewHidesInternalEvents;
+      const toneNoSlangInAutoAndSuggest = (step.expect as any)?.toneNoSlangInAutoAndSuggest;
       const suggestRewritesSlangToProfessional = (step.expect as any)?.suggestRewritesSlangToProfessional;
       const menuTemplateCanBeSent = (step.expect as any)?.menuTemplateCanBeSent;
       const inboundUnroutedDoesNotReply = (step.expect as any)?.inboundUnroutedDoesNotReply;
@@ -7487,7 +7497,8 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const candidateIntakeChooseRole = (step.expect as any)?.candidateIntakeChooseRole;
       const candidateConductorCollectCvAndDocs = (step.expect as any)?.candidateConductorCollectCvAndDocs;
       const candidatePeonetaBasicFlow = (step.expect as any)?.candidatePeonetaBasicFlow;
-      const postulacionDriverToReadyForOpReview = (step.expect as any)?.postulacionDriverToReadyForOpReview;
+      const postulacionDriverToReadyForOpReview =
+        (step.expect as any)?.postulacionDriverToReadyForOpReview || candidateAutoReplyUntilOpReview;
       const postulacionDriverToReadyForOpReviewEmail = (step.expect as any)?.postulacionDriverToReadyForOpReviewEmail;
       const opReviewDownloadPackageOk = (step.expect as any)?.opReviewDownloadPackageOk;
       const opReviewPauseAiAfterReady = (step.expect as any)?.opReviewPauseAiAfterReady;
@@ -7940,6 +7951,438 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
           await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
           await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
           await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      if (
+        (docsMissingReactivatesAiAndRequestsExactMissingDocs &&
+          typeof docsMissingReactivatesAiAndRequestsExactMissingDocs === 'object') ||
+        (acceptedMovesToInterviewPending && typeof acceptedMovesToInterviewPending === 'object') ||
+        (rejectedMovesToRejectedAndAiPauses && typeof rejectedMovesToRejectedAndAiPauses === 'object') ||
+        (suggestRespectsApplicationState && typeof suggestRespectsApplicationState === 'object') ||
+        (conversationPreviewHidesInternalEvents && typeof conversationPreviewHidesInternalEvents === 'object') ||
+        (toneNoSlangInAutoAndSuggest && typeof toneNoSlangInAutoAndSuggest === 'object')
+      ) {
+        const wsId =
+          String(
+            (docsMissingReactivatesAiAndRequestsExactMissingDocs as any)?.workspaceId ||
+              (acceptedMovesToInterviewPending as any)?.workspaceId ||
+              (rejectedMovesToRejectedAndAiPauses as any)?.workspaceId ||
+              (suggestRespectsApplicationState as any)?.workspaceId ||
+              (conversationPreviewHidesInternalEvents as any)?.workspaceId ||
+              (toneNoSlangInAutoAndSuggest as any)?.workspaceId ||
+              'scenario-er-p6-runtime',
+          ).trim() || 'scenario-er-p6-runtime';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'erP6Runtime: userId missing' });
+        } else if (!authHeader) {
+          assertions.push({ ok: false, message: 'erP6Runtime: auth header missing' });
+        } else {
+          const lineId = `scenario-er-p6-runtime-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          const contactWaId = `+569${String(Date.now()).slice(-8)}`;
+
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario ER-P6 Runtime', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario ER-P6 Runtime', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const program = await prisma.program
+            .create({
+              data: {
+                workspaceId: wsId,
+                name: 'Scenario ER-P6 Program',
+                slug: `scenario-er-p6-program-${Date.now()}`,
+                isActive: true,
+                agentSystemPrompt:
+                  'Eres asistente de reclutamiento en español profesional. Nunca uses modismos/slang.',
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const phoneLine = await prisma.phoneLine
+            .create({
+              data: {
+                id: lineId,
+                workspaceId: wsId,
+                alias: 'Scenario ER-P6 Line',
+                waPhoneNumberId,
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const contact = await prisma.contact
+            .create({
+              data: {
+                workspaceId: wsId,
+                displayName: 'Scenario ER-P6 Contact',
+                waId: contactWaId,
+                comuna: 'Providencia',
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const convo =
+            phoneLine?.id && contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: phoneLine.id,
+                      contactId: contact.id,
+                      programId: program?.id || null,
+                      status: 'OPEN',
+                      channel: 'sandbox',
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'OP_REVIEW',
+                      applicationRole: 'CONDUCTOR' as any,
+                      applicationState: 'WAITING_OP_RESULT' as any,
+                      aiPaused: true,
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+          if (!convo?.id || !program?.id || !phoneLine?.id || !contact?.id) {
+            assertions.push({ ok: false, message: 'erP6Runtime: setup incompleto' });
+          } else {
+            await prisma.message
+              .createMany({
+                data: [
+                  {
+                    conversationId: convo.id,
+                    direction: 'INBOUND',
+                    text: 'Tengo CV y carnet al día.',
+                    timestamp: new Date(now.getTime() - 30_000),
+                    read: true,
+                    rawPayload: JSON.stringify({ simulated: true }),
+                  },
+                  {
+                    conversationId: convo.id,
+                    direction: 'OUTBOUND',
+                    text: 'Perfecto, quedaste en revisión de operación.',
+                    timestamp: new Date(now.getTime() - 20_000),
+                    read: true,
+                    rawPayload: JSON.stringify({ simulated: true, sendResult: { success: true } }),
+                  },
+                  {
+                    conversationId: convo.id,
+                    direction: 'OUTBOUND',
+                    text: '📝 Respuesta propuesta enviada a revisión',
+                    timestamp: new Date(now.getTime() - 10_000),
+                    read: true,
+                    rawPayload: JSON.stringify({ simulated: true, internalEvent: true }),
+                    isInternalEvent: true as any,
+                  },
+                ] as any,
+              })
+              .catch(() => {});
+
+            if (
+              docsMissingReactivatesAiAndRequestsExactMissingDocs &&
+              typeof docsMissingReactivatesAiAndRequestsExactMissingDocs === 'object'
+            ) {
+              const requestDocRes = await app.inject({
+                method: 'POST',
+                url: `/api/op-review/${encodeURIComponent(convo.id)}/action`,
+                headers: {
+                  authorization: authHeader,
+                  'x-workspace-id': wsId,
+                  'content-type': 'application/json',
+                },
+                payload: JSON.stringify({ action: 'REQUEST_DOC', note: 'Falta foto de licencia por ambos lados.' }),
+              });
+              const convoAfterRequestDoc = await prisma.conversation
+                .findUnique({
+                  where: { id: convo.id },
+                  select: { conversationStage: true, applicationState: true as any, aiPaused: true },
+                })
+                .catch(() => null);
+              const stateOk =
+                String((convoAfterRequestDoc as any)?.conversationStage || '').toUpperCase() === 'DOCS_PENDING' &&
+                String((convoAfterRequestDoc as any)?.applicationState || '').toUpperCase() === 'REQUEST_OP_DOCS' &&
+                !Boolean((convoAfterRequestDoc as any)?.aiPaused);
+              assertions.push({
+                ok: requestDocRes.statusCode === 200 && stateOk,
+                message:
+                  requestDocRes.statusCode === 200 && stateOk
+                    ? 'docsMissingReactivatesAiAndRequestsExactMissingDocs: REQUEST_DOC reactiva IA y mueve a DOCS_PENDING'
+                    : `docsMissingReactivatesAiAndRequestsExactMissingDocs: transición inválida (${requestDocRes.statusCode})`,
+              });
+
+              const context = await buildLLMContext({
+                workspaceId: wsId,
+                conversationId: convo.id,
+                mode: 'SUGGEST',
+                eventType: 'AI_SUGGEST',
+                windowStatus: 'IN_24H',
+              }).catch(() => null);
+              const missingFields = Array.isArray((context as any)?.contextJson?.applicationFlow?.missingFields)
+                ? ((context as any).contextJson.applicationFlow.missingFields as string[])
+                : [];
+              const asksForDocs = missingFields.some((f) => ['carnet', 'licencia', 'docs_vehiculo'].includes(String(f)));
+              assertions.push({
+                ok: asksForDocs,
+                message: asksForDocs
+                  ? `docsMissingReactivatesAiAndRequestsExactMissingDocs: missingFields=${missingFields.join(', ')}`
+                  : 'docsMissingReactivatesAiAndRequestsExactMissingDocs: missingFields no detectó docs faltantes',
+              });
+            }
+
+            if (acceptedMovesToInterviewPending && typeof acceptedMovesToInterviewPending === 'object') {
+              await prisma.conversation
+                .update({
+                  where: { id: convo.id },
+                  data: {
+                    conversationStage: 'OP_REVIEW',
+                    applicationState: 'WAITING_OP_RESULT' as any,
+                    aiPaused: true,
+                    updatedAt: new Date(),
+                  } as any,
+                })
+                .catch(() => {});
+              const acceptRes = await app.inject({
+                method: 'POST',
+                url: `/api/op-review/${encodeURIComponent(convo.id)}/action`,
+                headers: {
+                  authorization: authHeader,
+                  'x-workspace-id': wsId,
+                  'content-type': 'application/json',
+                },
+                payload: JSON.stringify({ action: 'ACCEPT' }),
+              });
+              const convoAccepted = await prisma.conversation
+                .findUnique({
+                  where: { id: convo.id },
+                  select: { conversationStage: true, applicationState: true as any, aiPaused: true },
+                })
+                .catch(() => null);
+              const pass =
+                acceptRes.statusCode === 200 &&
+                String((convoAccepted as any)?.conversationStage || '').toUpperCase() === 'INTERVIEW_PENDING' &&
+                String((convoAccepted as any)?.applicationState || '').toUpperCase() === 'OP_ACCEPTED' &&
+                !Boolean((convoAccepted as any)?.aiPaused);
+              assertions.push({
+                ok: pass,
+                message: pass
+                  ? 'acceptedMovesToInterviewPending: ACCEPT => INTERVIEW_PENDING + OP_ACCEPTED + aiPaused=false'
+                  : `acceptedMovesToInterviewPending: transición inválida (${acceptRes.statusCode})`,
+              });
+            }
+
+            if (rejectedMovesToRejectedAndAiPauses && typeof rejectedMovesToRejectedAndAiPauses === 'object') {
+              await prisma.conversation
+                .update({
+                  where: { id: convo.id },
+                  data: {
+                    conversationStage: 'OP_REVIEW',
+                    applicationState: 'WAITING_OP_RESULT' as any,
+                    aiPaused: true,
+                    updatedAt: new Date(),
+                  } as any,
+                })
+                .catch(() => {});
+              const rejectRes = await app.inject({
+                method: 'POST',
+                url: `/api/op-review/${encodeURIComponent(convo.id)}/action`,
+                headers: {
+                  authorization: authHeader,
+                  'x-workspace-id': wsId,
+                  'content-type': 'application/json',
+                },
+                payload: JSON.stringify({ action: 'REJECT' }),
+              });
+              const convoRejected = await prisma.conversation
+                .findUnique({
+                  where: { id: convo.id },
+                  select: { conversationStage: true, applicationState: true as any, aiPaused: true },
+                })
+                .catch(() => null);
+              const pass =
+                rejectRes.statusCode === 200 &&
+                String((convoRejected as any)?.conversationStage || '').toUpperCase() === 'REJECTED' &&
+                String((convoRejected as any)?.applicationState || '').toUpperCase() === 'OP_REJECTED' &&
+                Boolean((convoRejected as any)?.aiPaused);
+              assertions.push({
+                ok: pass,
+                message: pass
+                  ? 'rejectedMovesToRejectedAndAiPauses: REJECT => REJECTED + OP_REJECTED + aiPaused=true'
+                  : `rejectedMovesToRejectedAndAiPauses: transición inválida (${rejectRes.statusCode})`,
+              });
+            }
+
+            if (suggestRespectsApplicationState && typeof suggestRespectsApplicationState === 'object') {
+              await prisma.conversation
+                .update({
+                  where: { id: convo.id },
+                  data: {
+                    conversationStage: 'OP_REVIEW',
+                    applicationState: 'WAITING_OP_RESULT' as any,
+                    aiPaused: true,
+                    updatedAt: new Date(),
+                  } as any,
+                })
+                .catch(() => {});
+              const suggestWhileWaiting = await app.inject({
+                method: 'POST',
+                url: `/api/conversations/${encodeURIComponent(convo.id)}/ai-suggest`,
+                headers: {
+                  authorization: authHeader,
+                  'x-workspace-id': wsId,
+                  'content-type': 'application/json',
+                },
+                payload: JSON.stringify({ draftText: '', mode: 'SUGGEST' }),
+              });
+              let suggestWaitingBody: any = null;
+              try {
+                suggestWaitingBody = JSON.parse(String(suggestWhileWaiting.body || '{}'));
+              } catch {
+                suggestWaitingBody = null;
+              }
+              const internalSuggestion =
+                suggestWhileWaiting.statusCode === 200 && Boolean(suggestWaitingBody?.meta?.internalSuggestion);
+              assertions.push({
+                ok: internalSuggestion,
+                message: internalSuggestion
+                  ? 'suggestRespectsApplicationState: WAITING_OP_RESULT devuelve sugerencia interna (sin reply candidato)'
+                  : `suggestRespectsApplicationState: faltó sugerencia interna (${suggestWhileWaiting.statusCode})`,
+              });
+            }
+
+            if (conversationPreviewHidesInternalEvents && typeof conversationPreviewHidesInternalEvents === 'object') {
+              const listRes = await app.inject({
+                method: 'GET',
+                url: '/api/conversations?viewKey=ALL',
+                headers: { authorization: authHeader, 'x-workspace-id': wsId },
+              });
+              let rows: any[] = [];
+              try {
+                const parsed = JSON.parse(String(listRes.body || '[]'));
+                rows = Array.isArray(parsed) ? parsed : [];
+              } catch {
+                rows = [];
+              }
+              const row = rows.find((r: any) => String(r?.id || '') === convo.id);
+              const previewText = String(row?.messages?.[0]?.text || row?.previewText || '').trim();
+              const pass =
+                listRes.statusCode === 200 &&
+                previewText.includes('Perfecto, quedaste en revisión de operación') &&
+                !/respuesta propuesta enviada a revisión/i.test(previewText);
+              assertions.push({
+                ok: pass,
+                message: pass
+                  ? 'conversationPreviewHidesInternalEvents: preview usa último mensaje real'
+                  : `conversationPreviewHidesInternalEvents: preview inválido (${previewText || '—'})`,
+              });
+            }
+
+            if (toneNoSlangInAutoAndSuggest && typeof toneNoSlangInAutoAndSuggest === 'object') {
+              const autoRun = await prisma.agentRunLog
+                .create({
+                  data: {
+                    workspaceId: wsId,
+                    conversationId: convo.id,
+                    phoneLineId: phoneLine.id,
+                    eventType: 'INBOUND_MESSAGE',
+                    status: 'RUNNING',
+                    inputContextJson: JSON.stringify({ event: { inboundText: 'wena compa' } }),
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null);
+              if (!autoRun?.id) {
+                assertions.push({ ok: false, message: 'toneNoSlangInAutoAndSuggest: no se pudo crear run auto' });
+              } else {
+                await executeAgentResponse({
+                  app,
+                  workspaceId: wsId,
+                  agentRunId: autoRun.id,
+                  response: {
+                    agent: 'scenario_er_p6_tone',
+                    version: 1,
+                    commands: [
+                      {
+                        command: 'SEND_MESSAGE',
+                        type: 'SESSION_TEXT',
+                        text: 'wena compa, me tinca seguir con tu postulación.',
+                      },
+                    ],
+                  } as any,
+                  transportMode: 'NULL',
+                }).catch(() => null);
+                const lastAuto = await prisma.message
+                  .findFirst({
+                    where: { conversationId: convo.id, direction: 'OUTBOUND' },
+                    orderBy: { timestamp: 'desc' },
+                    select: { text: true, transcriptText: true },
+                  })
+                  .catch(() => null);
+                const autoText = normalizeForContains(String(lastAuto?.transcriptText || lastAuto?.text || ''));
+                const autoHasSlang =
+                  autoText.includes('wena') ||
+                  autoText.includes('compa') ||
+                  autoText.includes('tinca') ||
+                  autoText.includes('cachai');
+                assertions.push({
+                  ok: !autoHasSlang,
+                  message: !autoHasSlang
+                    ? 'toneNoSlangInAutoAndSuggest: auto-reply sin modismos'
+                    : `toneNoSlangInAutoAndSuggest: auto-reply contiene modismo (${autoText})`,
+                });
+              }
+
+              const suggestRun = await runAgent({
+                workspaceId: wsId,
+                conversationId: convo.id,
+                eventType: 'AI_SUGGEST',
+                inboundMessageId: null,
+                draftText: 'wena, me tinca postular',
+              }).catch(() => null);
+              const suggestText = normalizeForContains(
+                String(
+                  (suggestRun as any)?.response?.commands?.find((c: any) => String(c?.command || '') === 'SEND_MESSAGE')
+                    ?.text || ''
+                ),
+              );
+              const suggestHasSlang =
+                suggestText.includes('wena') ||
+                suggestText.includes('compa') ||
+                suggestText.includes('tinca') ||
+                suggestText.includes('cachai');
+              assertions.push({
+                ok: Boolean(suggestText) && !suggestHasSlang,
+                message:
+                  Boolean(suggestText) && !suggestHasSlang
+                    ? 'toneNoSlangInAutoAndSuggest: suggest sin modismos'
+                    : `toneNoSlangInAutoAndSuggest: suggest inválido (${suggestText || '—'})`,
+              });
+            }
+          }
+
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.program.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
           await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
           await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
         }
