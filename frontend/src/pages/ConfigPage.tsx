@@ -59,6 +59,15 @@ const conditionFields = [
 ];
 const conditionOps = ['equals', 'not_equals', 'in', 'contains'];
 const agentOptions = ['orchestrator', 'program_default'];
+const stageGlossary: Array<{ slug: string; label: string; description: string }> = [
+  { slug: 'NEW_INTAKE', label: 'Nuevo ingreso', description: 'Recién llegó el contacto; todavía falta definir cargo y datos base.' },
+  { slug: 'SCREENING', label: 'Screening', description: 'Se está recopilando información mínima y validando requisitos.' },
+  { slug: 'QUALIFIED', label: 'Calificado', description: 'Cumple requisitos mínimos y puede pasar a coordinación.' },
+  { slug: 'INTERVIEW_PENDING', label: 'Entrevista pendiente', description: 'Listo para agendar entrevista con staff.' },
+  { slug: 'INTERVIEW_SCHEDULED', label: 'Entrevista agendada', description: 'Ya tiene entrevista asignada y pendiente/confirmada.' },
+  { slug: 'HIRED_DRIVER', label: 'Contratado', description: 'Proceso cerrado con contratación.' },
+  { slug: 'REJECTED', label: 'Rechazado', description: 'No cumple criterios o fue descartado.' },
+];
 
 const downloadJson = (filename: string, data: any) => {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -124,6 +133,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [workspaceDetails, setWorkspaceDetails] = useState<any | null>(null);
   const [workspaceDetailsError, setWorkspaceDetailsError] = useState<string | null>(null);
   const [ssclinicalNurseLeaderEmailDraft, setSsclinicalNurseLeaderEmailDraft] = useState<string>('');
+  const [reviewEmailToDraft, setReviewEmailToDraft] = useState<string>('');
+  const [reviewEmailFromDraft, setReviewEmailFromDraft] = useState<string>('');
+  const [reviewEmailSaving, setReviewEmailSaving] = useState<boolean>(false);
+  const [reviewEmailStatus, setReviewEmailStatus] = useState<string | null>(null);
+  const [reviewEmailError, setReviewEmailError] = useState<string | null>(null);
   const [ssclinicalNurseLeaderSaving, setSsclinicalNurseLeaderSaving] = useState(false);
   const [ssclinicalNurseLeaderStatus, setSsclinicalNurseLeaderStatus] = useState<string | null>(null);
   const [ssclinicalNurseLeaderError, setSsclinicalNurseLeaderError] = useState<string | null>(null);
@@ -185,6 +199,19 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [cloneStatus, setCloneStatus] = useState<string | null>(null);
   const [cloneError, setCloneError] = useState<string | null>(null);
   const [cloneResult, setCloneResult] = useState<any | null>(null);
+  const [workspaceAssets, setWorkspaceAssets] = useState<any[]>([]);
+  const [workspaceAssetsLoading, setWorkspaceAssetsLoading] = useState(false);
+  const [workspaceAssetsError, setWorkspaceAssetsError] = useState<string | null>(null);
+  const [workspaceAssetsIncludeArchived, setWorkspaceAssetsIncludeArchived] = useState<boolean>(false);
+  const [workspaceAssetUploadFile, setWorkspaceAssetUploadFile] = useState<File | null>(null);
+  const [workspaceAssetTitleDraft, setWorkspaceAssetTitleDraft] = useState<string>('');
+  const [workspaceAssetSlugDraft, setWorkspaceAssetSlugDraft] = useState<string>('');
+  const [workspaceAssetDescriptionDraft, setWorkspaceAssetDescriptionDraft] = useState<string>('');
+  const [workspaceAssetAudienceDraft, setWorkspaceAssetAudienceDraft] = useState<'PUBLIC' | 'INTERNAL'>('PUBLIC');
+  const [workspaceAssetUploadStatus, setWorkspaceAssetUploadStatus] = useState<string | null>(null);
+  const [workspaceAssetUploadError, setWorkspaceAssetUploadError] = useState<string | null>(null);
+  const [workspaceAssetUploading, setWorkspaceAssetUploading] = useState<boolean>(false);
+  const [workspaceAssetArchivingId, setWorkspaceAssetArchivingId] = useState<string | null>(null);
 
   const [outboundSafety, setOutboundSafety] = useState<any | null>(null);
   const [outboundPolicy, setOutboundPolicy] = useState<string>('ALLOWLIST_ONLY');
@@ -197,7 +224,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
   const [integrationsAi, setIntegrationsAi] = useState<any | null>(null);
   const [integrationsAiModelOverride, setIntegrationsAiModelOverride] = useState<string>('');
-  const [integrationsAiModelAlias, setIntegrationsAiModelAlias] = useState<string>('gpt-4.1-mini');
+  const [integrationsAiModelAlias, setIntegrationsAiModelAlias] = useState<string>('gpt-4o-mini');
+  const [integrationsCandidateMaxTokens, setIntegrationsCandidateMaxTokens] = useState<string>('320');
   const [integrationsAiKey, setIntegrationsAiKey] = useState<string>('');
   const [integrationsAiStatus, setIntegrationsAiStatus] = useState<string | null>(null);
   const [integrationsAiError, setIntegrationsAiError] = useState<string | null>(null);
@@ -398,6 +426,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setWorkspaceDetails(data || null);
       const email = typeof data?.ssclinicalNurseLeaderEmail === 'string' ? data.ssclinicalNurseLeaderEmail : '';
       setSsclinicalNurseLeaderEmailDraft(email || '');
+      setReviewEmailToDraft(typeof data?.reviewEmailTo === 'string' ? data.reviewEmailTo : '');
+      setReviewEmailFromDraft(typeof data?.reviewEmailFrom === 'string' ? data.reviewEmailFrom : '');
       setTemplateRecruitDefaultDraft(typeof data?.templateRecruitmentStartName === 'string' ? data.templateRecruitmentStartName : '');
       setTemplatePeonetaDefaultDraft(typeof data?.templatePeonetaStartName === 'string' ? data.templatePeonetaStartName : '');
       setTemplateInterviewDefaultDraft(
@@ -471,6 +501,87 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setWorkspaceStagesLoading(false);
     }
   };
+  const loadWorkspaceAssets = async (opts?: { includeArchived?: boolean }) => {
+    setWorkspaceAssetsLoading(true);
+    setWorkspaceAssetsError(null);
+    try {
+      const includeArchived =
+        typeof opts?.includeArchived === 'boolean' ? opts.includeArchived : workspaceAssetsIncludeArchived;
+      const data: any = await apiClient.get(includeArchived ? '/api/assets?includeArchived=1' : '/api/assets');
+      setWorkspaceAssets(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setWorkspaceAssets([]);
+      setWorkspaceAssetsError(err?.message || 'No se pudieron cargar los assets del workspace.');
+    } finally {
+      setWorkspaceAssetsLoading(false);
+    }
+  };
+
+  const archiveWorkspaceAsset = async (assetId: string, archived: boolean) => {
+    if (!assetId || workspaceAssetArchivingId) return;
+    setWorkspaceAssetArchivingId(assetId);
+    setWorkspaceAssetUploadStatus(null);
+    setWorkspaceAssetUploadError(null);
+    try {
+      await apiClient.patch(`/api/assets/${encodeURIComponent(assetId)}/archive`, { archived });
+      setWorkspaceAssetUploadStatus(archived ? 'Asset archivado.' : 'Asset restaurado.');
+      await loadWorkspaceAssets();
+    } catch (err: any) {
+      setWorkspaceAssetUploadError(err?.message || 'No se pudo actualizar el asset.');
+    } finally {
+      setWorkspaceAssetArchivingId(null);
+    }
+  };
+
+  const uploadWorkspaceAsset = async () => {
+    if (workspaceAssetUploading) return;
+    const file = workspaceAssetUploadFile;
+    if (!file) {
+      setWorkspaceAssetUploadError('Selecciona un PDF.');
+      return;
+    }
+    if (file.type && file.type !== 'application/pdf') {
+      setWorkspaceAssetUploadError('Solo se permiten PDFs.');
+      return;
+    }
+    if (file.size > 100 * 1024 * 1024) {
+      setWorkspaceAssetUploadError('PDF demasiado grande (máx 100MB).');
+      return;
+    }
+
+    const title = workspaceAssetTitleDraft.trim();
+    if (!title) {
+      setWorkspaceAssetUploadError('Título requerido.');
+      return;
+    }
+
+    setWorkspaceAssetUploading(true);
+    setWorkspaceAssetUploadStatus(null);
+    setWorkspaceAssetUploadError(null);
+    try {
+      const dataBase64 = await fileToBase64(file);
+      await apiClient.post('/api/assets/upload', {
+        title,
+        slug: workspaceAssetSlugDraft.trim() || null,
+        description: workspaceAssetDescriptionDraft.trim() || null,
+        audience: workspaceAssetAudienceDraft,
+        fileName: file.name,
+        mimeType: file.type || 'application/pdf',
+        dataBase64,
+      });
+      setWorkspaceAssetUploadStatus('Asset subido.');
+      setWorkspaceAssetUploadFile(null);
+      setWorkspaceAssetTitleDraft('');
+      setWorkspaceAssetSlugDraft('');
+      setWorkspaceAssetDescriptionDraft('');
+      setWorkspaceAssetAudienceDraft('PUBLIC');
+      await loadWorkspaceAssets();
+    } catch (err: any) {
+      setWorkspaceAssetUploadError(err?.message || 'No se pudo subir el asset.');
+    } finally {
+      setWorkspaceAssetUploading(false);
+    }
+  };
   const saveSsclinicalNurseLeaderEmail = async () => {
     if (ssclinicalNurseLeaderSaving) return;
     setSsclinicalNurseLeaderSaving(true);
@@ -489,6 +600,29 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setSsclinicalNurseLeaderError(err.message || 'No se pudo guardar');
     } finally {
       setSsclinicalNurseLeaderSaving(false);
+    }
+  };
+
+  const saveReviewEmailSettings = async () => {
+    if (reviewEmailSaving) return;
+    setReviewEmailSaving(true);
+    setReviewEmailStatus(null);
+    setReviewEmailError(null);
+    try {
+      const reviewEmailTo = reviewEmailToDraft.trim();
+      const reviewEmailFrom = reviewEmailFromDraft.trim();
+      const res: any = await apiClient.patch('/api/workspaces/current', {
+        reviewEmailTo: reviewEmailTo.length > 0 ? reviewEmailTo : null,
+        reviewEmailFrom: reviewEmailFrom.length > 0 ? reviewEmailFrom : null,
+      });
+      setReviewEmailToDraft(typeof res?.reviewEmailTo === 'string' ? res.reviewEmailTo : '');
+      setReviewEmailFromDraft(typeof res?.reviewEmailFrom === 'string' ? res.reviewEmailFrom : '');
+      setReviewEmailStatus('Guardado.');
+      await loadWorkspaceDetails();
+    } catch (err: any) {
+      setReviewEmailError(err.message || 'No se pudo guardar email de revisión');
+    } finally {
+      setReviewEmailSaving(false);
     }
   };
 
@@ -1111,6 +1245,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
           ? ai.aiModel
           : ''
     );
+    setIntegrationsCandidateMaxTokens(
+      Number.isFinite(Number(ai?.candidateMaxOutputTokens)) && Number(ai?.candidateMaxOutputTokens) > 0
+        ? String(Math.floor(Number(ai?.candidateMaxOutputTokens)))
+        : '320',
+    );
     setIntegrationsAiTest(null);
     setIntegrationsAiStatus(null);
     setIntegrationsAiError(null);
@@ -1151,6 +1290,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       const payload: any = {};
       payload.aiModelOverride = integrationsAiModelOverride.trim() || null;
       payload.aiModelAlias = integrationsAiModelAlias.trim() || null;
+      payload.candidateMaxOutputTokens = Math.max(80, Math.min(700, Number(integrationsCandidateMaxTokens) || 320));
       const key = integrationsAiKey.trim();
       if (key) payload.openAiApiKey = key;
       await apiClient.put('/api/config/ai', payload);
@@ -1555,6 +1695,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     loadWorkspaceDetails().catch(() => {});
     loadWorkspaceTemplateCatalog().catch(() => {});
     loadWorkspaceStages().catch(() => {});
+    loadWorkspaceAssets().catch(() => {});
     loadPrograms().catch(() => {});
     loadPhoneLines().catch(() => {});
     loadAutomations().catch(() => {});
@@ -1569,6 +1710,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     loadWorkspaceDetails().catch(() => {});
     loadWorkspaceTemplateCatalog().catch(() => {});
     loadWorkspaceStages().catch(() => {});
+    loadWorkspaceAssets().catch(() => {});
   }, [workspaceId]);
 
   useEffect(() => {
@@ -1577,10 +1719,16 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   }, [workspaceStagesIncludeArchived]);
 
   useEffect(() => {
+    if (tab !== 'workspace') return;
+    loadWorkspaceAssets({ includeArchived: workspaceAssetsIncludeArchived }).catch(() => {});
+  }, [workspaceAssetsIncludeArchived]);
+
+  useEffect(() => {
     if (tab === 'workspace') {
       loadWorkspaceDetails().catch(() => {});
       loadWorkspaceTemplateCatalog().catch(() => {});
       loadWorkspaceStages().catch(() => {});
+      loadWorkspaceAssets().catch(() => {});
       loadPrograms().catch(() => {});
       loadPhoneLines().catch(() => {});
       loadAutomations().catch(() => {});
@@ -2697,6 +2845,50 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
 
           {isWorkspaceAdmin ? (
             <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Revisión de postulación (Email)</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Cuando una conversación llega a <b>OP_REVIEW</b>, el sistema genera un resumen interno y puede enviar un email automático.
+              </div>
+              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Enviar resumen a (TO)
+                  <input
+                    value={reviewEmailToDraft}
+                    onChange={(e) => setReviewEmailToDraft(e.target.value)}
+                    placeholder="operaciones@enviorapido.cl"
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Remitente (FROM)
+                  <input
+                    value={reviewEmailFromDraft}
+                    onChange={(e) => setReviewEmailFromDraft(e.target.value)}
+                    placeholder="no-reply@enviorapido.cl"
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                </label>
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => saveReviewEmailSettings().catch(() => {})}
+                  disabled={reviewEmailSaving}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 900, fontSize: 12 }}
+                >
+                  {reviewEmailSaving ? 'Guardando…' : 'Guardar'}
+                </button>
+                <div style={{ fontSize: 12, color: '#666' }}>
+                  Actual: TO <b>{String(workspaceDetails?.reviewEmailTo || '—')}</b> · FROM <b>{String(workspaceDetails?.reviewEmailFrom || '—')}</b>
+                </div>
+              </div>
+              {reviewEmailStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{reviewEmailStatus}</div> : null}
+              {reviewEmailError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{reviewEmailError}</div> : null}
+            </div>
+          ) : null}
+
+          {isWorkspaceAdmin ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
               <div style={{ fontWeight: 900, marginBottom: 6 }}>Plantillas WhatsApp por defecto</div>
               <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
                 Define el <b>templateName real de Meta</b> para “inicio de reclutamiento” y “confirmación de entrevista”.
@@ -2854,6 +3046,173 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
               {templateDefaultsError ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{templateDefaultsError}</div>
               ) : null}
+            </div>
+          ) : null}
+
+          {isWorkspaceAdmin ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Assets PDF del workspace</div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+                Sube documentos PDF para enviar por WhatsApp con `SEND_PDF`. Los assets <b>PUBLIC</b> generan link público y los
+                <b> INTERNAL</b> solo se descargan con sesión.
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr', gap: 10 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Título
+                  <input
+                    value={workspaceAssetTitleDraft}
+                    onChange={(e) => setWorkspaceAssetTitleDraft(e.target.value)}
+                    placeholder="Ej: Guía postulación conductores"
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Slug (opcional)
+                  <input
+                    value={workspaceAssetSlugDraft}
+                    onChange={(e) => setWorkspaceAssetSlugDraft(e.target.value)}
+                    placeholder="guia_postulacion_conductores"
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc', fontFamily: 'monospace' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Descripción (opcional)
+                  <input
+                    value={workspaceAssetDescriptionDraft}
+                    onChange={(e) => setWorkspaceAssetDescriptionDraft(e.target.value)}
+                    placeholder="Cuándo usar este PDF"
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#555' }}>
+                  Audiencia
+                  <select
+                    value={workspaceAssetAudienceDraft}
+                    onChange={(e) => setWorkspaceAssetAudienceDraft(String(e.target.value || 'PUBLIC').toUpperCase() === 'INTERNAL' ? 'INTERNAL' : 'PUBLIC')}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #ccc' }}
+                  >
+                    <option value="PUBLIC">PUBLIC (enviable por WhatsApp / link público)</option>
+                    <option value="INTERNAL">INTERNAL (solo staff con sesión)</option>
+                  </select>
+                </label>
+              </div>
+
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => setWorkspaceAssetUploadFile(e.target.files?.[0] || null)}
+                  style={{ fontSize: 12 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => uploadWorkspaceAsset().catch(() => {})}
+                  disabled={workspaceAssetUploading || !workspaceAssetUploadFile}
+                  style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid #111', background: '#111', color: '#fff', fontWeight: 900, fontSize: 12 }}
+                >
+                  {workspaceAssetUploading ? 'Subiendo…' : 'Subir PDF'}
+                </button>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#555' }}>
+                  <input
+                    type="checkbox"
+                    checked={workspaceAssetsIncludeArchived}
+                    onChange={(e) => setWorkspaceAssetsIncludeArchived(e.target.checked)}
+                  />
+                  Mostrar archivados
+                </label>
+                <button
+                  type="button"
+                  onClick={() => loadWorkspaceAssets().catch(() => {})}
+                  style={{ padding: '6px 10px', borderRadius: 10, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+                >
+                  {workspaceAssetsLoading ? 'Cargando…' : 'Refrescar'}
+                </button>
+              </div>
+
+              {workspaceAssetUploadFile ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                  Archivo: <b>{workspaceAssetUploadFile.name}</b> · {(workspaceAssetUploadFile.size / (1024 * 1024)).toFixed(2)} MB
+                </div>
+              ) : null}
+              {workspaceAssetUploadStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{workspaceAssetUploadStatus}</div> : null}
+              {workspaceAssetUploadError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{workspaceAssetUploadError}</div> : null}
+              {workspaceAssetsError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{workspaceAssetsError}</div> : null}
+
+              <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, maxHeight: 260, overflow: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Slug</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Título</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Audiencia</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Tamaño</th>
+                      <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #eee' }}>Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workspaceAssets.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} style={{ padding: 10, color: '#666' }}>
+                          — Sin assets.
+                        </td>
+                      </tr>
+                    ) : (
+                      workspaceAssets.map((asset: any) => {
+                        const archived = Boolean(asset?.archivedAt);
+                        const audience = String(asset?.audience || 'PUBLIC').toUpperCase();
+                        const publicUrl = typeof asset?.publicUrl === 'string' ? asset.publicUrl : '';
+                        return (
+                          <tr key={String(asset.id || `${asset.slug}-${asset.fileName}`)}>
+                            <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }}>{String(asset.slug || '—')}</td>
+                            <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>
+                              <div style={{ fontWeight: 700 }}>{String(asset.title || asset.fileName || '—')}</div>
+                              {asset.description ? <div style={{ color: '#666' }}>{String(asset.description)}</div> : null}
+                              {archived ? <div style={{ color: '#b93800', fontWeight: 700 }}>(Archivado)</div> : null}
+                            </td>
+                            <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>{audience}</td>
+                            <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>
+                              {Number.isFinite(Number(asset.sizeBytes)) ? `${(Number(asset.sizeBytes) / (1024 * 1024)).toFixed(2)} MB` : '—'}
+                            </td>
+                            <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                {audience === 'PUBLIC' && publicUrl ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const absolute = `${window.location.origin}${publicUrl}`;
+                                      navigator.clipboard.writeText(absolute).then(() => {
+                                        setWorkspaceAssetUploadStatus('Link público copiado.');
+                                      }).catch(() => {
+                                        setWorkspaceAssetUploadError('No se pudo copiar el link.');
+                                      });
+                                    }}
+                                    style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                                  >
+                                    Copiar link
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => archiveWorkspaceAsset(String(asset.id || ''), !archived).catch(() => {})}
+                                  disabled={workspaceAssetArchivingId === String(asset.id || '')}
+                                  style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                                >
+                                  {workspaceAssetArchivingId === String(asset.id || '')
+                                    ? 'Procesando…'
+                                    : archived
+                                      ? 'Restaurar'
+                                      : 'Archivar'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : null}
 
@@ -3154,11 +3513,25 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             </div>
           ) : null}
 
-		          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+	          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
 		            <div style={{ fontWeight: 900, marginBottom: 6 }}>Estados (Stages)</div>
 	            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
 	              Define las <b>etapas</b> disponibles para conversaciones y Automations con trigger <b>STAGE_CHANGED</b>. El valor guardado es el <b>slug</b>.
 	            </div>
+              <details style={{ marginBottom: 10, border: '1px solid #f0f0f0', borderRadius: 10, padding: '8px 10px', background: '#fcfcfc' }}>
+                <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 800, color: '#333' }}>Glosario rápido de Stages</summary>
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {stageGlossary.map((item) => (
+                    <div key={item.slug} style={{ fontSize: 12, color: '#444', lineHeight: 1.35 }}>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 800 }}>{item.slug}</span>
+                      {' · '}
+                      <span style={{ fontWeight: 700 }}>{item.label}</span>
+                      {' — '}
+                      <span>{item.description}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
 
 	            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
 	              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#555' }}>
@@ -3520,7 +3893,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 <input
                   value={integrationsAiModelOverride}
                   onChange={(e) => setIntegrationsAiModelOverride(e.target.value)}
-                  placeholder="Ej: gpt-5-mini-2025-08-07"
+                  placeholder="Ej: gpt-4o-mini-2024-07-18"
                   style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
                 />
                 <div style={{ marginTop: 10, fontSize: 12, color: '#666', marginBottom: 6 }}>Model (alias / fallback)</div>
@@ -3530,6 +3903,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   style={{ width: '100%', padding: 10, borderRadius: 10, border: '1px solid #ddd', background: '#fff' }}
                 >
                   <option value="">(usar default)</option>
+                  <option value="gpt-4o-mini">gpt-4o-mini</option>
                   <option value="gpt-4.1-mini">gpt-4.1-mini</option>
                   <option value="gpt-5-chat-latest">gpt-5-chat-latest</option>
                 </select>
@@ -3541,6 +3915,19 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                     Alias se resolverá a: <span style={{ fontFamily: 'monospace' }}>{integrationsAi.aiModelAliasResolved}</span>
                   </div>
                 ) : null}
+                <div style={{ marginTop: 10, fontSize: 12, color: '#666', marginBottom: 6 }}>Máx. tokens salida candidato</div>
+                <input
+                  type="number"
+                  min={80}
+                  max={700}
+                  step={10}
+                  value={integrationsCandidateMaxTokens}
+                  onChange={(e) => setIntegrationsCandidateMaxTokens(e.target.value)}
+                  style={{ width: 180, padding: 10, borderRadius: 10, border: '1px solid #ddd' }}
+                />
+                <div style={{ marginTop: 6, fontSize: 11, color: '#666' }}>
+                  Controla la longitud máxima de respuesta para conversaciones con candidatos.
+                </div>
               </div>
               <div>
                 <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>API Key (masked)</div>
@@ -5994,7 +6381,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                             setPricingModels(next);
                           }}
                           style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontFamily: 'monospace', fontSize: 12 }}
-                          placeholder="gpt-4.1-mini"
+                          placeholder="gpt-4o-mini"
                         />
                       </td>
                       <td style={{ padding: 10 }}>

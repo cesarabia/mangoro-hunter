@@ -1,8 +1,10 @@
+const appRoot = process.env.HUNTER_APP_ROOT || '/opt/hunter/current';
+
 module.exports = {
   apps: [
     {
       name: 'hunter-backend',
-      cwd: '/opt/hunter/backend',
+      cwd: `${appRoot}/backend`,
       script: 'dist/server.js',
       instances: 1,
       exec_mode: 'fork',

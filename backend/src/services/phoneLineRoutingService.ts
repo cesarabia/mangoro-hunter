@@ -8,10 +8,16 @@ export type InboundPhoneLineRoutingResult =
 
 export async function resolveInboundPhoneLineRouting(params: {
   waPhoneNumberId?: string | null;
+  allowDefaultFallback?: boolean;
 }): Promise<InboundPhoneLineRoutingResult> {
   const raw = String(params.waPhoneNumberId || '').trim();
-  // Simulation/internal calls may omit phone_number_id: fall back to default workspace/line.
-  if (!raw) return { kind: 'RESOLVED', workspaceId: 'default', phoneLineId: 'default' };
+  // In production inbound we must not fallback to default workspace when phone_number_id is missing.
+  if (!raw) {
+    if (params.allowDefaultFallback) {
+      return { kind: 'RESOLVED', workspaceId: 'default', phoneLineId: 'default' };
+    }
+    return { kind: 'NOT_FOUND', waPhoneNumberId: '__MISSING__' };
+  }
 
   const matches = await prisma.phoneLine
     .findMany({
@@ -55,7 +61,7 @@ export async function logInboundRoutingError(params: {
 
   if (params.kind === 'NOT_FOUND') {
     params.app.log.error(
-      { ...baseMeta, event: 'INBOUND_PHONE_LINE_NOT_FOUND' },
+      { ...baseMeta, event: 'UNROUTED_INBOUND', routingKind: 'INBOUND_PHONE_LINE_NOT_FOUND' },
       'Inbound WhatsApp: phone_number_id no mapeado a ningún PhoneLine activo.',
     );
     await prisma.automationRunLog
@@ -64,12 +70,13 @@ export async function logInboundRoutingError(params: {
           workspaceId: 'default',
           ruleId: null,
           conversationId: null,
-          eventType: 'INBOUND_PHONE_LINE_NOT_FOUND',
+          eventType: 'UNROUTED_INBOUND',
           status: 'ERROR',
           inputJson: serializeJson({
             waPhoneNumberId: params.waPhoneNumberId,
             waMessageId: params.waMessageId,
             from: params.from,
+            routingKind: 'INBOUND_PHONE_LINE_NOT_FOUND',
           }),
           outputJson: null,
           error: `No existe PhoneLine activo para waPhoneNumberId=${params.waPhoneNumberId}`,
@@ -110,4 +117,3 @@ export async function logInboundRoutingError(params: {
     ),
   );
 }
-

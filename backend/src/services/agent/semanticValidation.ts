@@ -30,8 +30,17 @@ export function validateAgentResponseSemantics(response: AgentResponse): Semanti
         }
       }
     }
+    if (cmd.command === 'SET_APPLICATION_FLOW') {
+      const role = typeof cmd.applicationRole === 'string' ? cmd.applicationRole.trim() : '';
+      const state = typeof cmd.applicationState === 'string' ? cmd.applicationState.trim() : '';
+      if (!role && !state) {
+        issues.push({
+          path: ['commands', idx, 'applicationState'],
+          message: 'SET_APPLICATION_FLOW requiere applicationRole y/o applicationState',
+        });
+      }
+    }
   });
 
   return issues;
 }
-

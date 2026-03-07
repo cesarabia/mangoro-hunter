@@ -65,7 +65,8 @@ export const CopilotWidget: React.FC<{
   currentView: string;
   isAdmin: boolean;
   onNavigate: (action: CopilotAction, context?: { conversationId?: string | null }) => void;
-}> = ({ currentView, isAdmin, onNavigate }) => {
+  onDockStateChange?: (state: { open: boolean; isMobile: boolean; dockSide: DockSide; widthPx: number }) => void;
+}> = ({ currentView, isAdmin, onNavigate, onDockStateChange }) => {
   const [open, setOpen] = useState(false);
   const [dockSide, setDockSide] = useState<DockSide>(() => {
     try {
@@ -443,6 +444,11 @@ export const CopilotWidget: React.FC<{
     if (sizePreset === 'L') return 540;
     return 420;
   }, [sizePreset]);
+
+  useEffect(() => {
+    if (!onDockStateChange) return;
+    onDockStateChange({ open, isMobile, dockSide, widthPx });
+  }, [onDockStateChange, open, isMobile, dockSide, widthPx]);
 
   const panelStyle: React.CSSProperties = useMemo(() => {
     if (isMobile) {

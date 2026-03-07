@@ -8,6 +8,7 @@ const UPSERT_PATCH_KEYS = [
   'experienceYears',
   'terrainExperience',
   'availabilityText',
+  'jobRole',
 ] as const;
 
 type PatchKey = (typeof UPSERT_PATCH_KEYS)[number];

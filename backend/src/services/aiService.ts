@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { env } from '../config/env';
-import { getSystemConfig, DEFAULT_AI_MODEL } from './configService';
+import { getSystemConfig, DEFAULT_AI_MODEL, DEFAULT_ADMIN_AI_MODEL } from './configService';
 import { DEFAULT_AI_PROMPT } from '../constants/ai';
 import { createChatCompletionWithModelFallback } from './openAiChatCompletionService';
 import { resolveModelChain } from './modelResolutionService';
@@ -68,7 +68,7 @@ export function getEffectiveOpenAiKey(
 }
 
 function fallbackReply(): string {
-  return 'Gracias por escribir a Postulaciones. Cuéntame en qué ciudad o comuna estás, qué experiencia tienes en ventas y tu disponibilidad. Revisaremos tu perfil para una posible entrevista.';
+  return 'Estoy con un problema técnico para generar una sugerencia ahora (OPENAI_NOT_CONFIGURED).';
 }
 
 export async function summarizeConversationForAdmin(
@@ -85,7 +85,7 @@ export async function summarizeConversationForAdmin(
   const conversationText = conversationLines.slice(-30).join('\n') || 'Sin mensajes recientes';
 
   const completion = await client.chat.completions.create({
-    model: 'gpt-4.1-mini',
+    model: DEFAULT_ADMIN_AI_MODEL,
     messages: [
       {
         role: 'system',

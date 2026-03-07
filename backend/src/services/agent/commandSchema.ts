@@ -1,6 +1,14 @@
 import { z } from 'zod';
 
 const JsonRecordSchema = z.record(z.string(), z.unknown());
+const ApplicationRoleSchema = z.enum([
+  'PEONETA',
+  'DRIVER_COMPANY',
+  'DRIVER_OWN_VAN',
+  // Backward compatibility:
+  'CONDUCTOR',
+  'CONDUCTOR_FLOTA',
+]);
 
 export const AgentCommandUpsertProfileFieldsSchema = z.object({
   command: z.literal('UPSERT_PROFILE_FIELDS'),
@@ -16,6 +24,7 @@ export const AgentCommandUpsertProfileFieldsSchema = z.object({
       experienceYears: z.number().int().min(0).max(80).nullable().optional(),
       terrainExperience: z.boolean().nullable().optional(),
       availabilityText: z.string().min(1).nullable().optional(),
+      jobRole: ApplicationRoleSchema.nullable().optional(),
     })
     .strict(),
   confidenceByField: z.record(z.string(), z.number().min(0).max(1)).optional(),
@@ -40,6 +49,14 @@ export const AgentCommandSetConversationProgramSchema = z.object({
   command: z.literal('SET_CONVERSATION_PROGRAM'),
   conversationId: z.string().min(1),
   programId: z.string().min(1),
+  reason: z.string().min(1).optional(),
+});
+
+export const AgentCommandSetApplicationFlowSchema = z.object({
+  command: z.literal('SET_APPLICATION_FLOW'),
+  conversationId: z.string().min(1),
+  applicationRole: ApplicationRoleSchema.optional(),
+  applicationState: z.string().min(1).optional(),
   reason: z.string().min(1).optional(),
 });
 
@@ -98,6 +115,7 @@ export const AgentCommandSchema = z.discriminatedUnion('command', [
   AgentCommandSetConversationStatusSchema,
   AgentCommandSetConversationStageSchema,
   AgentCommandSetConversationProgramSchema,
+  AgentCommandSetApplicationFlowSchema,
   AgentCommandAddConversationNoteSchema,
   AgentCommandSetNoContactarSchema,
   AgentCommandScheduleInterviewSchema,

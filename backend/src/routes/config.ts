@@ -25,6 +25,7 @@ import {
   DEFAULT_TEMPLATE_INTERVIEW_INVITE,
   DEFAULT_TEMPLATE_LANGUAGE_CODE,
   DEFAULT_AI_MODEL,
+  DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
   DEFAULT_JOB_TITLE,
   DEFAULT_INTERVIEW_DAY,
   DEFAULT_INTERVIEW_TIME,
@@ -536,6 +537,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         aiModelOverride: null,
         aiModelAlias: DEFAULT_AI_MODEL,
         aiModelAliasResolved: DEFAULT_AI_MODEL,
+        candidateMaxOutputTokens: DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
       };
     }
     const modelOverride = ((config as any).aiModelOverride || null) as string | null;
@@ -548,6 +550,11 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       aiModelOverride: modelOverride,
       aiModelAlias: modelAlias,
       aiModelAliasResolved: modelAliasResolved,
+      candidateMaxOutputTokens:
+        Number.isFinite(Number((config as any).candidateMaxOutputTokens)) &&
+        Number((config as any).candidateMaxOutputTokens) > 0
+          ? Math.floor(Number((config as any).candidateMaxOutputTokens))
+          : DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
     };
   });
 
@@ -561,6 +568,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       aiModel?: string | null;
       aiModelOverride?: string | null;
       aiModelAlias?: string | null;
+      candidateMaxOutputTokens?: number | null;
     };
     const updated = await executeUpdate(reply, async () => {
       let cfg = await getSystemConfig();
@@ -574,6 +582,17 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         });
       } else if (typeof body?.aiModel !== 'undefined') {
         await updateAiModel(body.aiModel ?? null);
+      }
+      if (typeof body?.candidateMaxOutputTokens !== 'undefined') {
+        const parsed = Number(body.candidateMaxOutputTokens);
+        await prisma.systemConfig.update({
+          where: { id: 1 },
+          data: {
+            candidateMaxOutputTokens: Number.isFinite(parsed)
+              ? Math.max(80, Math.min(700, Math.floor(parsed)))
+              : DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
+          } as any,
+        });
       }
       return cfg;
     });
@@ -589,6 +608,11 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       aiModelOverride: modelOverride,
       aiModelAlias: modelAlias,
       aiModelAliasResolved: modelAliasResolved,
+      candidateMaxOutputTokens:
+        Number.isFinite(Number((fresh as any).candidateMaxOutputTokens)) &&
+        Number((fresh as any).candidateMaxOutputTokens) > 0
+          ? Math.floor(Number((fresh as any).candidateMaxOutputTokens))
+          : DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
     };
   });
 
@@ -732,6 +756,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         aiModelOverride: null,
         aiModelAlias: DEFAULT_AI_MODEL,
         aiModelAliasResolved: DEFAULT_AI_MODEL,
+        candidateMaxOutputTokens: DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
         jobSheet: DEFAULT_RECRUIT_JOB_SHEET,
         faq: DEFAULT_RECRUIT_FAQ
       };
@@ -746,6 +771,11 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       aiModelOverride: modelOverride,
       aiModelAlias: modelAlias,
       aiModelAliasResolved: modelAliasResolved,
+      candidateMaxOutputTokens:
+        Number.isFinite(Number((config as any).candidateMaxOutputTokens)) &&
+        Number((config as any).candidateMaxOutputTokens) > 0
+          ? Math.floor(Number((config as any).candidateMaxOutputTokens))
+          : DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
       jobSheet: (config as any).recruitJobSheet || DEFAULT_RECRUIT_JOB_SHEET,
       faq: typeof (config as any).recruitFaq === 'string' ? (config as any).recruitFaq : DEFAULT_RECRUIT_FAQ
     };
@@ -761,6 +791,7 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       aiModel?: string | null;
       aiModelOverride?: string | null;
       aiModelAlias?: string | null;
+      candidateMaxOutputTokens?: number | null;
       jobSheet?: string | null;
       faq?: string | null;
     };
@@ -775,6 +806,17 @@ export async function registerConfigRoutes(app: FastifyInstance) {
         });
       } else if (typeof body?.aiModel !== 'undefined') {
         await updateAiModel(body.aiModel ?? null);
+      }
+      if (typeof body?.candidateMaxOutputTokens !== 'undefined') {
+        const parsed = Number(body.candidateMaxOutputTokens);
+        await prisma.systemConfig.update({
+          where: { id: 1 },
+          data: {
+            candidateMaxOutputTokens: Number.isFinite(parsed)
+              ? Math.max(80, Math.min(700, Math.floor(parsed)))
+              : DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
+          } as any,
+        });
       }
       if (typeof body?.jobSheet !== 'undefined' || typeof body?.faq !== 'undefined') {
         await updateRecruitmentContent({
@@ -796,6 +838,11 @@ export async function registerConfigRoutes(app: FastifyInstance) {
       aiModelOverride: modelOverride,
       aiModelAlias: modelAlias,
       aiModelAliasResolved: modelAliasResolved,
+      candidateMaxOutputTokens:
+        Number.isFinite(Number((fresh as any).candidateMaxOutputTokens)) &&
+        Number((fresh as any).candidateMaxOutputTokens) > 0
+          ? Math.floor(Number((fresh as any).candidateMaxOutputTokens))
+          : DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
       jobSheet: (fresh as any).recruitJobSheet || DEFAULT_RECRUIT_JOB_SHEET,
       faq: typeof (fresh as any).recruitFaq === 'string' ? (fresh as any).recruitFaq : DEFAULT_RECRUIT_FAQ
     };

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiClient } from '../api/client';
+import { Tooltip } from './Tooltip';
 
 interface ConversationViewProps {
   conversation: any | null;
@@ -638,9 +639,16 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     setLoadingAi(true);
     setSendError(null);
     try {
-      const res = await apiClient.post(`/api/conversations/${conversation.id}/ai-suggest`, { draft: draftText || '' });
-      if (res.suggestion) {
-        onDraftChange(res.suggestion);
+      const res: any = await apiClient.post(`/api/conversations/${conversation.id}/ai-suggest`, {
+        conversationId: conversation.id,
+        programId: conversation?.program?.id || null,
+        programSlug: conversation?.program?.slug || null,
+        draftText: draftText || '',
+        mode: 'SUGGEST',
+      });
+      const suggested = String(res?.suggestedText || res?.suggestion || '').trim();
+      if (suggested) {
+        onDraftChange(suggested);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'No se pudo sugerir';
@@ -758,6 +766,22 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const stageDisplay = normalizedStage
     ? stageLabelBySlug.get(normalizedStage) || stageLabelBySlug.get(rawStage) || normalizedStage
     : '—';
+  const stageTooltipText = useMemo(() => {
+    const key = normalizedStage || rawStage || '';
+    const glossary: Record<string, string> = {
+      NEW_INTAKE: 'Recién ingresó el caso. Siguiente paso: definir cargo y validar datos mínimos.',
+      SCREENING: 'Estamos recopilando y validando información básica del candidato.',
+      QUALIFIED: 'Caso preseleccionado. Siguiente paso: coordinar entrevista o revisión operativa.',
+      INTERVIEW_PENDING: 'Caso listo para agendar entrevista. Falta proponer/confirmar horario.',
+      INTERVIEW_SCHEDULED: 'Entrevista agendada. Siguiente paso: confirmar asistencia y seguimiento.',
+      HIRED_DRIVER: 'Candidato contratado. Mantener trazabilidad de cierre y documentación.',
+      REJECTED: 'Caso descartado. Revisar nota interna para motivo y próximos filtros.',
+      STALE_NO_RESPONSE: 'Sin respuesta reciente. Siguiente paso: recontactar o archivar.',
+      NO_CONTACTAR: 'No contactar activo. No se deben enviar mensajes automáticos.',
+    };
+    if (key && glossary[key]) return glossary[key];
+    return 'Stage indica la etapa del caso y qué sigue en el flujo.';
+  }, [normalizedStage, rawStage]);
 
   useEffect(() => {
     if (!conversation || isAdmin) {
@@ -1041,23 +1065,28 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   Estado: <strong>{conversation?.status || 'NEW'}</strong>
                 </span>
                 {canAssignConversation && isClientConversation && activeStageOptions.length > 0 ? (
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
-                    Stage:
-                    <select
-                      value={stageValue || ''}
-                      onChange={(e) => handleStageUpdate(e.target.value).catch(() => {})}
-                      disabled={stageSaving}
-                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
-                      data-guide-id="conversation-stage-select"
-                    >
-                      <option value="">—</option>
-                      {activeStageOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <Tooltip
+                    content={stageTooltipText}
+                    delayMs={1000}
+                  >
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+                      Stage:
+                      <select
+                        value={stageValue || ''}
+                        onChange={(e) => handleStageUpdate(e.target.value).catch(() => {})}
+                        disabled={stageSaving}
+                        style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #ccc' }}
+                        data-guide-id="conversation-stage-select"
+                      >
+                        <option value="">—</option>
+                        {activeStageOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </Tooltip>
                 ) : (
                   <span style={{ fontSize: 12, color: '#555' }}>
                     Stage: <strong>{stageDisplay}</strong>
@@ -1265,19 +1294,21 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
               </button>
             ) : null}
             {hasConversation && !isAdmin ? (
-              <button
-                onClick={handleAiPauseToggle}
-                disabled={aiPausedSaving}
-                style={{
-                  padding: '6px 10px',
-                  borderRadius: 8,
-                  border: '1px solid #ccc',
-                  background: aiPaused ? '#ffe8cc' : '#f6f6f6',
-                  fontSize: 12
-                }}
-              >
-                {aiPaused ? 'Silencio activado' : 'Silenciar IA'}
-              </button>
+              <Tooltip content="Pausa temporalmente las respuestas automáticas de IA para esta conversación." delayMs={1000}>
+                <button
+                  onClick={handleAiPauseToggle}
+                  disabled={aiPausedSaving}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: 8,
+                    border: '1px solid #ccc',
+                    background: aiPaused ? '#ffe8cc' : '#f6f6f6',
+                    fontSize: 12
+                  }}
+                >
+                  {aiPaused ? 'Silencio activado' : 'Silenciar IA'}
+                </button>
+              </Tooltip>
             ) : null}
           </div>
         </div>
@@ -1523,13 +1554,18 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
           >
             📎
           </button>
-          <button
-            onClick={handleSuggest}
-            disabled={!hasConversation || loadingAi || (isManualMode && !(draftText || '').trim())}
-            style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#eee' }}
+          <Tooltip
+            content="Sugerir usa el contexto completo del chat. Si escribes un borrador, lo mejora sin perder intención."
+            delayMs={1000}
           >
-            {loadingAi ? 'IA...' : 'Sugerir'}
-          </button>
+            <button
+              onClick={handleSuggest}
+              disabled={!hasConversation || loadingAi || (isManualMode && !(draftText || '').trim())}
+              style={{ padding: '8px 10px', borderRadius: 4, border: '1px solid #ccc', background: '#eee' }}
+            >
+              {loadingAi ? 'IA...' : 'Sugerir'}
+            </button>
+          </Tooltip>
           <button
             onClick={handleSend}
             disabled={!hasConversation || loadingSend || (!within24h && !isAdmin)}
@@ -1587,21 +1623,26 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         {safeModeActionError && <div style={{ color: '#b93800', fontSize: 13 }}>{safeModeActionError}</div>}
         {hasConversation && !isAdmin && (
           <div style={{ display: 'grid', gap: 8 }}>
-            <button
-              type="button"
-              onClick={() => setTemplatePanelOpen((prev) => !prev)}
-              style={{
-                alignSelf: 'flex-start',
-                padding: '6px 10px',
-                borderRadius: 8,
-                border: '1px solid #ccc',
-                background: '#fff',
-                fontSize: 12,
-                fontWeight: 800,
-              }}
+            <Tooltip
+              content="Muestra el catálogo Meta del workspace para enviar una plantilla manualmente."
+              delayMs={1000}
             >
-              {templatePanelOpen ? 'Ocultar plantillas' : 'Mostrar plantillas'}
-            </button>
+              <button
+                type="button"
+                onClick={() => setTemplatePanelOpen((prev) => !prev)}
+                style={{
+                  alignSelf: 'flex-start',
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: '1px solid #ccc',
+                  background: '#fff',
+                  fontSize: 12,
+                  fontWeight: 800,
+                }}
+              >
+                {templatePanelOpen ? 'Ocultar plantillas' : 'Mostrar plantillas'}
+              </button>
+            </Tooltip>
             {templatePanelOpen ? (
               templateCatalogOptions.length > 0 ? (
                 <>

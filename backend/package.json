@@ -7,17 +7,19 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "npm run build && node --test \"dist/**/*.test.js\"",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:generate": "prisma generate --schema ../prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate dev --schema ../prisma/schema.prisma"
   },
   "dependencies": {
     "@fastify/jwt": "^7.0.0",
     "@prisma/client": "^5.0.0",
+    "@types/nodemailer": "^7.0.11",
     "archiver": "^6.0.2",
     "dotenv": "^16.0.0",
     "fastify": "^4.0.0",
     "luxon": "^3.5.0",
     "mammoth": "^1.11.0",
+    "nodemailer": "^8.0.1",
     "openai": "^4.0.0",
     "pdf-parse": "^2.4.5",
     "xlsx": "^0.18.5",

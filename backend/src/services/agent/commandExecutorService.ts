@@ -4,7 +4,7 @@ import { serializeJson } from '../../utils/json';
 import { AgentCommand, AgentResponse } from './commandSchema';
 import { computeOutboundBlockReason } from './guardrails';
 import { resolveLocation, stableHash, stripAccents } from './tools';
-import { sendWhatsAppTemplate, sendWhatsAppText, SendResult } from '../whatsappMessageService';
+import { sendWhatsAppDocumentByLink, sendWhatsAppTemplate, sendWhatsAppText, SendResult } from '../whatsappMessageService';
 import { attemptScheduleInterview, formatInterviewExactAddress } from '../interviewSchedulerService';
 import { getEffectiveOutboundAllowlist, getOutboundPolicy, getSystemConfig } from '../configService';
 import { sendAdminNotification } from '../adminNotificationService';
@@ -13,6 +13,14 @@ import { normalizeWhatsAppId } from '../../utils/whatsapp';
 import { coerceStageSlug, isKnownActiveStage, normalizeStageSlug } from '../workspaceStageService';
 import { runAutomations } from '../automationRunnerService';
 import { loadTemplateConfig, resolveTemplateVariables, selectTemplateForMode } from '../templateService';
+import { buildWorkspaceAssetPublicUrl } from '../workspaceAssetService';
+import {
+  mapRoleToContactJobRole,
+  normalizeApplicationRole,
+  normalizeApplicationState,
+  resolveStageForApplicationState,
+} from '../postulacionFlowService';
+import { triggerReadyForOpReview } from '../postulacionReviewService';
 
 export type ExecutorTransportMode = 'REAL' | 'NULL';
 
@@ -65,6 +73,18 @@ function roleRank(roleRaw: string): number {
 
 function normalizeForNameChecks(value: string): string {
   return stripAccents(String(value || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function isMilestoneNotifyEvent(cmd: { eventType?: unknown; text?: unknown }): boolean {
+  const eventType = normalizeForNameChecks(String(cmd.eventType || ''));
+  const text = normalizeForNameChecks(String(cmd.text || ''));
+  if (eventType.includes('needs_human') || eventType.includes('needshuman')) return true;
+  if (eventType.includes('cv') || eventType.includes('curriculum')) return true;
+  if (eventType.includes('doc') || eventType.includes('licencia') || eventType.includes('carnet')) return true;
+  if (text.includes('cv') || text.includes('curriculum')) return true;
+  if (text.includes('licencia') || text.includes('carnet') || text.includes('documento')) return true;
+  if (text.includes('needs_human')) return true;
+  return false;
 }
 
 function isSuspiciousCandidateName(value?: string | null): boolean {
@@ -121,6 +141,20 @@ function humanizeOutboundText(raw: string): string {
   out = out.replace(/responde\s+as[ií]\s*:\s*/gi, '');
   out = out.replace(/escr[ií]belo?\s+en\s+una\s+sola\s+l[ií]nea/gi, 'escríbelo completo, como te salga natural');
   out = out.replace(/formato\s+obligatorio/gi, 'formato sugerido');
+  // Tone guard: enforce professional Spanish by removing common slang/modismos.
+  const slangRewrites: Array<[RegExp, string]> = [
+    [/\bwena(s)?\b/gi, 'hola'],
+    [/\bme\s+tinca\b/gi, 'me interesa'],
+    [/\bbac[aá]n\b/gi, 'excelente'],
+    [/\bcompa\b/gi, 'estimado'],
+    [/\bbro\b/gi, 'estimado'],
+    [/\bcachai\b/gi, '¿te parece?'],
+    [/\bwe[oó]n\b/gi, 'persona'],
+  ];
+  for (const [pattern, replacement] of slangRewrites) {
+    out = out.replace(pattern, replacement);
+  }
+  out = out.replace(/\bpo\b/gi, '').replace(/\s{2,}/g, ' ');
   out = out.replace(/\n{3,}/g, '\n\n');
   return out.trim();
 }
@@ -142,6 +176,14 @@ function safeOutboundBlockedReason(params: {
   const allowlist = getEffectiveOutboundAllowlist(params.config);
   if (allowlist.includes(normalized)) return null;
   return `SAFE_OUTBOUND_BLOCKED:${policy}:NOT_IN_ALLOWLIST`;
+}
+
+function resolvePublicAppBaseUrl(): string {
+  const candidate =
+    String(process.env.HUNTER_PUBLIC_BASE_URL || '').trim() ||
+    String(process.env.PUBLIC_BASE_URL || '').trim() ||
+    'https://hunter.mangoro.app';
+  return candidate.replace(/\/+$/, '');
 }
 
 async function computeWhatsAppWindowStatus(conversationId: string): Promise<WhatsAppWindowStatus> {
@@ -467,6 +509,8 @@ async function logOutbound(params: {
   blockedReason?: string | null;
   waMessageId?: string | null;
   relatedConversationId?: string | null;
+  assetId?: string | null;
+  assetSlug?: string | null;
 }) {
   await prisma.outboundMessageLog.create({
     data: {
@@ -481,6 +525,8 @@ async function logOutbound(params: {
       textHash: params.textHash,
       blockedReason: params.blockedReason || null,
       waMessageId: params.waMessageId || null,
+      assetId: params.assetId || null,
+      assetSlug: params.assetSlug || null,
     },
   });
 }
@@ -727,6 +773,12 @@ export async function executeAgentResponse(params: {
       }
 
       const patch: Record<string, any> = { ...cmd.patch };
+      const normalizedJobRoleFromPatch = normalizeApplicationRole(patch.jobRole);
+      if (patch.jobRole && !normalizedJobRoleFromPatch) {
+        delete patch.jobRole;
+      } else if (normalizedJobRoleFromPatch) {
+        patch.jobRole = mapRoleToContactJobRole(normalizedJobRoleFromPatch);
+      }
       const locationMissing =
         !String(patch.comuna || '').trim() &&
         !String(patch.ciudad || '').trim() &&
@@ -752,6 +804,14 @@ export async function executeAgentResponse(params: {
         where: { id: cmd.contactId },
         data: patch,
       });
+      if (normalizedJobRoleFromPatch && conversationId) {
+        await prisma.conversation
+          .update({
+            where: { id: conversationId },
+            data: { applicationRole: normalizedJobRoleFromPatch, updatedAt: new Date() } as any,
+          })
+          .catch(() => {});
+      }
       results.push({ ok: true });
       continue;
     }
@@ -807,6 +867,73 @@ export async function executeAgentResponse(params: {
       continue;
     }
 
+    if (cmd.command === 'SET_APPLICATION_FLOW') {
+      const role = normalizeApplicationRole((cmd as any).applicationRole);
+      const state = normalizeApplicationState((cmd as any).applicationState);
+      if (!role && !state) {
+        results.push({ ok: false, details: { error: 'missing_application_role_or_state' } });
+        continue;
+      }
+      const updateData: Record<string, any> = { updatedAt: new Date() };
+      if (role) updateData.applicationRole = role;
+      if (state) updateData.applicationState = state;
+      const nextStage = state
+        ? await resolveStageForApplicationState({
+            workspaceId: baseConversation?.workspaceId || params.workspaceId,
+            role: role || normalizeApplicationRole((baseConversation as any)?.applicationRole),
+            state,
+          }).catch(() => null)
+        : null;
+      if (nextStage) {
+        updateData.conversationStage = nextStage;
+        updateData.stageReason = (cmd as any).reason || `STATE:${state}`;
+        updateData.stageChangedAt = new Date();
+      }
+      if (state === 'READY_FOR_OP_REVIEW' || state === 'WAITING_OP_RESULT' || state === 'OP_REJECTED') {
+        updateData.aiPaused = true;
+      }
+      if (state === 'OP_ACCEPTED') {
+        updateData.aiPaused = false;
+      }
+      await prisma.conversation.update({
+        where: { id: cmd.conversationId },
+        data: updateData as any,
+      });
+      if (role && baseConversation?.contactId) {
+        const contactJobRole = mapRoleToContactJobRole(role);
+        await prisma.contact
+          .update({
+            where: { id: baseConversation.contactId },
+            data: { jobRole: contactJobRole || role } as any,
+          })
+          .catch(() => {});
+      }
+      if (state === 'READY_FOR_OP_REVIEW') {
+        const review = await triggerReadyForOpReview({
+          app: params.app,
+          workspaceId: baseConversation?.workspaceId || params.workspaceId,
+          conversationId: cmd.conversationId,
+          reason: (cmd as any).reason || 'SET_APPLICATION_FLOW_READY_FOR_OP_REVIEW',
+          actorUserId: null,
+        }).catch((err) => ({
+          ok: false,
+          summary: '',
+          email: { configured: false, sent: false, error: err instanceof Error ? err.message : 'review_failed' },
+        }));
+        results.push({
+          ok: Boolean((review as any)?.ok),
+          details: {
+            applicationRole: role,
+            applicationState: state,
+            opReview: (review as any)?.email || null,
+          },
+        });
+        continue;
+      }
+      results.push({ ok: true, details: { applicationRole: role, applicationState: state } });
+      continue;
+    }
+
     if (cmd.command === 'ADD_CONVERSATION_NOTE') {
       await prisma.message.create({
         data: {
@@ -814,6 +941,7 @@ export async function executeAgentResponse(params: {
           direction: 'OUTBOUND',
           text: cmd.note,
           rawPayload: serializeJson({ system: true, visibility: cmd.visibility }),
+          isInternalEvent: true as any,
           timestamp: new Date(),
           read: true,
         },
@@ -1034,7 +1162,10 @@ export async function executeAgentResponse(params: {
           : null,
       });
       if (blockReason) {
-        const shouldSendTransparent = cmd.type === 'SESSION_TEXT' && shouldEmitTransparentTechnicalMessage(blockReason);
+        const shouldSendTransparent =
+          cmd.type === 'SESSION_TEXT' &&
+          String(baseKind || '').toUpperCase() !== 'CLIENT' &&
+          shouldEmitTransparentTechnicalMessage(blockReason);
         if (shouldSendTransparent) {
           await trySendTransparentTechnicalMessage({
             workspaceId: params.workspaceId,
@@ -1166,6 +1297,16 @@ export async function executeAgentResponse(params: {
     if (cmd.command === 'NOTIFY_ADMIN') {
       if (!baseConversation) {
         results.push({ ok: false, details: { error: 'missing_conversation_context' } });
+        continue;
+      }
+      const kind = String((baseConversation as any).conversationKind || 'CLIENT').toUpperCase();
+      if (kind === 'CLIENT' && !isMilestoneNotifyEvent({ eventType: (cmd as any).eventType, text: (cmd as any).text })) {
+        results.push({
+          ok: true,
+          blocked: true,
+          blockedReason: 'NOTIFY_ADMIN_NON_MILESTONE_IGNORED',
+          details: { eventType: (cmd as any).eventType || null },
+        });
         continue;
       }
 
@@ -1394,6 +1535,7 @@ export async function executeAgentResponse(params: {
               staffActor: { userId: staffActor.userId, email: staffActor.email, role: staffActor.role },
               agentRunId: params.agentRunId,
             }),
+            isInternalEvent: true as any,
             timestamp: new Date(),
             read: true,
           },
@@ -1475,6 +1617,7 @@ export async function executeAgentResponse(params: {
                 previousStage,
                 nextStage: stageSlug,
               }),
+              isInternalEvent: true as any,
               timestamp: now,
               read: true,
             },
@@ -1673,7 +1816,9 @@ export async function executeAgentResponse(params: {
             : null,
         });
         if (blockReason) {
-          const shouldSendTransparent = shouldEmitTransparentTechnicalMessage(blockReason);
+          const shouldSendTransparent =
+            String((customerConversation as any)?.conversationKind || '').toUpperCase() !== 'CLIENT' &&
+            shouldEmitTransparentTechnicalMessage(blockReason);
           if (shouldSendTransparent) {
             await trySendTransparentTechnicalMessage({
               workspaceId: baseConversation.workspaceId,
@@ -1773,6 +1918,239 @@ export async function executeAgentResponse(params: {
         }
 
         results.push({ ok: true, details: { toolName, result: { sendResult } } });
+        continue;
+      }
+
+      if (toolName === 'SEND_PDF') {
+        const conversationIdArgRaw =
+          typeof (args as any).conversationId === 'string' ? (args as any).conversationId.trim() : '';
+        const conversationIdArg = await resolveCaseConversationId({
+          workspaceId: baseConversation.workspaceId,
+          ref: conversationIdArgRaw,
+          relatedConversationId: relatedConversationIdFromRun || null,
+        });
+        const assetSlug = String((args as any).assetSlug || '').trim();
+        const caption = typeof (args as any).caption === 'string' ? String((args as any).caption).trim() : '';
+        if (!conversationIdArg || !assetSlug) {
+          results.push({
+            ok: false,
+            details: { error: 'conversationId y assetSlug requeridos (o responde a una notificación del caso)', toolName },
+          });
+          continue;
+        }
+
+        const customerConversation = await prisma.conversation.findFirst({
+          where: { id: conversationIdArg, workspaceId: baseConversation.workspaceId, archivedAt: null, isAdmin: false } as any,
+          include: { contact: true, phoneLine: true },
+        });
+        if (!customerConversation?.id) {
+          results.push({ ok: false, details: { error: 'case_not_found', conversationId: conversationIdArg, toolName } });
+          continue;
+        }
+        const customerContact = customerConversation.contact;
+
+        const asset = await prisma.workspaceAsset
+          .findFirst({
+            where: { workspaceId: baseConversation.workspaceId, slug: assetSlug, archivedAt: null },
+            select: {
+              id: true,
+              slug: true,
+              title: true,
+              audience: true,
+              mimeType: true,
+              fileName: true,
+              publicId: true,
+            },
+          })
+          .catch(() => null);
+        if (!asset?.id) {
+          results.push({ ok: false, details: { error: `asset_not_found:${assetSlug}`, toolName } });
+          continue;
+        }
+        if (String(asset.audience || '').toUpperCase() !== 'PUBLIC') {
+          results.push({ ok: false, details: { error: 'FORBIDDEN_ASSET_INTERNAL', toolName, assetSlug } });
+          continue;
+        }
+        if (String(asset.mimeType || '').toLowerCase() !== 'application/pdf') {
+          results.push({ ok: false, details: { error: 'ASSET_NOT_PDF', toolName, assetSlug } });
+          continue;
+        }
+
+        const dedupeKeyRaw =
+          typeof (args as any).dedupeKey === 'string' && String((args as any).dedupeKey).trim()
+            ? String((args as any).dedupeKey).trim()
+            : `staff_send_pdf:${params.agentRunId}:${asset.id}:${customerConversation.id}`;
+        const dedupeKey = dedupeKeyRaw.slice(0, 128);
+        const payloadHash = stableHash(`DOCUMENT:${asset.id}:${caption || ''}`);
+
+        const window = await computeWhatsAppWindowStatusStrict(customerConversation.id).catch(() => 'OUTSIDE_24H' as WhatsAppWindowStatus);
+        if (window === 'OUTSIDE_24H') {
+          await logOutbound({
+            workspaceId: baseConversation.workspaceId,
+            conversationId: customerConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'DOCUMENT',
+            templateName: null,
+            dedupeKey,
+            textHash: payloadHash,
+            blockedReason: 'OUTSIDE_24H',
+            assetId: asset.id,
+            assetSlug: asset.slug,
+          });
+          results.push({
+            ok: true,
+            blocked: true,
+            blockedReason: 'OUTSIDE_24H',
+            details: {
+              toolName,
+              assetSlug: asset.slug,
+              suggestedTemplate: 'enviorapido_postulacion_menu_v1',
+            },
+          });
+          continue;
+        }
+
+        if ((customerContact as any).noContact) {
+          await logOutbound({
+            workspaceId: baseConversation.workspaceId,
+            conversationId: customerConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'DOCUMENT',
+            templateName: null,
+            dedupeKey,
+            textHash: payloadHash,
+            blockedReason: 'NO_CONTACTAR',
+            assetId: asset.id,
+            assetSlug: asset.slug,
+          });
+          results.push({ ok: true, blocked: true, blockedReason: 'NO_CONTACTAR' });
+          continue;
+        }
+
+        const blockReason = await shouldBlockOutbound({
+          conversationId: customerConversation.id,
+          dedupeKey,
+          textHash: payloadHash,
+          currentStageChangedAt: (customerConversation as any)?.stageChangedAt
+            ? new Date((customerConversation as any).stageChangedAt)
+            : null,
+        });
+        if (blockReason) {
+          await logOutbound({
+            workspaceId: baseConversation.workspaceId,
+            conversationId: customerConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'DOCUMENT',
+            templateName: null,
+            dedupeKey,
+            textHash: payloadHash,
+            blockedReason: blockReason,
+            assetId: asset.id,
+            assetSlug: asset.slug,
+          });
+          results.push({ ok: true, blocked: true, blockedReason: blockReason, details: { toolName } });
+          continue;
+        }
+
+        const toWaId =
+          customerContact.waId || customerContact.phone || (params.transportMode === 'NULL' ? 'sandbox' : null);
+        if (!toWaId) {
+          results.push({ ok: false, details: { error: 'missing_contact_waid', toolName } });
+          continue;
+        }
+        const safetyBlock = safeOutboundBlockedReason({ toWaId, config });
+        if (safetyBlock) {
+          await logOutbound({
+            workspaceId: baseConversation.workspaceId,
+            conversationId: customerConversation.id,
+            agentRunId: params.agentRunId,
+            type: 'DOCUMENT',
+            templateName: null,
+            dedupeKey,
+            textHash: payloadHash,
+            blockedReason: safetyBlock,
+            assetId: asset.id,
+            assetSlug: asset.slug,
+          });
+          results.push({ ok: true, blocked: true, blockedReason: safetyBlock });
+          continue;
+        }
+
+        const publicPath = buildWorkspaceAssetPublicUrl({ publicId: asset.publicId, fileName: asset.fileName });
+        const documentUrl = `${resolvePublicAppBaseUrl()}${publicPath}`;
+        let sendResult: SendResult = { success: true, messageId: `null-${Date.now()}` };
+        if (params.transportMode === 'REAL') {
+          const phoneNumberId = customerConversation.phoneLine?.waPhoneNumberId || null;
+          sendResult = await sendWhatsAppDocumentByLink(
+            toWaId,
+            {
+              url: documentUrl,
+              filename: asset.fileName,
+              caption: caption || null,
+            },
+            { phoneNumberId },
+          );
+        }
+
+        await prisma.message.create({
+          data: {
+            conversationId: customerConversation.id,
+            direction: 'OUTBOUND',
+            text: caption || `[PDF] ${asset.title}`,
+            mediaType: 'document',
+            mediaMime: 'application/pdf',
+            mediaPath: documentUrl,
+            rawPayload: serializeJson({
+              system: true,
+              toolName,
+              staffActor: { userId: staffActor.userId, email: staffActor.email, role: staffActor.role },
+              agentRunId: params.agentRunId,
+              sendResult,
+              assetId: asset.id,
+              assetSlug: asset.slug,
+              assetUrl: documentUrl,
+            }),
+            timestamp: new Date(),
+            read: true,
+          },
+        });
+        await prisma.conversation.update({ where: { id: customerConversation.id }, data: { updatedAt: new Date() } }).catch(() => {});
+
+        await logOutbound({
+          workspaceId: baseConversation.workspaceId,
+          conversationId: customerConversation.id,
+          agentRunId: params.agentRunId,
+          type: 'DOCUMENT',
+          templateName: null,
+          dedupeKey,
+          textHash: payloadHash,
+          blockedReason: sendResult.success ? null : `SEND_FAILED:${sendResult.error || 'unknown'}`,
+          waMessageId: sendResult.messageId || null,
+          assetId: asset.id,
+          assetSlug: asset.slug,
+        });
+
+        if (params.transportMode === 'REAL' && customerConversation.phoneLineId) {
+          await prisma.phoneLine
+            .update({
+              where: { id: customerConversation.phoneLineId },
+              data: { lastOutboundAt: new Date() },
+            })
+            .catch(() => {});
+        }
+
+        results.push({
+          ok: true,
+          details: {
+            toolName,
+            result: {
+              sendResult,
+              assetSlug: asset.slug,
+              assetId: asset.id,
+              documentUrl,
+            },
+          },
+        });
         continue;
       }
 

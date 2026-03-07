@@ -364,3 +364,72 @@ export async function sendWhatsAppAttachment(
     return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
   }
 }
+
+export async function sendWhatsAppDocumentByLink(
+  toWaId: string,
+  params: {
+    url: string;
+    filename?: string | null;
+    caption?: string | null;
+  },
+  options?: { phoneNumberId?: string | null; enforceSafeMode?: boolean }
+): Promise<SendResult> {
+  const config = await getSystemConfig();
+
+  if (options?.enforceSafeMode !== false) {
+    const safe = checkSafeOutbound(toWaId, config);
+    if (!safe.allowed) {
+      const policy = getOutboundPolicy(config);
+      return {
+        success: false,
+        error: `SAFE_OUTBOUND_BLOCKED:${policy}:${safe.reason || 'BLOCKED'}`,
+      };
+    }
+  }
+
+  const phoneNumberId = options?.phoneNumberId || config.whatsappPhoneId;
+  if (!config?.whatsappToken || !phoneNumberId) {
+    return { success: false, error: 'WhatsApp Cloud API no está configurado (phone_number_id / token faltan)' };
+  }
+
+  const url = String(params?.url || '').trim();
+  if (!/^https?:\/\//i.test(url)) return { success: false, error: 'URL de documento inválida' };
+
+  const baseUrl = (config.whatsappBaseUrl || DEFAULT_WHATSAPP_BASE_URL).replace(/\/$/, '');
+  const apiUrl = `${baseUrl}/${phoneNumberId}/messages`;
+  const filename = String(params?.filename || '').trim();
+  const caption = normalizeEscapedWhitespace(String(params?.caption || '').trim());
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    to: toWaId,
+    type: 'document',
+    document: {
+      link: url,
+    },
+  };
+  if (filename) body.document.filename = filename;
+  if (caption) body.document.caption = caption;
+
+  try {
+    const res = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.whatsappToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const errorText = await res.text();
+      return { success: false, error: errorText || `HTTP ${res.status}` };
+    }
+    const data = (await res.json()) as any;
+    return {
+      success: true,
+      messageId: data?.messages?.[0]?.id || undefined,
+    };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+  }
+}

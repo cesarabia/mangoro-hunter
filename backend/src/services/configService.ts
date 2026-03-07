@@ -9,7 +9,8 @@ export const DEFAULT_WHATSAPP_PHONE_ID = '1511895116748404';
 export const DEFAULT_TEMPLATE_INTERVIEW_INVITE = 'entrevista_confirmacion_1';
 export const DEFAULT_TEMPLATE_GENERAL_FOLLOWUP = 'postulacion_completar_1';
 export const DEFAULT_TEMPLATE_LANGUAGE_CODE = 'es_CL';
-export const DEFAULT_AI_MODEL = 'gpt-4.1-mini';
+export const DEFAULT_AI_MODEL = 'gpt-4o-mini';
+export const DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS = 320;
 export const DEFAULT_JOB_TITLE = 'Cargo a definir';
 export const DEFAULT_RECRUIT_JOB_SHEET = `
 Cargo: [Define el cargo]
@@ -35,7 +36,7 @@ export const DEFAULT_INTERVIEW_LOCATIONS = JSON.stringify([DEFAULT_INTERVIEW_LOC
 export const DEFAULT_TEST_PHONE_NUMBER = null;
 export const DEFAULT_ADMIN_AI_PROMPT =
   'Eres Hunter Admin, un asistente en español para managers de reclutamiento. Da respuestas claras y accionables, usa herramientas cuando te lo pidan.';
-export const DEFAULT_ADMIN_AI_MODEL = 'gpt-4.1-mini';
+export const DEFAULT_ADMIN_AI_MODEL = 'gpt-4o-mini';
 export const DEFAULT_ADMIN_AI_ADDENDUM = null;
 const LEGACY_DEFAULT_INTERVIEW_AI_PROMPT =
   'Eres Hunter Entrevistador. Haz preguntas de entrevista cortas y profesionales, enfocadas en validar experiencia, motivaciones y disponibilidad.';
@@ -56,7 +57,7 @@ Reglas:
 - Si ya quedó un horario confirmado, no lo confirmes repetidamente: agradece y explica el siguiente paso en una sola respuesta.
 - Haz una sola pregunta a la vez.
 `.trim();
-export const DEFAULT_INTERVIEW_AI_MODEL = 'gpt-4.1-mini';
+export const DEFAULT_INTERVIEW_AI_MODEL = 'gpt-4o-mini';
 
 export const DEFAULT_SALES_AI_PROMPT = `
 Eres Hunter Ventas, un asistente en español para vendedores.
@@ -273,6 +274,8 @@ export function normalizeModelId(value?: string | null): string | null {
   if (!trimmed) return null;
   const lower = trimmed.toLowerCase().replace(/\s+/g, '-');
   const aliases: Record<string, string> = {
+    "gpt-4o-mini": "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18": "gpt-4o-mini",
     "gpt-5-mini": "gpt-5-chat-latest",
     "gpt5-mini": "gpt-5-chat-latest",
     "gpt-5-mini-2025-08-07": "gpt-5-chat-latest",
@@ -282,9 +285,9 @@ export function normalizeModelId(value?: string | null): string | null {
     "gpt-4.1-mini-2024-12-17": "gpt-4.1-mini",
   };
   const mapped = aliases[lower] || lower;
-  const allowed = new Set(["gpt-4.1-mini", "gpt-5-chat-latest"]);
+  const allowed = new Set(["gpt-4o-mini", "gpt-4.1-mini", "gpt-5-chat-latest"]);
   if (allowed.has(mapped)) return mapped;
-  return "gpt-4.1-mini";
+  return "gpt-4o-mini";
 }
 
 function normalizeModelOverride(value?: string | null): string | null {
@@ -670,6 +673,7 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
         interviewAiModelAlias: DEFAULT_INTERVIEW_AI_MODEL,
         aiModel: DEFAULT_AI_MODEL,
         aiModelAlias: DEFAULT_AI_MODEL,
+        candidateMaxOutputTokens: DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS,
         adminAiModel: DEFAULT_ADMIN_AI_MODEL,
         adminAiModelAlias: DEFAULT_ADMIN_AI_MODEL,
         recruitJobSheet: DEFAULT_RECRUIT_JOB_SHEET,
@@ -741,6 +745,9 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.aiModel) {
     updates.aiModel = DEFAULT_AI_MODEL;
+  }
+  if (typeof (existing as any).candidateMaxOutputTokens === 'undefined' || !(existing as any).candidateMaxOutputTokens) {
+    updates.candidateMaxOutputTokens = DEFAULT_CANDIDATE_MAX_OUTPUT_TOKENS;
   }
   if (typeof (existing as any).adminAiAddendum === 'undefined') {
     updates.adminAiAddendum = DEFAULT_ADMIN_AI_ADDENDUM;

@@ -73,7 +73,7 @@ export async function createChatCompletionWithModelFallback(
   }
 ): Promise<{ completion: any; modelRequested: string; modelResolved: string; fallbackUsed: boolean }> {
   const chain = getUniqueModelFallbackChain(models);
-  const first = chain[0] || 'gpt-4.1-mini';
+  const first = chain[0] || 'gpt-4o-mini';
   const perRequestTimeoutMs = Number.isFinite(options?.perRequestTimeoutMs as number)
     ? Math.max(1_000, Math.floor(options?.perRequestTimeoutMs as number))
     : 9_000;

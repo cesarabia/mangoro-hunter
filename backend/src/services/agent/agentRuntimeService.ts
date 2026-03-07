@@ -10,7 +10,13 @@ import { repairAgentResponseBeforeValidation } from './agentResponseRepair';
 import { normalizeWhatsAppId } from '../../utils/whatsapp';
 import { createChatCompletionWithModelFallback } from '../openAiChatCompletionService';
 import { resolveModelChain } from '../modelResolutionService';
-import { resolveWorkspaceProgramForKind } from '../programRoutingService';
+import { buildLLMContext } from './llmContextBuilderService';
+import {
+  buildPostulacionBusinessRulesPrompt,
+  extractPostulacionDataFromInbound,
+  normalizeApplicationRole,
+  persistPostulacionExtraction,
+} from '../postulacionFlowService';
 
 type WhatsAppWindowStatus = 'IN_24H' | 'OUTSIDE_24H';
 
@@ -30,6 +36,7 @@ function buildSystemPrompt(params: {
   programPrompt: string;
   windowStatus: WhatsAppWindowStatus;
 }): string {
+  const postulacionRules = buildPostulacionBusinessRulesPrompt();
   const policy = `
 Eres un agente de Hunter CRM. NO respondas con texto suelto.
 Debes responder SOLO con un JSON válido que cumpla el schema:
@@ -45,6 +52,7 @@ Commands permitidos (campo "command" EXACTO):
 - SET_CONVERSATION_STATUS
 - SET_CONVERSATION_STAGE
 - SET_CONVERSATION_PROGRAM
+- SET_APPLICATION_FLOW
 - ADD_CONVERSATION_NOTE
 - SET_NO_CONTACTAR
 - SCHEDULE_INTERVIEW
@@ -61,14 +69,23 @@ Reglas de seguridad y guardrails:
 - Para RESPONDER al humano debes usar SEND_MESSAGE. "notes" es SOLO para debug interno (no es un mensaje).
 - Nunca sobrescribas candidateName si existe candidateNameManual.
 - Evita loops: no repitas la misma pregunta 2+ veces; si necesitas confirmar, hazlo en lenguaje natural (sin menú rígido).
-- Si event.type == "AI_SUGGEST": NO cambies estado/perfil (no UPSERT_PROFILE_FIELDS ni SET_CONVERSATION_*). Devuelve SOLO 1 SEND_MESSAGE con el texto sugerido. Si existe event.draftText, mejora ese borrador manteniendo el significado.
+- Si event.type == "AI_SUGGEST": NO cambies estado/perfil (no UPSERT_PROFILE_FIELDS, no SET_CONVERSATION_*, no SET_APPLICATION_FLOW). Devuelve SOLO 1 SEND_MESSAGE con el texto sugerido. Si existe event.draftText, mejora ese borrador manteniendo el significado.
 - Si event.type == "AI_SUGGEST": redacta SIEMPRE como agente/operador que responde al contacto. Nunca hables en primera persona como candidato/postulante.
 - El Program actual (incluido en el prompt) es la fuente única de verdad. Si el historial de la conversación parece de otro Program, igual debes responder siguiendo el Program actual.
-- Estilo de conversación: humano, cercano, claro y breve. Entiende mensajes fragmentados y modismos; no exijas formatos tipo "Responde así: ...".
-- Evita tono robótico/formal excesivo. Responde como una persona operativa real.
+- Estilo de conversación: humano, claro, profesional y amable. Entiende mensajes fragmentados; no exijas formatos tipo "Responde así: ...".
+- NO uses modismos/jerga ni slang (ej: "wena", "me tinca", "bacán", "compa", "bro", "po", "cachai"). Mantén español profesional.
+- No imites modismos del candidato aunque el candidato los use.
 - Acepta respuestas libres de ubicación/horario (ej: "Pudahuel", "mañana en la tarde") y continúa pidiendo solo el dato faltante.
 - No uses menús numerados (1/2/3) salvo que el usuario lo pida explícitamente o sea estrictamente necesario para desambiguar.
 - Aunque el Program incluya formatos rígidos, prioriza lenguaje natural y acepta texto libre del usuario.
+- Flujo guiado Envío Rápido (solo CLIENT):
+  - Usa metadata de conversación applicationRole/applicationState.
+  - Si applicationRole está vacío: pregunta rol (Peoneta, Conductor empresa, Conductor con vehículo) y comuna en lenguaje natural, y usa SET_APPLICATION_FLOW.
+  - Avanza con estados: CHOOSE_ROLE -> COLLECT_MIN_INFO -> COLLECT_REQUIREMENTS -> REQUEST_CV (solo conductores) -> CONFIRM_CONDITIONS -> REQUEST_OP_DOCS -> READY_FOR_OP_REVIEW.
+  - Nunca inventes pagos ni condiciones fuera de la guía.
+  - No envíes NOTIFY_ADMIN en cada mensaje. Solo en hitos (CV/documentos/NEEDS_HUMAN o listo para revisión).
+
+${postulacionRules}
 `.trim();
 
   return `${policy}\n\nEstado ventana WhatsApp: ${params.windowStatus}\n\n${params.programPrompt}`.trim();
@@ -244,6 +261,32 @@ function normalizeComparableText(value: string | null | undefined): string {
     .trim();
 }
 
+const PROFESSIONAL_SLANG_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\bwena(s)?\b/gi, 'hola'],
+  [/\bme\s+tinca\b/gi, 'me interesa'],
+  [/\btinca\b/gi, 'interesa'],
+  [/\bbac[aá]n\b/gi, 'excelente'],
+  [/\bcompa\b/gi, 'equipo'],
+  [/\bbro\b/gi, 'equipo'],
+  [/\bwe[oó]n\b/gi, 'persona'],
+  [/\bpo\b/gi, ''],
+  [/\bcachai\b/gi, '¿te parece?'],
+];
+
+function containsProfessionalSlang(value: string): boolean {
+  const text = String(value || '');
+  return PROFESSIONAL_SLANG_REPLACEMENTS.some(([pattern]) => pattern.test(text));
+}
+
+function rewriteProfessionalSpanish(value: string): string {
+  let text = String(value || '').trim();
+  if (!text) return text;
+  for (const [pattern, replacement] of PROFESSIONAL_SLANG_REPLACEMENTS) {
+    text = text.replace(pattern, replacement);
+  }
+  return text.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:!?])/g, '$1').trim();
+}
+
 function canonicalizeEnum(value: any): any {
   if (typeof value !== 'string') return value;
   return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
@@ -341,6 +384,77 @@ function pickFirstString(obj: any, keys: string[]): string | null {
   return null;
 }
 
+function extractFirstSendMessageText(obj: any): string | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const commands = Array.isArray((obj as any).commands) ? (obj as any).commands : [];
+  for (const cmd of commands) {
+    if (!cmd || typeof cmd !== 'object') continue;
+    if (String((cmd as any).command || '').toUpperCase() !== 'SEND_MESSAGE') continue;
+    const type = String((cmd as any).type || '').toUpperCase();
+    if (type !== 'SESSION_TEXT') continue;
+    const text = String((cmd as any).text || '').trim();
+    if (text) return text;
+  }
+  return null;
+}
+
+function extractNaturalReplyText(raw: string, parsed: any, extraCandidates?: Array<string | null | undefined>): string | null {
+  const fromCommand = extractFirstSendMessageText(parsed);
+  if (fromCommand) return fromCommand;
+
+  const fromObject = pickFirstString(parsed, [
+    'reply',
+    'response',
+    'message',
+    'text',
+    'output',
+    'final_answer',
+    'assistant_reply',
+    'assistantMessage',
+    'answer',
+    'notes',
+  ]);
+  if (fromObject) return fromObject;
+
+  for (const candidate of extraCandidates || []) {
+    const text = String(candidate || '').trim();
+    if (text) return text;
+  }
+
+  const rawTrimmed = String(raw || '').trim();
+  if (!rawTrimmed) return null;
+  if (/^\s*```/.test(rawTrimmed)) return null;
+  if (/^\s*[\[{]/.test(rawTrimmed)) return null;
+  return rawTrimmed;
+}
+
+function buildReplyOnlyResponse(params: {
+  conversationId: string;
+  eventType: string;
+  inboundMessageId?: string | null;
+  text: string;
+  reason: string;
+}): AgentResponse {
+  const text = String(params.text || '').trim();
+  const reason = String(params.reason || 'RECOVERED_TEXT').toUpperCase();
+  const seed = `${params.conversationId}:${params.eventType}:${params.inboundMessageId || ''}:RECOVERY:${reason}:${text}`;
+  return {
+    agent: 'reply_text_recovery',
+    version: 1,
+    commands: [
+      {
+        command: 'SEND_MESSAGE',
+        conversationId: params.conversationId,
+        channel: 'WHATSAPP',
+        type: 'SESSION_TEXT',
+        text,
+        dedupeKey: `recovery:${stableHash(seed).slice(0, 16)}`,
+      } as any,
+    ],
+    notes: `recovery:${reason}`,
+  };
+}
+
 function coerceNaturalReplyToCommand(value: any, raw: string): any {
   const hasCommands = Boolean(value && typeof value === 'object' && Array.isArray((value as any).commands));
   if (hasCommands) return value;
@@ -407,6 +521,7 @@ function applyCommandDefaults(
       'SET_CONVERSATION_STATUS',
       'SET_CONVERSATION_STAGE',
       'SET_CONVERSATION_PROGRAM',
+      'SET_APPLICATION_FLOW',
       'ADD_CONVERSATION_NOTE',
       'SCHEDULE_INTERVIEW',
       'SEND_MESSAGE',
@@ -476,6 +591,29 @@ export async function runAgent(event: AgentEvent): Promise<{
   });
   if (!conversation) {
     throw new Error('Conversation no encontrada');
+  }
+  if (String((conversation as any).conversationKind || 'CLIENT').toUpperCase() === 'CLIENT') {
+    const currentRole = normalizeApplicationRole((conversation as any).applicationRole);
+    const contactRole = normalizeApplicationRole((conversation.contact as any).jobRole);
+    const currentState = String((conversation as any).applicationState || '').trim();
+    const updates: Record<string, any> = {};
+    if (!currentRole && contactRole) updates.applicationRole = contactRole;
+    if (!currentState) {
+      updates.applicationState = !currentRole && !contactRole ? 'CHOOSE_ROLE' : 'COLLECT_MIN_INFO';
+    }
+    if (Object.keys(updates).length > 0) {
+      const updated = await prisma.conversation
+        .update({
+          where: { id: conversation.id },
+          data: updates as any,
+          select: { applicationRole: true as any, applicationState: true as any },
+        })
+        .catch(() => null);
+      if (updated) {
+        (conversation as any).applicationRole = (updated as any).applicationRole;
+        (conversation as any).applicationState = (updated as any).applicationState;
+      }
+    }
   }
 
   const replyCtx = event.inboundMessageId
@@ -569,89 +707,14 @@ export async function runAgent(event: AgentEvent): Promise<{
     select: { createdAt: true, textHash: true, dedupeKey: true },
   });
 
-  const lastMessages = await prisma.message.findMany({
-    where: { conversationId: event.conversationId },
-    orderBy: { timestamp: 'desc' },
-    take: event.eventType === 'AI_SUGGEST' ? 120 : 25,
-    select: {
-      id: true,
-      direction: true,
-      text: true,
-      transcriptText: true,
-      mediaType: true,
-      timestamp: true,
-      waMessageId: true,
-    },
-  });
-
-  const contextJson = {
+  const llmContext = await buildLLMContext({
     workspaceId: event.workspaceId,
-    event: {
-      type: event.eventType,
-      inboundMessageId: event.inboundMessageId || null,
-      draftText: event.draftText || null,
-      replyToWaMessageId,
-      relatedConversationId,
-    },
-    conversation: {
-      id: conversation.id,
-      status: conversation.status,
-      stage: conversation.conversationStage,
-      kind: (conversation as any).conversationKind || 'CLIENT',
-      stageChangedAt: (conversation as any).stageChangedAt ? new Date((conversation as any).stageChangedAt).toISOString() : null,
-      programId: conversation.programId,
-      phoneLineId: conversation.phoneLineId,
-      isAdmin: conversation.isAdmin,
-    },
-    staff: staffContext,
-    relatedConversation: relatedConversation
-      ? {
-          id: relatedConversation.id,
-          status: relatedConversation.status,
-          stage: relatedConversation.conversationStage,
-          assignedToId: relatedConversation.assignedToId,
-          contact: {
-            id: relatedConversation.contactId,
-            displayName: relatedConversation.contact.displayName || relatedConversation.contact.name,
-            candidateName: (relatedConversation.contact as any).candidateName,
-            candidateNameManual: (relatedConversation.contact as any).candidateNameManual,
-            phone: relatedConversation.contact.phone,
-            waId: relatedConversation.contact.waId,
-            comuna: (relatedConversation.contact as any).comuna,
-            ciudad: (relatedConversation.contact as any).ciudad,
-            region: (relatedConversation.contact as any).region,
-            availabilityText: (relatedConversation.contact as any).availabilityText,
-            flags: { NO_CONTACTAR: Boolean((relatedConversation.contact as any).noContact) },
-          },
-          lastMessages: (relatedConversation.messages || [])
-            .slice()
-            .reverse()
-            .map((m: any) => ({
-              id: m.id,
-              direction: m.direction,
-              text: m.transcriptText || m.text,
-              mediaType: m.mediaType || null,
-              timestamp: m.timestamp.toISOString(),
-            })),
-        }
-      : null,
-    contact: {
-      id: conversation.contactId,
-      waId: conversation.contact.waId,
-      phone: conversation.contact.phone,
-      displayName: conversation.contact.displayName || conversation.contact.name,
-      candidateName: conversation.contact.candidateName,
-      candidateNameManual: (conversation.contact as any).candidateNameManual,
-      email: (conversation.contact as any).email,
-      rut: (conversation.contact as any).rut,
-      comuna: (conversation.contact as any).comuna,
-      ciudad: (conversation.contact as any).ciudad,
-      region: (conversation.contact as any).region,
-      experienceYears: (conversation.contact as any).experienceYears,
-      terrainExperience: (conversation.contact as any).terrainExperience,
-      availabilityText: (conversation.contact as any).availabilityText,
-      flags: { NO_CONTACTAR: conversation.contact.noContact },
-    },
+    conversationId: conversation.id,
+    mode: event.eventType === 'AI_SUGGEST' ? 'SUGGEST' : 'INBOUND',
+    eventType: event.eventType,
+    inboundMessageId: event.inboundMessageId || null,
+    draftText: event.draftText || null,
+    windowStatus,
     askedFieldsHistory,
     lastOutbound: lastOutbound
       ? {
@@ -660,166 +723,38 @@ export async function runAgent(event: AgentEvent): Promise<{
           lastDedupeKey: lastOutbound.dedupeKey,
         }
       : null,
-    whatsappWindowStatus: windowStatus,
-    lastMessages: lastMessages
-      .slice()
-      .reverse()
-      .map((m) => ({
-        id: m.id,
-        waMessageId: m.waMessageId,
-        direction: m.direction,
-        text: m.transcriptText || m.text,
-        mediaType: m.mediaType || null,
-        timestamp: m.timestamp.toISOString(),
-      })),
-    config: {
-      botAutoReply: config.botAutoReply,
-    },
-  };
+    relatedConversation,
+    replyToWaMessageId,
+    staffContext,
+    botAutoReply: Boolean(config.botAutoReply),
+  });
+  const contextJson = llmContext.contextJson;
 
-  const programContext = await (async () => {
-    const truncate = (text: string, maxChars: number) => {
-      const value = String(text || '').trim();
-      if (!value) return '';
-      if (value.length <= maxChars) return value;
-      return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
-    };
-
-    const loadProgram = async (programId: string) =>
-      prisma.program.findFirst({
-        where: { id: programId, workspaceId: event.workspaceId, archivedAt: null },
-        select: {
-          id: true,
-          name: true,
-          slug: true,
-          description: true,
-          goal: true as any,
-          audience: true as any,
-          tone: true as any,
-          language: true as any,
-          agentSystemPrompt: true,
-        },
-      });
-
-    let program = conversation.programId ? await loadProgram(conversation.programId) : null;
-    if (!program && String((conversation as any).conversationKind || '').toUpperCase() === 'STAFF') {
-      const staffProgramId = await resolveWorkspaceProgramForKind({
+  if (String((conversation as any).conversationKind || 'CLIENT').toUpperCase() === 'CLIENT') {
+    const latestInboundText = String(llmContext.latestInboundText || '').trim();
+    const shouldExtract =
+      latestInboundText.length > 0 &&
+      String(event.eventType || '').toUpperCase() === 'INBOUND_MESSAGE';
+    if (shouldExtract) {
+      const extraction = await extractPostulacionDataFromInbound({
         workspaceId: event.workspaceId,
-        kind: 'STAFF',
-        phoneLineId: conversation.phoneLineId,
-      })
-        .then((r) => r.programId)
-        .catch(() => null);
-      if (staffProgramId) program = await loadProgram(staffProgramId).catch(() => null);
-    }
-    if (!program && String((conversation as any).conversationKind || '').toUpperCase() === 'PARTNER') {
-      const partnerProgramId = await resolveWorkspaceProgramForKind({
-        workspaceId: event.workspaceId,
-        kind: 'PARTNER',
-        phoneLineId: conversation.phoneLineId,
-      })
-        .then((r) => r.programId)
-        .catch(() => null);
-      if (partnerProgramId) program = await loadProgram(partnerProgramId).catch(() => null);
-    }
-    if (!program && conversation.phoneLineId) {
-      const line = await prisma.phoneLine
-        .findFirst({
-          where: { id: conversation.phoneLineId, workspaceId: event.workspaceId, archivedAt: null },
-          select: { defaultProgramId: true },
-        })
-        .catch(() => null);
-      if (line?.defaultProgramId) {
-        program = await loadProgram(line.defaultProgramId).catch(() => null);
+        conversationId: conversation.id,
+        inboundText: latestInboundText,
+        applicationRole: (conversation as any).applicationRole || null,
+        applicationState: (conversation as any).applicationState || null,
+      }).catch(() => null);
+      if (extraction?.data) {
+        await persistPostulacionExtraction({
+          workspaceId: event.workspaceId,
+          conversationId: conversation.id,
+          extraction: extraction.data,
+          source: 'INBOUND',
+          modelRequested: extraction.modelRequested,
+          modelResolved: extraction.modelResolved,
+        }).catch(() => {});
       }
     }
-
-    if (program?.agentSystemPrompt) {
-      const [assets, perms] = await Promise.all([
-        prisma.programKnowledgeAsset
-          .findMany({
-            where: { workspaceId: event.workspaceId, programId: program.id, archivedAt: null },
-            orderBy: { createdAt: 'desc' },
-            take: 20,
-            select: { type: true, title: true, url: true, contentText: true },
-          })
-          .catch(() => []),
-        prisma.programConnectorPermission
-          .findMany({
-            where: { workspaceId: event.workspaceId, programId: program.id, archivedAt: null },
-            include: { connector: { select: { name: true, slug: true, actionsJson: true } } },
-            take: 30,
-          })
-          .catch(() => []),
-      ]);
-
-      const knowledgeLines: string[] = [];
-      let knowledgeChars = 0;
-      for (const a of assets) {
-        const header = `- [${a.type}] ${a.title}${a.url ? ` (${a.url})` : ''}`.trim();
-        const body = a.contentText ? `\n${truncate(a.contentText, 2000)}` : '';
-        const chunk = `${header}${body}`.trim();
-        if (!chunk) continue;
-        if (knowledgeChars + chunk.length > 9000) break;
-        knowledgeLines.push(chunk);
-        knowledgeChars += chunk.length;
-      }
-
-      const toolsLines: string[] = [];
-      for (const p of perms as any[]) {
-        const connector = p.connector;
-        if (!connector) continue;
-        const available = (() => {
-          try {
-            const parsed = JSON.parse(String(connector.actionsJson || ''));
-            return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
-          } catch {
-            return [];
-          }
-        })();
-        const allowed = (() => {
-          try {
-            const parsed = JSON.parse(String((p as any).allowedActionsJson || ''));
-            return Array.isArray(parsed) ? parsed.map((v) => String(v)) : [];
-          } catch {
-            return [];
-          }
-        })();
-        const availableLabel = available.length > 0 ? available.join(', ') : '(sin acciones declaradas)';
-        const allowedLabel = allowed.length > 0 ? allowed.join(', ') : '(todos)';
-        toolsLines.push(`- ${connector.name} (${connector.slug})\n  acciones disponibles: ${availableLabel}\n  acciones permitidas: ${allowedLabel}`);
-      }
-
-      const profileLines: string[] = [];
-      if ((program as any).language) profileLines.push(`Idioma: ${(program as any).language}`);
-      if ((program as any).goal) profileLines.push(`Objetivo: ${(program as any).goal}`);
-      if ((program as any).audience) profileLines.push(`Público: ${(program as any).audience}`);
-      if ((program as any).tone) profileLines.push(`Tono: ${(program as any).tone}`);
-      if (program.description) profileLines.push(`Descripción: ${program.description}`);
-
-      const blocks: string[] = [
-        `Program: ${program.name} (${program.slug})`,
-        profileLines.length > 0 ? profileLines.join('\n') : '',
-        toolsLines.length > 0 ? `Tools permitidos:\n${toolsLines.join('\n')}` : '',
-        knowledgeLines.length > 0 ? `Knowledge Pack:\n${knowledgeLines.join('\n\n')}` : '',
-        `Instrucciones del agente:\n${program.agentSystemPrompt}`,
-      ].filter(Boolean);
-
-      return {
-        promptBase: blocks.join('\n\n').trim(),
-        resolvedProgramId: String(program.id || '').trim() || null,
-        resolvedProgramSlug: String(program.slug || '').trim() || null,
-      };
-    }
-
-    return {
-      promptBase:
-        config.aiPrompt?.trim() ||
-        'Programa default: coordina reclutamiento/entrevista/ventas según contexto. Responde corto y humano.',
-      resolvedProgramId: null,
-      resolvedProgramSlug: null,
-    };
-  })();
+  }
 
   const kind = String((conversation as any).conversationKind || '').toUpperCase();
   const isStaffConversation = kind === 'STAFF';
@@ -839,7 +774,7 @@ export async function runAgent(event: AgentEvent): Promise<{
         `- Nunca respondas "no tengo info" sin intentar LIST_CASES o GET_CASE_SUMMARY.`,
         `- Regla: no alucines. Si falta información del caso, usa GET_CASE_SUMMARY o pide una aclaración breve.`,
         '',
-        programContext.promptBase,
+        llmContext.programPrompt,
       ]
         .filter(Boolean)
         .join('\n')
@@ -851,25 +786,25 @@ export async function runAgent(event: AgentEvent): Promise<{
           `- Si event.relatedConversationId existe, este mensaje es respuesta a una notificación sobre un caso.`,
           `- No uses RUN_TOOL (no está disponible para partners). Si falta información, pregunta 1 cosa clara o pide que el staff te confirme.`,
           '',
-          programContext.promptBase,
+          llmContext.programPrompt,
         ]
           .filter(Boolean)
           .join('\n')
           .trim()
-      : programContext.promptBase;
+      : llmContext.programPrompt;
 
   const runLog = await prisma.agentRunLog.create({
     data: {
       workspaceId: event.workspaceId,
       conversationId: conversation.id,
-      programId: programContext.resolvedProgramId || conversation.programId,
+      programId: llmContext.resolvedProgramId || conversation.programId,
       phoneLineId: conversation.phoneLineId,
       eventType: event.eventType,
       status: 'RUNNING',
       inputContextJson: serializeJson(contextJson),
     },
   });
-  const resolvedProgramIdForUsage = programContext.resolvedProgramId || conversation.programId || null;
+  const resolvedProgramIdForUsage = llmContext.resolvedProgramId || conversation.programId || null;
 
   const client = new OpenAI({ apiKey });
   const resolvedModels = resolveModelChain({
@@ -893,21 +828,20 @@ export async function runAgent(event: AgentEvent): Promise<{
   let maxToolLatencyMs = 0;
   let responseRetryCount = 0;
   let fallbackReason: string | null = null;
+  const candidateMaxOutputTokens = (() => {
+    const raw = Number((config as any).candidateMaxOutputTokens);
+    if (!Number.isFinite(raw)) return 320;
+    return Math.max(80, Math.min(700, Math.floor(raw)));
+  })();
+  const completionMaxTokens = (() => {
+    if (event.eventType === 'AI_SUGGEST') return Math.min(candidateMaxOutputTokens, 420);
+    const kindUpper = String((conversation as any).conversationKind || '').toUpperCase();
+    if (kindUpper === 'CLIENT') return candidateMaxOutputTokens;
+    return 900;
+  })();
 
-  const latestInboundText = (() => {
-    const inbound = (lastMessages || [])
-      .slice()
-      .reverse()
-      .find((m) => String((m as any).direction || '').toUpperCase() === 'INBOUND');
-    return String((inbound as any)?.transcriptText || (inbound as any)?.text || event.draftText || '').trim();
-  })();
-  const lastOutboundText = (() => {
-    const outbound = (lastMessages || [])
-      .slice()
-      .reverse()
-      .find((m) => String((m as any).direction || '').toUpperCase() === 'OUTBOUND');
-    return normalizeComparableText(String((outbound as any)?.transcriptText || (outbound as any)?.text || ''));
-  })();
+  const latestInboundText = llmContext.latestInboundText;
+  const lastOutboundText = llmContext.lastOutboundComparable;
   const tools = toolDefinitions({
     conversationKind: String((conversation as any).conversationKind || '').toUpperCase(),
     inboundText: latestInboundText,
@@ -936,11 +870,34 @@ export async function runAgent(event: AgentEvent): Promise<{
     if (convKind === 'STAFF') {
       return `Estoy con un problema técnico para completar eso ahora (ref ${ref}, ${reason}). ¿Lo intentamos de nuevo en unos segundos?`;
     }
-    return `Estoy con un problema técnico para responderte ahora (ref ${ref}, ${reason}). ¿Me repites tu último mensaje en unos segundos?`;
+    return `Estoy con un problema técnico para responderte ahora (ref ${ref}, ${reason}).`;
   };
 
   const buildFallbackResponse = (reason: string): AgentResponse => {
-    const fallbackText = buildTechnicalFallbackText(reason);
+    const reasonLabel = String(reason || 'UNKNOWN').toUpperCase();
+    const ref = String(runLog.id || '').slice(-8) || 'n/a';
+    const convKind = String((conversation as any)?.conversationKind || 'CLIENT').toUpperCase();
+    if (event.eventType === 'INBOUND_MESSAGE' && convKind === 'CLIENT') {
+      const outside24hHint =
+        windowStatus === 'OUTSIDE_24H'
+          ? ' Sugerencia: enviar plantilla enviorapido_postulacion_menu_v1.'
+          : '';
+      return {
+        agent: 'fallback_internal_note',
+        version: 1,
+        commands: [
+          {
+            command: 'ADD_CONVERSATION_NOTE',
+            conversationId: conversation.id,
+            visibility: 'SYSTEM',
+            note: `RUN_AGENT error interno (${reasonLabel}, ref ${ref}). No se envió mensaje automático al candidato.${outside24hHint}`,
+          } as any,
+        ],
+        notes: `fallback_internal_only:${reasonLabel}`,
+      };
+    }
+
+    const fallbackText = buildTechnicalFallbackText(reasonLabel);
     const dedupeSeed = `${conversation.id}:${event.eventType}:${event.inboundMessageId || ''}:FALLBACK:${fallbackText}`;
     return {
       agent: 'fallback',
@@ -1020,7 +977,7 @@ export async function runAgent(event: AgentEvent): Promise<{
           tools: tools as any,
           tool_choice: 'auto',
           temperature: 0.2,
-          max_tokens: 900,
+          max_tokens: completionMaxTokens,
           response_format: { type: 'json_object' } as any,
         },
         [activeModel, ...fallbackModels],
@@ -1106,7 +1063,7 @@ export async function runAgent(event: AgentEvent): Promise<{
               issues: validated.error.issues,
               instruction:
                 'Tu JSON anterior NO cumple el schema. Devuelve SOLO un JSON válido con "commands[].command" usando EXACTAMENTE uno de los valores permitidos (en mayúsculas): ' +
-                'UPSERT_PROFILE_FIELDS, SET_CONVERSATION_STATUS, SET_CONVERSATION_STAGE, SET_CONVERSATION_PROGRAM, ADD_CONVERSATION_NOTE, SET_NO_CONTACTAR, SCHEDULE_INTERVIEW, SEND_MESSAGE, NOTIFY_ADMIN, RUN_TOOL. ' +
+                'UPSERT_PROFILE_FIELDS, SET_CONVERSATION_STATUS, SET_CONVERSATION_STAGE, SET_CONVERSATION_PROGRAM, SET_APPLICATION_FLOW, ADD_CONVERSATION_NOTE, SET_NO_CONTACTAR, SCHEDULE_INTERVIEW, SEND_MESSAGE, NOTIFY_ADMIN, RUN_TOOL. ' +
                 'Si usas SEND_MESSAGE, incluye: conversationId, channel=\"WHATSAPP\", type=\"SESSION_TEXT\"|\"TEMPLATE\", text (o templateName+templateVars), dedupeKey.',
             }),
           });
@@ -1114,6 +1071,45 @@ export async function runAgent(event: AgentEvent): Promise<{
         }
         if (tryDowngradeModelForValidation('INVALID_SCHEMA')) {
           continue;
+        }
+        const recoveredText = extractNaturalReplyText(raw, parsed, [
+          typeof event.draftText === 'string' ? event.draftText : null,
+        ]);
+        if (recoveredText) {
+          const recovered = buildReplyOnlyResponse({
+            conversationId: conversation.id,
+            eventType: event.eventType,
+            inboundMessageId: event.inboundMessageId || null,
+            text: recoveredText,
+            reason: 'INVALID_SCHEMA_RECOVERED_TEXT',
+          });
+          await prisma.agentRunLog.update({
+            where: { id: runLog.id },
+            data: {
+              status: 'PLANNED',
+              commandsJson: serializeJson(recovered),
+              resultsJson: serializeJson({
+                parseRecoveryUsed: true,
+                reason: 'INVALID_SCHEMA',
+                recoveredText: recoveredText.slice(0, 500),
+                lastInvalidRaw,
+                lastInvalidIssues,
+                modelRequested,
+                modelResolved,
+                modelFallbackUsed: modelResolved !== modelRequested,
+                modelCalls,
+                modelLatencyMs,
+                avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+                maxModelLatencyMs,
+                toolCalls: toolCallCount,
+                toolLatencyMs,
+                avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+                maxToolLatencyMs,
+                retries: responseRetryCount,
+              }),
+            },
+          });
+          return { runId: runLog.id, windowStatus, response: recovered };
         }
         fallbackReason = 'INVALID_SCHEMA';
         const fallback = buildFallbackResponse('INVALID_SCHEMA');
@@ -1170,7 +1166,7 @@ export async function runAgent(event: AgentEvent): Promise<{
       if (event.eventType === 'AI_SUGGEST' && semanticIssues.length > 0) {
         const notesText = typeof validated.data.notes === 'string' ? validated.data.notes.trim() : '';
         const draftText = typeof event.draftText === 'string' ? event.draftText.trim() : '';
-        const fallbackText = draftText || notesText || latestInboundText || '';
+        const fallbackText = draftText || notesText || '';
         if (fallbackText) {
           for (const cmd of validated.data.commands as any[]) {
             if (!cmd || typeof cmd !== 'object' || cmd.command !== 'SEND_MESSAGE') continue;
@@ -1204,6 +1200,45 @@ export async function runAgent(event: AgentEvent): Promise<{
         if (tryDowngradeModelForValidation('INVALID_SEMANTICS')) {
           continue;
         }
+        const recoveredText = extractNaturalReplyText(raw, validated.data, [
+          typeof event.draftText === 'string' ? event.draftText : null,
+        ]);
+        if (recoveredText) {
+          const recovered = buildReplyOnlyResponse({
+            conversationId: conversation.id,
+            eventType: event.eventType,
+            inboundMessageId: event.inboundMessageId || null,
+            text: recoveredText,
+            reason: 'INVALID_SEMANTICS_RECOVERED_TEXT',
+          });
+          await prisma.agentRunLog.update({
+            where: { id: runLog.id },
+            data: {
+              status: 'PLANNED',
+              commandsJson: serializeJson(recovered),
+              resultsJson: serializeJson({
+                parseRecoveryUsed: true,
+                reason: 'INVALID_SEMANTICS',
+                recoveredText: recoveredText.slice(0, 500),
+                lastInvalidRaw,
+                lastInvalidIssues,
+                modelRequested,
+                modelResolved,
+                modelFallbackUsed: modelResolved !== modelRequested,
+                modelCalls,
+                modelLatencyMs,
+                avgModelLatencyMs: modelCalls > 0 ? Math.round(modelLatencyMs / modelCalls) : 0,
+                maxModelLatencyMs,
+                toolCalls: toolCallCount,
+                toolLatencyMs,
+                avgToolLatencyMs: toolCallCount > 0 ? Math.round(toolLatencyMs / toolCallCount) : 0,
+                maxToolLatencyMs,
+                retries: responseRetryCount,
+              }),
+            },
+          });
+          return { runId: runLog.id, windowStatus, response: recovered };
+        }
         fallbackReason = 'INVALID_SEMANTICS';
         const fallback = buildFallbackResponse('INVALID_SEMANTICS');
         await prisma.agentRunLog.update({
@@ -1232,6 +1267,17 @@ export async function runAgent(event: AgentEvent): Promise<{
           },
         });
         return { runId: runLog.id, windowStatus, response: fallback };
+      }
+
+      if (event.eventType === 'AI_SUGGEST') {
+        for (const cmd of validated.data.commands as any[]) {
+          if (!cmd || typeof cmd !== 'object' || String(cmd.command || '').toUpperCase() !== 'SEND_MESSAGE') continue;
+          if (String(cmd.type || '').toUpperCase() !== 'SESSION_TEXT') continue;
+          const currentText = String(cmd.text || '').trim();
+          if (!currentText) continue;
+          if (!containsProfessionalSlang(currentText)) continue;
+          cmd.text = rewriteProfessionalSpanish(currentText);
+        }
       }
 
       const outboundTexts = (validated.data.commands || [])

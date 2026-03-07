@@ -56,6 +56,8 @@ model Workspace {
   templatePeonetaStartName String?
   templateInterviewConfirmationName String?
   templateAdditionalNamesJson String?
+  reviewEmailTo String?
+  reviewEmailFrom String?
   ssclinicalNurseLeaderEmail String?
   staffDefaultProgram Program? @relation("WorkspaceStaffDefaultProgram", fields: [staffDefaultProgramId], references: [id])
   staffDefaultProgramId String?
@@ -95,6 +97,8 @@ model Workspace {
   scenarioRuns ScenarioRunLog[]
   hybridReplyDrafts HybridReplyDraft[]
   configChanges ConfigChangeLog[]
+  assets      WorkspaceAsset[]
+  emailOutboundLogs EmailOutboundLog[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 }
@@ -418,6 +422,16 @@ model Conversation {
   availabilityRaw String?
   availabilityParsedJson String?
   availabilityConfirmedAt DateTime?
+  applicationDataJson String?
+  opReviewSummarySentAt DateTime?
+  opReviewEmailSentAt DateTime?
+  applicationRole String?
+  applicationState String?
+  pendingInboundAiRunAt DateTime?
+  pendingInboundAiRunReason String?
+  pendingInboundAiRunVersion Int @default(0)
+  aiRunInFlight Boolean @default(false)
+  aiRunLockUntil DateTime?
   archivedAt    DateTime?
   archivedSummary String?
   sandboxSourceConversationId String?
@@ -447,12 +461,15 @@ model Conversation {
   scenarioRuns  ScenarioRunLog[]
   automationRuns AutomationRunLog[]
   hybridReplyDrafts HybridReplyDraft[]
+  emailOutboundLogs EmailOutboundLog[]
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
   @@index([workspaceId])
   @@index([phoneLineId])
   @@index([programId])
+  @@index([pendingInboundAiRunAt])
+  @@index([aiRunInFlight, aiRunLockUntil])
 }
 
 model HybridReplyDraft {
@@ -498,6 +515,7 @@ model Message {
   mediaMime      String?
   mediaPath      String?
   transcriptText String?
+  isInternalEvent Boolean      @default(false)
   timestamp      DateTime
   read           Boolean       @default(false)
   createdAt      DateTime      @default(now())
@@ -564,6 +582,9 @@ model OutboundMessageLog {
   conversation  Conversation @relation(fields: [conversationId], references: [id])
   conversationId String
   relatedConversationId String?
+  asset         WorkspaceAsset? @relation(fields: [assetId], references: [id])
+  assetId       String?
+  assetSlug     String?
   agentRun      AgentRunLog? @relation(fields: [agentRunId], references: [id])
   agentRunId    String?
   channel       String
@@ -581,6 +602,54 @@ model OutboundMessageLog {
   @@index([createdAt])
   @@index([dedupeKey])
   @@index([waMessageId])
+  @@index([assetId])
+}
+
+model EmailOutboundLog {
+  id             String       @id @default(cuid())
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id])
+  workspaceId    String       @default("default")
+  conversation   Conversation? @relation(fields: [conversationId], references: [id])
+  conversationId String?
+  channel        String       @default("EMAIL")
+  fromEmail      String?
+  toEmail        String
+  subject        String
+  bodyPreview    String?
+  status         String       @default("QUEUED")
+  error          String?
+  metadataJson   String?
+  createdAt      DateTime     @default(now())
+  sentAt         DateTime?
+
+  @@index([workspaceId])
+  @@index([conversationId])
+  @@index([createdAt])
+  @@index([status])
+}
+
+model WorkspaceAsset {
+  id          String    @id @default(cuid())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  workspaceId String
+  slug        String
+  title       String
+  description String?
+  audience    String    @default("PUBLIC")
+  mimeType    String
+  fileName    String
+  sizeBytes   Int
+  sha256      String?
+  storagePath String
+  publicId    String    @unique
+  archivedAt  DateTime?
+  outboundLogs OutboundMessageLog[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId, audience, archivedAt])
+  @@index([createdAt])
 }
 
 model NotificationLog {
@@ -807,6 +876,7 @@ model SystemConfig {
   aiModel         String?
   aiModelOverride String?
   aiModelAlias    String?
+  candidateMaxOutputTokens Int?
   recruitJobSheet String?
   recruitFaq      String?
   adminEmail      String?

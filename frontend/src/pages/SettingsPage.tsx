@@ -228,7 +228,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
 
   const [openAiKey, setOpenAiKey] = useState('');
   const [hasOpenAiKey, setHasOpenAiKey] = useState(false);
-  const [aiModel, setAiModel] = useState('gpt-4.1-mini');
+  const [aiModel, setAiModel] = useState('gpt-4o-mini');
   const [aiStatus, setAiStatus] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   const [savingAi, setSavingAi] = useState(false);
@@ -239,12 +239,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [recruitJobSheet, setRecruitJobSheet] = useState('');
   const [recruitFaq, setRecruitFaq] = useState('');
   const [adminAiPrompt, setAdminAiPrompt] = useState('');
-  const [adminAiModel, setAdminAiModel] = useState('gpt-4.1-mini');
+  const [adminAiModel, setAdminAiModel] = useState('gpt-4o-mini');
   const [savingAdminAi, setSavingAdminAi] = useState(false);
   const [adminAiStatus, setAdminAiStatus] = useState<string | null>(null);
   const [adminAiError, setAdminAiError] = useState<string | null>(null);
   const [interviewAiPrompt, setInterviewAiPrompt] = useState('');
-  const [interviewAiModel, setInterviewAiModel] = useState('gpt-4.1-mini');
+  const [interviewAiModel, setInterviewAiModel] = useState('gpt-4o-mini');
   const [savingInterviewAi, setSavingInterviewAi] = useState(false);
   const [interviewAiStatus, setInterviewAiStatus] = useState<string | null>(null);
   const [interviewAiError, setInterviewAiError] = useState<string | null>(null);
@@ -309,7 +309,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [cleanupResult, setCleanupResult] = useState<any>(null);
   const getModelOptions = (current: string) => {
-    const base = ['gpt-4.1-mini', 'gpt-5-chat-latest'];
+    const base = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-5-chat-latest'];
     return base.includes(current) ? base : [...base, current];
   };
 
@@ -343,16 +343,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         setWhatsappVerifyToken('');
         setVerifyTokenDirty(false);
         setHasOpenAiKey(ai.hasOpenAiKey);
-        setAiModel(ai.aiModel || 'gpt-4.1-mini');
+        setAiModel(ai.aiModel || 'gpt-4o-mini');
         setAdminEmail(admin.adminEmail || 'admin@example.com');
         setAiPrompt(aiPromptRes.aiPrompt || defaultAiPrompt);
-        setAiModel(aiPromptRes.aiModel || ai.aiModel || 'gpt-4.1-mini');
+        setAiModel(aiPromptRes.aiModel || ai.aiModel || 'gpt-4o-mini');
         setRecruitJobSheet((aiPromptRes.jobSheet || '').toString());
         setRecruitFaq((aiPromptRes.faq || '').toString());
         setAdminAiPrompt(adminAi.prompt || '');
-        setAdminAiModel(adminAi.model || 'gpt-4.1-mini');
+        setAdminAiModel(adminAi.model || 'gpt-4o-mini');
         setInterviewAiPrompt(interviewAi.prompt || '');
-        setInterviewAiModel(interviewAi.model || 'gpt-4.1-mini');
+        setInterviewAiModel(interviewAi.model || 'gpt-4o-mini');
         setSalesAiPrompt(salesAi.prompt || '');
         setSalesKnowledgeBase(salesAi.knowledgeBase || '');
         setAdminNotifDetailLevel((adminNotifs.detailLevel || 'MEDIUM').toUpperCase());

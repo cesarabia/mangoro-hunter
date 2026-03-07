@@ -43,6 +43,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         templatePeonetaStartName: true as any,
         templateInterviewConfirmationName: true as any,
         templateAdditionalNamesJson: true as any,
+        reviewEmailTo: true as any,
+        reviewEmailFrom: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -77,6 +79,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
           return [];
         }
       })(),
+      reviewEmailTo: String((workspace as any).reviewEmailTo || '').trim() || null,
+      reviewEmailFrom: String((workspace as any).reviewEmailFrom || '').trim() || null,
       ssclinicalNurseLeaderEmail: (workspace as any).ssclinicalNurseLeaderEmail || null,
       staffDefaultProgramId: (workspace as any).staffDefaultProgramId || null,
       clientDefaultProgramId: (workspace as any).clientDefaultProgramId || null,
@@ -139,6 +143,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       templatePeonetaStartName?: string | null;
       templateInterviewConfirmationName?: string | null;
       templateAdditionalNames?: string[] | null;
+      reviewEmailTo?: string | null;
+      reviewEmailFrom?: string | null;
       ssclinicalNurseLeaderEmail?: string | null;
       staffDefaultProgramId?: string | null;
       clientDefaultProgramId?: string | null;
@@ -156,6 +162,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
     const hasPeonetaTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templatePeonetaStartName');
     const hasInterviewTemplate = Object.prototype.hasOwnProperty.call(body || {}, 'templateInterviewConfirmationName');
     const hasAdditionalTemplates = Object.prototype.hasOwnProperty.call(body || {}, 'templateAdditionalNames');
+    const hasReviewEmailTo = Object.prototype.hasOwnProperty.call(body || {}, 'reviewEmailTo');
+    const hasReviewEmailFrom = Object.prototype.hasOwnProperty.call(body || {}, 'reviewEmailFrom');
     const hasEmail = Object.prototype.hasOwnProperty.call(body || {}, 'ssclinicalNurseLeaderEmail');
     const hasStaffProgram = Object.prototype.hasOwnProperty.call(body || {}, 'staffDefaultProgramId');
     const hasClientProgram = Object.prototype.hasOwnProperty.call(body || {}, 'clientDefaultProgramId');
@@ -173,6 +181,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       !hasPeonetaTemplate &&
       !hasInterviewTemplate &&
       !hasAdditionalTemplates &&
+      !hasReviewEmailTo &&
+      !hasReviewEmailFrom &&
       !hasEmail &&
       !hasStaffProgram &&
       !hasClientProgram &&
@@ -189,6 +199,20 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
       return reply
         .code(400)
         .send({ error: 'Body vacío. Envía al menos 1 campo para actualizar.' });
+    }
+
+    const reviewEmailToRaw = body?.reviewEmailTo;
+    const nextReviewEmailTo =
+      reviewEmailToRaw === null ? null : typeof reviewEmailToRaw === 'string' ? reviewEmailToRaw.trim().toLowerCase() : null;
+    if (typeof reviewEmailToRaw === 'string' && nextReviewEmailTo && (!nextReviewEmailTo.includes('@') || nextReviewEmailTo.length > 254)) {
+      return reply.code(400).send({ error: 'reviewEmailTo inválido.' });
+    }
+
+    const reviewEmailFromRaw = body?.reviewEmailFrom;
+    const nextReviewEmailFrom =
+      reviewEmailFromRaw === null ? null : typeof reviewEmailFromRaw === 'string' ? reviewEmailFromRaw.trim() : null;
+    if (typeof reviewEmailFromRaw === 'string' && nextReviewEmailFrom && (!nextReviewEmailFrom.includes('@') || nextReviewEmailFrom.length > 254)) {
+      return reply.code(400).send({ error: 'reviewEmailFrom inválido.' });
     }
 
     const emailRaw = body?.ssclinicalNurseLeaderEmail;
@@ -320,6 +344,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         templatePeonetaStartName: true as any,
         templateInterviewConfirmationName: true as any,
         templateAdditionalNamesJson: true as any,
+        reviewEmailTo: true as any,
+        reviewEmailFrom: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -391,6 +417,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
                   : null,
             }
           : {}),
+        ...(hasReviewEmailTo ? { reviewEmailTo: typeof reviewEmailToRaw === 'string' ? nextReviewEmailTo || null : null } : {}),
+        ...(hasReviewEmailFrom ? { reviewEmailFrom: typeof reviewEmailFromRaw === 'string' ? nextReviewEmailFrom || null : null } : {}),
         ...(hasEmail ? { ssclinicalNurseLeaderEmail: typeof emailRaw === 'string' ? nextEmail || null : null } : {}),
         ...(hasStaffProgram ? { staffDefaultProgramId: typeof staffProgramRaw === 'string' ? nextStaffProgramId || null : null } : {}),
         ...(hasClientProgram ? { clientDefaultProgramId: typeof clientProgramRaw === 'string' ? nextClientProgramId || null : null } : {}),
@@ -411,6 +439,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
         templatePeonetaStartName: true as any,
         templateInterviewConfirmationName: true as any,
         templateAdditionalNamesJson: true as any,
+        reviewEmailTo: true as any,
+        reviewEmailFrom: true as any,
         ssclinicalNurseLeaderEmail: true as any,
         staffDefaultProgramId: true as any,
         clientDefaultProgramId: true as any,
@@ -472,6 +502,26 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
               templatePeonetaStartName: (updated as any).templatePeonetaStartName || null,
               templateInterviewConfirmationName: (updated as any).templateInterviewConfirmationName || null,
               templateAdditionalNamesJson: (updated as any).templateAdditionalNamesJson || null,
+            }),
+          },
+        })
+        .catch(() => {});
+    }
+
+    if (hasReviewEmailTo || hasReviewEmailFrom) {
+      await prisma.configChangeLog
+        .create({
+          data: {
+            workspaceId: access.workspaceId,
+            userId,
+            type: 'WORKSPACE_REVIEW_EMAIL_CONFIG',
+            beforeJson: serializeJson({
+              reviewEmailTo: String((existing as any).reviewEmailTo || '').trim() || null,
+              reviewEmailFrom: String((existing as any).reviewEmailFrom || '').trim() || null,
+            }),
+            afterJson: serializeJson({
+              reviewEmailTo: String((updated as any).reviewEmailTo || '').trim() || null,
+              reviewEmailFrom: String((updated as any).reviewEmailFrom || '').trim() || null,
             }),
           },
         })
@@ -544,6 +594,8 @@ export async function registerWorkspaceRoutes(app: FastifyInstance) {
           return [];
         }
       })(),
+      reviewEmailTo: String((updated as any).reviewEmailTo || '').trim() || null,
+      reviewEmailFrom: String((updated as any).reviewEmailFrom || '').trim() || null,
       ssclinicalNurseLeaderEmail: (updated as any).ssclinicalNurseLeaderEmail || null,
       staffDefaultProgramId: (updated as any).staffDefaultProgramId || null,
       clientDefaultProgramId: (updated as any).clientDefaultProgramId || null,

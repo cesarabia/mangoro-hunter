@@ -1060,7 +1060,7 @@ export async function registerCopilotRoutes(app: FastifyInstance) {
       Boolean(modelOverride) ||
       Boolean((config as any).aiModelAlias) ||
       (config.aiModel && normalizeModelId(config.aiModel) !== normalizeModelId(DEFAULT_AI_MODEL));
-    const defaultCopilotAliasResolved = normalizeModelId('gpt-5-mini') || configuredAliasResolved;
+    const defaultCopilotAliasResolved = normalizeModelId('gpt-4o-mini') || configuredAliasResolved;
     const modelAliasResolved = hasExplicitModel ? configuredAliasResolved : defaultCopilotAliasResolved;
     const modelChain = getUniqueModelFallbackChain([modelOverride || modelAliasResolved, modelAliasResolved, DEFAULT_AI_MODEL]);
     const modelRequested = modelChain[0] || DEFAULT_AI_MODEL;

@@ -17,7 +17,8 @@ import { deriveCandidateStatusFromConversation, upsertCandidateAndCase } from '.
 import { listWorkspaceTemplateCatalog } from './whatsappTemplateCatalogService';
 import { sendWhatsAppTemplate, sendWhatsAppText } from './whatsappMessageService';
 import { normalizeChilePhoneE164 } from '../utils/phone';
-import { isKnownActiveStage, listWorkspaceStages } from './workspaceStageService';
+import { coerceStageSlug, isKnownActiveStage, listWorkspaceStages } from './workspaceStageService';
+import { triggerReadyForOpReview } from './postulacionReviewService';
 import {
   attemptScheduleInterview,
   confirmActiveReservation,
@@ -203,27 +204,6 @@ function pickHybridApprovalAdminWa(params: {
   return allowlist[0] || null;
 }
 
-function looksLikeTechnicalFallback(text: string): boolean {
-  const normalized = normalizeLoose(text);
-  if (!normalized) return false;
-  return (
-    normalized.includes('problema tecnico') ||
-    normalized.includes('invalid_semantics') ||
-    normalized.includes('invalid_schema') ||
-    normalized.includes('run_budget_exceeded') ||
-    normalized.includes('tool_loop_exceeded') ||
-    normalized.includes('ref ') && normalized.includes('error')
-  );
-}
-
-function candidateSafeFallbackText(inboundText?: string | null): string {
-  const inbound = String(inboundText || '').trim();
-  if (inbound) {
-    return `Hola, gracias por escribir. Ya revisé tu mensaje. Para avanzar, ¿me confirmas tu comuna y tu tipo de licencia?`;
-  }
-  return 'Hola, gracias por escribir. Para avanzar, ¿me confirmas tu comuna y tu tipo de licencia?';
-}
-
 async function enqueueHybridApprovalDrafts(params: {
   app: FastifyInstance;
   workspaceId: string;
@@ -281,7 +261,7 @@ async function enqueueHybridApprovalDrafts(params: {
         : type === 'TEMPLATE'
           ? `[TEMPLATE] ${String(cmd?.templateName || '').trim() || '(sin nombre)'}`.trim()
           : '';
-    const text = looksLikeTechnicalFallback(textRaw) ? candidateSafeFallbackText(params.inboundText || null) : textRaw;
+    const text = textRaw;
     if (!text) continue;
     const dedupeKey = String(cmd?.dedupeKey || '').trim() || `hybrid:${stableHash(`${params.agentRunId}:${text}`).slice(0, 12)}`;
     const existing = await prisma.hybridReplyDraft
@@ -327,9 +307,6 @@ async function enqueueHybridApprovalDrafts(params: {
       '',
       'Propuesta:',
       text,
-      looksLikeTechnicalFallback(textRaw)
-        ? '(Nota: el borrador técnico fue reemplazado por un mensaje humano seguro para evitar errores al candidato.)'
-        : null,
       '',
       `Comandos: ENVIAR ${shortId} | EDITAR ${shortId}: <texto> | CANCELAR ${shortId}`,
     ]
@@ -734,6 +711,10 @@ type StaffRouterCommand =
   | { type: 'PENDING_COUNTS'; args: {} }
   | { type: 'HELP'; args: {} }
   | { type: 'LIST_DRAFTS'; args: {} }
+  | { type: 'REGENERATE_REVIEW_SUMMARY'; args: { ref: string } }
+  | { type: 'MARK_PRESELECTED'; args: { ref: string } }
+  | { type: 'MARK_OP_ACCEPTED'; args: { ref: string } }
+  | { type: 'MARK_OP_REJECTED'; args: { ref: string } }
   | { type: 'SEND_DRAFT'; args: { ref?: string | null } }
   | { type: 'EDIT_DRAFT'; args: { ref?: string | null; text: string } }
   | { type: 'CANCEL_DRAFT'; args: { ref?: string | null } }
@@ -796,6 +777,9 @@ const STAFF_COMMAND_HELP_TEXT = [
   '• buscar <telefono|nombre>',
   '• crear candidato <telefono> | <nombre> | <rol> | <canal> | <comuna>',
   '• mover <telefono|id> a <stage>',
+  '• resumen [id]',
+  '• marcar preseleccionado [id]',
+  '• aceptado [id] | rechazado [id]',
   '• nota <telefono|id> <texto>',
   '• slots mañana',
   '• agendar <telefono|id> mañana HH:MM',
@@ -1131,6 +1115,25 @@ function parseStaffRouterCommand(inboundText: string): StaffRouterCommand | null
   if (normalized === 'pendientes' || normalized === '/pendientes' || normalized === 'mis pendientes') {
     return { type: 'PENDING_COUNTS', args: {} };
   }
+  const resumenRegenerateMatch = raw.match(/^\s*resumen\s*$/i);
+  if (resumenRegenerateMatch) {
+    return { type: 'REGENERATE_REVIEW_SUMMARY', args: { ref: '__latest__' } };
+  }
+  const preselectedMatch = raw.match(/^\s*(?:marcar\s+)?preseleccionad[oa](?:\s+(.+))?\s*$/i);
+  if (preselectedMatch) {
+    const ref = String(preselectedMatch[1] || '').trim() || '__latest__';
+    return { type: 'MARK_PRESELECTED', args: { ref } };
+  }
+  const acceptedMatch = raw.match(/^\s*aceptad[oa](?:\s+(.+))?\s*$/i);
+  if (acceptedMatch) {
+    const ref = String(acceptedMatch[1] || '').trim() || '__latest__';
+    return { type: 'MARK_OP_ACCEPTED', args: { ref } };
+  }
+  const rejectedMatch = raw.match(/^\s*rechazad[oa](?:\s+(.+))?\s*$/i);
+  if (rejectedMatch) {
+    const ref = String(rejectedMatch[1] || '').trim() || '__latest__';
+    return { type: 'MARK_OP_REJECTED', args: { ref } };
+  }
   const slotsMatch = raw.match(/^\s*slots(?:\s+(.+))?\s*$/i);
   if (slotsMatch) {
     const dayToken = String(slotsMatch[1] || 'mañana').trim() || 'mañana';
@@ -1411,6 +1414,28 @@ async function resolveConversationByRefForStaff(params: {
   return null;
 }
 
+async function resolveTargetConversationForStaff(params: {
+  workspaceId: string;
+  ref: string;
+}): Promise<{ id: string; contactId: string; phoneLineId: string | null } | null> {
+  const ref = String(params.ref || '').trim();
+  if (!ref || ref === '__latest__') {
+    return prisma.conversation
+      .findFirst({
+        where: {
+          workspaceId: params.workspaceId,
+          archivedAt: null,
+          isAdmin: false,
+          conversationKind: 'CLIENT',
+        } as any,
+        select: { id: true, contactId: true, phoneLineId: true },
+        orderBy: { updatedAt: 'desc' },
+      })
+      .catch(() => null);
+  }
+  return resolveConversationByRefForStaff({ workspaceId: params.workspaceId, ref });
+}
+
 async function listWorkspaceTemplatesForStaff(workspaceId: string): Promise<{
   entries: Array<{
     name: string;
@@ -1454,6 +1479,7 @@ async function createSystemConversationNote(conversationId: string, text: string
         direction: 'OUTBOUND',
         text,
         rawPayload: serializeJson({ system: true, ...(extra || {}) }),
+        isInternalEvent: true as any,
         timestamp: new Date(),
         read: true,
       },
@@ -1533,6 +1559,30 @@ function buildStaffRouterReply(command: StaffRouterCommand, toolExecResult: any)
       return `• ${idShort} · ${who}${wa ? ` (+${wa})` : ''}`;
     });
     return [`Borradores pendientes (${drafts.length}):`, ...lines, '', 'Comando: ENVIAR <id> | EDITAR <id>: ... | CANCELAR <id>'].join('\n');
+  }
+  if (command.type === 'REGENERATE_REVIEW_SUMMARY') {
+    const result = toolResult?.details?.result || {};
+    const email = result?.email || {};
+    if (!toolResult?.ok) return 'No pude regenerar el resumen ahora. Intenta nuevamente en unos segundos.';
+    if (email?.configured && email?.sent) {
+      return `Listo, regeneré el resumen y envié email a ${String(email?.to || 'destino configurado')}.`;
+    }
+    if (!email?.configured) {
+      return 'Listo, regeneré el resumen interno. El email no está configurado en Workspace (reviewEmailTo/reviewEmailFrom).';
+    }
+    return `Regeneré el resumen interno, pero el email falló (${String(email?.error || 'error desconocido')}).`;
+  }
+  if (command.type === 'MARK_PRESELECTED') {
+    if (!toolResult?.ok) return 'No pude marcar el caso como preseleccionado. Intenta con el id del caso.';
+    return 'Listo, marqué el caso como preseleccionado y quedó en solicitud de documentos de operación.';
+  }
+  if (command.type === 'MARK_OP_ACCEPTED') {
+    if (!toolResult?.ok) return 'No pude marcar el caso como aceptado. Intenta de nuevo.';
+    return 'Listo, marqué el caso como OP_ACCEPTED y pasó a INTERVIEW_PENDING.';
+  }
+  if (command.type === 'MARK_OP_REJECTED') {
+    if (!toolResult?.ok) return 'No pude marcar el caso como rechazado. Intenta de nuevo.';
+    return 'Listo, marqué el caso como OP_REJECTED y quedó en REJECTED.';
   }
   if (command.type === 'SEND_DRAFT') {
     const result = toolResult?.details?.result || {};
@@ -1862,9 +1912,17 @@ async function maybeHandleStaffDeterministicRouter(params: {
           ? ({ command: 'HELP' } as any)
           : command.type === 'LIST_DRAFTS'
             ? ({ command: 'LIST_DRAFTS' } as any)
-            : command.type === 'SEND_DRAFT'
-              ? ({ command: 'SEND_DRAFT', ...(command.args as any) } as any)
-              : command.type === 'EDIT_DRAFT'
+            : command.type === 'REGENERATE_REVIEW_SUMMARY'
+              ? ({ command: 'REGENERATE_REVIEW_SUMMARY', ...(command.args as any) } as any)
+              : command.type === 'MARK_PRESELECTED'
+                ? ({ command: 'MARK_PRESELECTED', ...(command.args as any) } as any)
+                : command.type === 'MARK_OP_ACCEPTED'
+                  ? ({ command: 'MARK_OP_ACCEPTED', ...(command.args as any) } as any)
+                  : command.type === 'MARK_OP_REJECTED'
+                    ? ({ command: 'MARK_OP_REJECTED', ...(command.args as any) } as any)
+              : command.type === 'SEND_DRAFT'
+                ? ({ command: 'SEND_DRAFT', ...(command.args as any) } as any)
+                : command.type === 'EDIT_DRAFT'
                 ? ({ command: 'EDIT_DRAFT', ...(command.args as any) } as any)
                 : command.type === 'CANCEL_DRAFT'
                   ? ({ command: 'CANCEL_DRAFT', ...(command.args as any) } as any)
@@ -1967,6 +2025,141 @@ async function maybeHandleStaffDeterministicRouter(params: {
       } catch (err) {
         const errorText = err instanceof Error ? err.message : 'No se pudo listar borradores';
         toolResult = { ok: false, details: { toolName: 'LIST_DRAFTS', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'REGENERATE_REVIEW_SUMMARY') {
+      try {
+        const targetConversation = await resolveTargetConversationForStaff({
+          workspaceId: params.workspaceId,
+          ref: String(command.args.ref || '__latest__'),
+        });
+        if (!targetConversation?.id) throw new Error(`No encontré el caso "${command.args.ref}"`);
+        const summaryResult = await triggerReadyForOpReview({
+          app: params.app,
+          workspaceId: params.workspaceId,
+          conversationId: targetConversation.id,
+          reason: 'STAFF_REGENERATE_RESUMEN',
+        });
+        toolResult = {
+          ok: true,
+          details: {
+            toolName: 'REGENERATE_REVIEW_SUMMARY',
+            result: {
+              conversationId: targetConversation.id,
+              summaryPreview: String(summaryResult.summary || '').slice(0, 220),
+              email: summaryResult.email || null,
+            },
+          },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({
+                result: {
+                  conversationId: targetConversation.id,
+                  email: summaryResult.email || null,
+                },
+              }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo regenerar el resumen';
+        toolResult = { ok: false, details: { toolName: 'REGENERATE_REVIEW_SUMMARY', error: errorText } };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: { status: 'ERROR', error: errorText, resultsJson: serializeJson({ error: errorText }) },
+          })
+          .catch(() => {});
+      }
+    } else if (command.type === 'MARK_PRESELECTED' || command.type === 'MARK_OP_ACCEPTED' || command.type === 'MARK_OP_REJECTED') {
+      try {
+        const targetConversation = await resolveTargetConversationForStaff({
+          workspaceId: params.workspaceId,
+          ref: String(command.args.ref || '__latest__'),
+        });
+        if (!targetConversation?.id) throw new Error(`No encontré el caso "${command.args.ref}"`);
+
+        const now = new Date();
+        let applicationState = 'REQUEST_OP_DOCS';
+        let stageSlug = await coerceStageSlug({ workspaceId: params.workspaceId, stageSlug: 'DOCS_PENDING' }).catch(() => 'DOCS_PENDING');
+        let aiPaused = false;
+        let stageReason = 'staff_mark_preselected';
+        let noteText = '✅ Marcado como preseleccionado. Solicitar documentos de operación (carnet y licencia).';
+
+        if (command.type === 'MARK_OP_ACCEPTED') {
+          applicationState = 'OP_ACCEPTED';
+          stageSlug = await coerceStageSlug({ workspaceId: params.workspaceId, stageSlug: 'INTERVIEW_PENDING' }).catch(() => 'INTERVIEW_PENDING');
+          aiPaused = false;
+          stageReason = 'staff_op_accepted';
+          noteText = '✅ Operación aceptada por staff. Continuar con coordinación de entrevista.';
+        } else if (command.type === 'MARK_OP_REJECTED') {
+          applicationState = 'OP_REJECTED';
+          stageSlug = await coerceStageSlug({ workspaceId: params.workspaceId, stageSlug: 'REJECTED' }).catch(() => 'REJECTED');
+          aiPaused = true;
+          stageReason = 'staff_op_rejected';
+          noteText = '🛑 Operación rechazó la postulación.';
+        }
+
+        await prisma.conversation
+          .update({
+            where: { id: targetConversation.id },
+            data: {
+              applicationState: applicationState as any,
+              conversationStage: stageSlug,
+              stageChangedAt: now,
+              stageReason,
+              aiPaused,
+              updatedAt: now,
+            } as any,
+          })
+          .catch(() => {});
+
+        await createSystemConversationNote(targetConversation.id, noteText, {
+          source: 'staff_command_override',
+          applicationState,
+          stage: stageSlug,
+        });
+
+        toolResult = {
+          ok: true,
+          details: {
+            toolName: command.type,
+            result: {
+              conversationId: targetConversation.id,
+              applicationState,
+              stage: stageSlug,
+              aiPaused,
+            },
+          },
+        };
+        await prisma.agentRunLog
+          .update({
+            where: { id: toolRun.id },
+            data: {
+              status: 'SUCCESS',
+              resultsJson: serializeJson({
+                result: {
+                  conversationId: targetConversation.id,
+                  applicationState,
+                  stage: stageSlug,
+                  aiPaused,
+                },
+              }),
+            },
+          })
+          .catch(() => {});
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : 'No se pudo actualizar el estado de operación';
+        toolResult = { ok: false, details: { toolName: command.type, error: errorText } };
         await prisma.agentRunLog
           .update({
             where: { id: toolRun.id },
@@ -3577,136 +3770,183 @@ type RunAutomationsParams = {
   transportMode: ExecutorTransportMode;
 };
 
-type InboundDebounceState = {
-  timer: NodeJS.Timeout | null;
-  running: boolean;
-  queue: Array<{ inboundMessageId: string | null; inboundText: string | null; at: Date }>;
-  waiters: Array<() => void>;
-  latestParams: RunAutomationsParams;
-  debounceMs: number;
-  lastInboundAt: Date;
-};
+const DEFAULT_INBOUND_DEBOUNCE_MS = 9_000;
+const MIN_INBOUND_DEBOUNCE_MS = 1_500;
+const MAX_INBOUND_DEBOUNCE_MS = 12_000;
+const INBOUND_DEBOUNCE_LOCK_MS = 60_000;
+const INBOUND_DEBOUNCE_POLL_MS = 1_500;
+const INBOUND_DEBOUNCE_BATCH_MAX = 20;
+let inboundDebounceWorkerStarted = false;
 
-const inboundDebounceByConversation = new Map<string, InboundDebounceState>();
-const DEFAULT_INBOUND_DEBOUNCE_MS = 1800;
-const MIN_INBOUND_DEBOUNCE_MS = 1500;
-const MAX_INBOUND_DEBOUNCE_MS = 3000;
+function isProdRuntime(): boolean {
+  const nodeEnv = String(process.env.NODE_ENV || '').trim().toLowerCase();
+  const appEnv = String(process.env.HUNTER_ENV || process.env.APP_ENV || '').trim().toLowerCase();
+  return nodeEnv === 'production' || appEnv === 'production' || appEnv === 'prod';
+}
 
 function clampInboundDebounceMs(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_INBOUND_DEBOUNCE_MS;
   return Math.max(MIN_INBOUND_DEBOUNCE_MS, Math.min(MAX_INBOUND_DEBOUNCE_MS, Math.floor(value)));
 }
 
-function mergeInboundBatchText(batch: Array<{ inboundText: string | null }>): string | null {
-  const chunks: string[] = [];
-  for (const item of batch) {
-    const text = String(item.inboundText || '').trim();
-    if (!text) continue;
-    chunks.push(text);
-  }
-  if (chunks.length === 0) return null;
-  const unique: string[] = [];
-  for (const chunk of chunks) {
-    if (!unique.includes(chunk)) unique.push(chunk);
-  }
-  return unique.join('\n');
+async function runAutomationsWithInboundDebounce(params: RunAutomationsParams): Promise<void> {
+  const debounceMs = clampInboundDebounceMs(DEFAULT_INBOUND_DEBOUNCE_MS);
+  const now = Date.now();
+  const nextAt = new Date(now + debounceMs);
+  await prisma.conversation
+    .updateMany({
+      where: { id: params.conversationId, workspaceId: params.workspaceId, archivedAt: null },
+      data: {
+        pendingInboundAiRunAt: nextAt,
+        pendingInboundAiRunReason: 'INBOUND_DEBOUNCE',
+        pendingInboundAiRunVersion: { increment: 1 },
+      } as any,
+    })
+    .catch((err) => {
+      params.app.log.warn({ err, workspaceId: params.workspaceId, conversationId: params.conversationId }, 'Failed to queue inbound debounce');
+    });
+  params.app.log.info(
+    {
+      workspaceId: params.workspaceId,
+      conversationId: params.conversationId,
+      inboundBatchCount: 1,
+      debounceMs,
+      lastInboundAt: new Date(now).toISOString(),
+    },
+    'Inbound debounce queued (DB scheduler)',
+  );
 }
 
-async function flushInboundDebounce(key: string): Promise<void> {
-  const state = inboundDebounceByConversation.get(key);
-  if (!state) return;
-  if (state.running) return;
-  if (state.timer) {
-    clearTimeout(state.timer);
-    state.timer = null;
+function mergeInboundTexts(rows: Array<{ text?: string | null; transcriptText?: string | null }>): string | null {
+  const chunks: string[] = [];
+  for (const row of rows) {
+    const text = String(row?.transcriptText || row?.text || '').trim();
+    if (!text) continue;
+    if (!chunks.includes(text)) chunks.push(text);
   }
-  if (state.queue.length === 0) {
-    if (state.waiters.length === 0) inboundDebounceByConversation.delete(key);
-    return;
-  }
+  return chunks.length > 0 ? chunks.join('\n') : null;
+}
 
-  state.running = true;
-  const batch = state.queue.splice(0);
-  const waiters = state.waiters.splice(0);
-  const latest = state.latestParams;
-  const mergedText = mergeInboundBatchText(batch);
-  const latestInboundMessageId = [...batch]
-    .reverse()
-    .map((i) => String(i.inboundMessageId || '').trim())
-    .find(Boolean) || null;
-  const batchLastInboundAt = [...batch].reverse().find((i) => i.at)?.at || state.lastInboundAt;
-
-  latest.app.log.info(
-    {
-      workspaceId: latest.workspaceId,
-      conversationId: latest.conversationId,
-      inboundBatchCount: batch.length,
-      debounceMs: state.debounceMs,
-      lastInboundAt: batchLastInboundAt.toISOString(),
-    },
-    'Inbound batch debounce flush (single RUN_AGENT execution)',
-  );
+async function flushInboundDebounceRow(app: FastifyInstance, row: { id: string; workspaceId: string }): Promise<void> {
+  const now = new Date();
+  const lockUntil = new Date(Date.now() + INBOUND_DEBOUNCE_LOCK_MS);
+  const claimed = await prisma.conversation
+    .updateMany({
+      where: {
+        id: row.id,
+        workspaceId: row.workspaceId,
+        archivedAt: null,
+        pendingInboundAiRunAt: { lte: now },
+        OR: [{ aiRunInFlight: false }, { aiRunLockUntil: null }, { aiRunLockUntil: { lt: now } }],
+      } as any,
+      data: {
+        aiRunInFlight: true,
+        aiRunLockUntil: lockUntil,
+        pendingInboundAiRunAt: null,
+        pendingInboundAiRunReason: null,
+      } as any,
+    })
+    .catch(() => ({ count: 0 }));
+  if (!claimed || claimed.count === 0) return;
 
   try {
+    const lastOutbound = await prisma.message
+      .findFirst({
+        where: { conversationId: row.id, direction: 'OUTBOUND' },
+        orderBy: { timestamp: 'desc' },
+        select: { timestamp: true },
+      })
+      .catch(() => null);
+    const inboundSince = new Date(
+      Math.max(
+        Date.now() - 10 * 60_000,
+        lastOutbound?.timestamp ? new Date(lastOutbound.timestamp).getTime() : 0,
+      ),
+    );
+    const inboundRows = await prisma.message
+      .findMany({
+        where: {
+          conversationId: row.id,
+          direction: 'INBOUND',
+          timestamp: { gte: inboundSince },
+        },
+        orderBy: { timestamp: 'asc' },
+        take: 20,
+        select: { id: true, text: true, transcriptText: true, timestamp: true },
+      })
+      .catch(() => []);
+
+    const latestInbound = inboundRows[inboundRows.length - 1] || null;
+    const mergedText = mergeInboundTexts(inboundRows as any);
+    const batchCount = Math.max(1, inboundRows.length || 1);
+    const lastInboundAt = latestInbound?.timestamp ? new Date(latestInbound.timestamp).toISOString() : new Date().toISOString();
+
+    app.log.info(
+      {
+        workspaceId: row.workspaceId,
+        conversationId: row.id,
+        inboundBatchCount: batchCount,
+        debounceMs: clampInboundDebounceMs(DEFAULT_INBOUND_DEBOUNCE_MS),
+        lastInboundAt,
+      },
+      'Inbound debounce flush (single RUN_AGENT execution)',
+    );
+
     await runAutomationsImmediate({
-      ...latest,
-      inboundMessageId: latestInboundMessageId,
+      app,
+      workspaceId: row.workspaceId,
+      eventType: 'INBOUND_MESSAGE',
+      conversationId: row.id,
+      inboundMessageId: latestInbound?.id || null,
       inboundText: mergedText,
-      inboundBatchCount: batch.length,
-      inboundDebounceMs: state.debounceMs,
-      lastInboundAt: batchLastInboundAt.toISOString(),
+      inboundBatchCount: batchCount,
+      inboundDebounceMs: clampInboundDebounceMs(DEFAULT_INBOUND_DEBOUNCE_MS),
+      lastInboundAt,
+      transportMode: 'REAL',
     });
+  } catch (err) {
+    app.log.error({ err, workspaceId: row.workspaceId, conversationId: row.id }, 'Inbound debounce flush failed');
   } finally {
-    state.running = false;
-    for (const done of waiters) done();
-    if (state.queue.length > 0) {
-      state.timer = setTimeout(() => {
-        flushInboundDebounce(key).catch((err) => {
-          latest.app.log.error({ err, key }, 'Inbound debounce flush failed');
-        });
-      }, state.debounceMs);
-    } else if (state.waiters.length === 0) {
-      inboundDebounceByConversation.delete(key);
-    }
+    await prisma.conversation
+      .update({
+        where: { id: row.id },
+        data: { aiRunInFlight: false as any, aiRunLockUntil: null },
+      })
+      .catch(() => {});
   }
 }
 
-async function runAutomationsWithInboundDebounce(params: RunAutomationsParams): Promise<void> {
-  const key = `${params.workspaceId}:${params.conversationId}`;
+async function flushInboundDebounceQueue(app: FastifyInstance): Promise<void> {
   const now = new Date();
-  const debounceMs = clampInboundDebounceMs(DEFAULT_INBOUND_DEBOUNCE_MS);
+  const rows = await prisma.conversation
+    .findMany({
+      where: {
+        archivedAt: null,
+        pendingInboundAiRunAt: { lte: now },
+        OR: [{ aiRunInFlight: false }, { aiRunLockUntil: null }, { aiRunLockUntil: { lt: now } }],
+      } as any,
+      select: { id: true, workspaceId: true },
+      orderBy: { pendingInboundAiRunAt: 'asc' },
+      take: INBOUND_DEBOUNCE_BATCH_MAX,
+    })
+    .catch(() => []);
+  for (const row of rows) {
+    await flushInboundDebounceRow(app, row as any);
+  }
+}
 
-  const state =
-    inboundDebounceByConversation.get(key) ||
-    ({
-      timer: null,
-      running: false,
-      queue: [],
-      waiters: [],
-      latestParams: params,
-      debounceMs,
-      lastInboundAt: now,
-    } as InboundDebounceState);
-  if (!inboundDebounceByConversation.has(key)) inboundDebounceByConversation.set(key, state);
+export function startInboundDebounceWorker(app: FastifyInstance): void {
+  if (inboundDebounceWorkerStarted) return;
+  inboundDebounceWorkerStarted = true;
 
-  state.latestParams = params;
-  state.debounceMs = debounceMs;
-  state.lastInboundAt = now;
-  state.queue.push({
-    inboundMessageId: params.inboundMessageId ? String(params.inboundMessageId) : null,
-    inboundText: params.inboundText ? String(params.inboundText) : null,
-    at: now,
-  });
-
-  if (state.timer) clearTimeout(state.timer);
-  state.timer = setTimeout(() => {
-    flushInboundDebounce(key).catch((err) => {
-      params.app.log.error({ err, key }, 'Inbound debounce flush failed');
+  setInterval(() => {
+    flushInboundDebounceQueue(app).catch((err) => {
+      app.log.warn({ err }, 'Inbound debounce worker cycle failed');
     });
-  }, debounceMs);
+  }, INBOUND_DEBOUNCE_POLL_MS).unref();
 
-  await new Promise<void>((resolve) => {
-    state.waiters.push(resolve);
+  flushInboundDebounceQueue(app).catch((err) => {
+    app.log.warn({ err }, 'Inbound debounce worker initial run failed');
   });
 }
 
@@ -3717,6 +3957,39 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
   });
   if (!conversation) return;
   if (conversation.workspaceId !== params.workspaceId) return;
+  if (
+    isProdRuntime() &&
+    params.eventType === 'INBOUND_MESSAGE' &&
+    String(params.workspaceId || '').trim().toLowerCase() === 'default'
+  ) {
+    params.app.log.warn(
+      {
+        workspaceId: params.workspaceId,
+        conversationId: params.conversationId,
+        eventType: params.eventType,
+      },
+      'DEFAULT_WORKSPACE_INBOUND_BLOCKED: automations inbound deshabilitadas en PROD para workspace default.',
+    );
+    await prisma.automationRunLog
+      .create({
+        data: {
+          workspaceId: params.workspaceId,
+          ruleId: null,
+          conversationId: params.conversationId,
+          eventType: 'DEFAULT_WORKSPACE_INBOUND_BLOCKED',
+          status: 'BLOCKED',
+          inputJson: serializeJson({
+            inboundMessageId: params.inboundMessageId || null,
+            inboundText: String(params.inboundText || '').slice(0, 400),
+            transportMode: params.transportMode,
+          }),
+          outputJson: null,
+          error: 'Automations INBOUND_MESSAGE bloqueadas para workspace default en PROD.',
+        } as any,
+      })
+      .catch(() => {});
+    return;
+  }
 
   // Data quality pre-pass (determinista): si el inbound trae comuna/ciudad o RUT válido, persistirlo antes del agente
   // para evitar loops (“me falta comuna/ciudad”) cuando ya lo enviaron.
@@ -3870,6 +4143,7 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
                 direction: 'OUTBOUND',
                 text: note,
                 rawPayload: serializeJson({ system: true, automationRuleId: rule.id }),
+                isInternalEvent: true as any,
                 timestamp: new Date(),
                 read: true,
               },
