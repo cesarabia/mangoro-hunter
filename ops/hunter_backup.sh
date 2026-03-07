@@ -29,6 +29,32 @@ fail() {
 command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 no está instalado."
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum no está instalado."
 
+sqlite_backup_with_retry() {
+  local src_db="${1:-}"
+  local dst_db="${2:-}"
+  local attempts="${HUNTER_SQLITE_BACKUP_RETRIES:-8}"
+  local sleep_seconds="${HUNTER_SQLITE_BACKUP_RETRY_SLEEP_SEC:-2}"
+  local timeout_ms="${HUNTER_SQLITE_BACKUP_TIMEOUT_MS:-8000}"
+  local attempt=1
+  local last_err=""
+  while [[ "$attempt" -le "$attempts" ]]; do
+    if sqlite3 "$src_db" <<SQL >/dev/null 2>"$backup_dir/sqlite-backup.err"
+.timeout $timeout_ms
+.backup '$dst_db'
+SQL
+    then
+      rm -f "$backup_dir/sqlite-backup.err" >/dev/null 2>&1 || true
+      return 0
+    fi
+    last_err="$(tr '\n' ' ' < "$backup_dir/sqlite-backup.err" 2>/dev/null || echo "unknown sqlite backup error")"
+    log "SQLite backup intento ${attempt}/${attempts} falló: ${last_err}"
+    rm -f "$dst_db" >/dev/null 2>&1 || true
+    attempt=$((attempt + 1))
+    sleep "$sleep_seconds"
+  done
+  fail "No se pudo respaldar SQLite tras ${attempts} intentos: ${last_err}"
+}
+
 mkdir -p "$backup_dir"
 
 [[ -f "$DB_PATH" ]] || fail "DB no encontrada en $DB_PATH"
@@ -39,7 +65,7 @@ fi
 
 log "Creando backup en $backup_dir"
 
-sqlite3 "$DB_PATH" ".backup '$backup_dir/dev.db'"
+sqlite_backup_with_retry "$DB_PATH" "$backup_dir/dev.db"
 tar -czf "$backup_dir/uploads.tar.gz" -C "$STATE_DIR" "$(basename "$UPLOADS_PATH")"
 tar -czf "$backup_dir/assets.tar.gz" -C "$STATE_DIR" "$(basename "$ASSETS_PATH")"
 
