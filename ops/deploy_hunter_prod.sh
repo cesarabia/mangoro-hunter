@@ -143,6 +143,10 @@ rollback_to_previous_release() {
     log "Rollback omitido: no hay release previo válido."
     return 1
   fi
+  local previous_sha
+  previous_sha="$(basename "$previous_release" | cut -d- -f1)"
+  export HUNTER_BUILD_SHA="$previous_sha"
+  export HUNTER_BUILD_DIRTY="false"
   log "Rollback automático a release previo: $previous_release"
   ln -sfn "$previous_release" "$CURRENT_LINK"
   pm2 delete hunter-backend >/dev/null 2>&1 || true
@@ -315,6 +319,8 @@ mkdir -p "$APP_ROOT/frontend/dist"
 rsync -a --delete "$release_dir/frontend/dist/" "$APP_ROOT/frontend/dist/"
 
 log "Restart seguro (solo hunter-backend)"
+export HUNTER_BUILD_SHA="$git_sha"
+export HUNTER_BUILD_DIRTY="false"
 if [[ -f "$CURRENT_LINK/ecosystem.config.cjs" ]]; then
   pm2 delete hunter-backend >/dev/null 2>&1 || true
   pm2 start "$CURRENT_LINK/ecosystem.config.cjs" --only hunter-backend --update-env || pm2 restart hunter-backend --update-env

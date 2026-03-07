@@ -5,20 +5,27 @@ import path from 'path';
 import fs from 'fs';
 
 const startedAt = new Date().toISOString();
-let gitSha: string | null = null;
-let repoDirty: boolean | null = null;
-try {
-  const repoRoot = path.resolve(__dirname, '../../..');
-  gitSha = execSync('git rev-parse --short HEAD', { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] })
-    .toString()
-    .trim();
-  const status = execSync('git status --porcelain', { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] })
-    .toString()
-    .trim();
-  repoDirty = Boolean(status);
-} catch {
-  gitSha = null;
-  repoDirty = null;
+let gitSha: string | null = String(process.env.HUNTER_BUILD_SHA || '').trim() || null;
+let repoDirty: boolean | null =
+  typeof process.env.HUNTER_BUILD_DIRTY === 'string'
+    ? String(process.env.HUNTER_BUILD_DIRTY).toLowerCase().trim() === 'true'
+    : null;
+if (!gitSha) {
+  try {
+    const repoRoot = path.resolve(__dirname, '../../..');
+    const gitDir = path.join(repoRoot, '.git');
+    if (!fs.existsSync(gitDir)) throw new Error('no-git');
+    gitSha = execSync('git rev-parse --short HEAD', { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    const status = execSync('git status --porcelain', { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    repoDirty = Boolean(status);
+  } catch {
+    gitSha = null;
+    if (repoDirty === null) repoDirty = null;
+  }
 }
 
 let backendVersion: string | null = null;
