@@ -256,6 +256,22 @@ log "Backup creado: $backup_out"
 
 cd "$SOURCE_DIR"
 log "Actualizar código"
+snapshot_ts="$(date +%Y%m%d%H%M%S)"
+source_snapshot_dir="$BACKUPS_DIR/source-snapshots"
+mkdir -p "$source_snapshot_dir"
+if [[ -n "$(git -C "$SOURCE_DIR" status --porcelain 2>/dev/null || true)" ]]; then
+  snapshot_prefix="$source_snapshot_dir/hunter-source-${snapshot_ts}"
+  log "Workspace git sucio en $SOURCE_DIR. Guardando snapshot previo en ${snapshot_prefix}.*"
+  git -C "$SOURCE_DIR" diff > "${snapshot_prefix}.diff.patch" || true
+  git -C "$SOURCE_DIR" diff --staged > "${snapshot_prefix}.staged.patch" || true
+  git -C "$SOURCE_DIR" status --porcelain > "${snapshot_prefix}.status.txt" || true
+  git -C "$SOURCE_DIR" ls-files --others --exclude-standard > "${snapshot_prefix}.untracked.txt" || true
+  if [[ -s "${snapshot_prefix}.untracked.txt" ]]; then
+    tar -czf "${snapshot_prefix}.untracked.tgz" -C "$SOURCE_DIR" -T "${snapshot_prefix}.untracked.txt" || true
+  fi
+  git -C "$SOURCE_DIR" reset --hard HEAD
+  git -C "$SOURCE_DIR" clean -fd
+fi
 git fetch origin main
 git checkout main
 git pull --ff-only origin main
