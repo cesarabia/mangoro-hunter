@@ -1435,11 +1435,15 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                         {m.mediaPath && (
                           <button
                             onClick={() => handleDownload(m)}
+                            disabled={Boolean((m as any).mediaMissing)}
                             style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc', background: '#f8f8f8', fontSize: 12 }}
                           >
-                            Descargar
+                            {Boolean((m as any).mediaMissing) ? 'Archivo faltante' : 'Descargar'}
                           </button>
                         )}
+                        {Boolean((m as any).mediaMissing) ? (
+                          <span style={{ color: '#b93800' }}>Requiere re-subida del archivo.</span>
+                        ) : null}
                       </div>
                     )}
                     {m.transcriptText && (

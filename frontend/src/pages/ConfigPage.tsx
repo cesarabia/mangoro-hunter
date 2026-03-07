@@ -3196,6 +3196,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                         const archived = Boolean(asset?.archivedAt);
                         const audience = String(asset?.audience || 'PUBLIC').toUpperCase();
                         const publicUrl = typeof asset?.publicUrl === 'string' ? asset.publicUrl : '';
+                        const missing = Boolean(asset?.missing);
                         return (
                           <tr key={String(asset.id || `${asset.slug}-${asset.fileName}`)}>
                             <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }}>{String(asset.slug || '—')}</td>
@@ -3203,6 +3204,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                               <div style={{ fontWeight: 700 }}>{String(asset.title || asset.fileName || '—')}</div>
                               {asset.description ? <div style={{ color: '#666' }}>{String(asset.description)}</div> : null}
                               {archived ? <div style={{ color: '#b93800', fontWeight: 700 }}>(Archivado)</div> : null}
+                              {missing ? <div style={{ color: '#b93800', fontWeight: 700 }}>(Archivo faltante: requiere re-subida)</div> : null}
                             </td>
                             <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>{audience}</td>
                             <td style={{ padding: 8, borderBottom: '1px solid #f5f5f5' }}>
@@ -3221,6 +3223,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                                         setWorkspaceAssetUploadError('No se pudo copiar el link.');
                                       });
                                     }}
+                                    disabled={missing}
                                     style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
                                   >
                                     Copiar link

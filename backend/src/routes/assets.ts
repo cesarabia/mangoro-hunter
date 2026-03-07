@@ -33,6 +33,7 @@ export async function registerAssetRoutes(app: FastifyInstance) {
       createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
       updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
       publicUrl: row.publicUrl,
+      missing: Boolean((row as any).missing),
     }));
   });
 
@@ -155,7 +156,13 @@ export async function registerAssetRoutes(app: FastifyInstance) {
     if (!row) return reply.code(404).send({ error: 'Asset no encontrado' });
 
     const absolutePath = resolveWorkspaceAssetAbsolutePath(row as any);
-    if (!fs.existsSync(absolutePath)) return reply.code(404).send({ error: 'Archivo no encontrado en disco' });
+    if (!fs.existsSync(absolutePath)) {
+      return reply.code(404).send({
+        error: 'Archivo no encontrado en disco. Requiere re-subida.',
+        missing: true,
+        requiresResubmission: true,
+      });
+    }
 
     reply.header('Content-Type', row.mimeType || 'application/octet-stream');
     reply.header('Content-Disposition', `attachment; filename="${path.basename(row.fileName || 'archivo.pdf')}"`);
@@ -170,7 +177,13 @@ export function registerPublicAssetRoutes(app: FastifyInstance) {
     if (!row) return reply.code(404).send({ error: 'Asset no encontrado' });
 
     const absolutePath = resolveWorkspaceAssetAbsolutePath(row as any);
-    if (!fs.existsSync(absolutePath)) return reply.code(404).send({ error: 'Archivo no encontrado en disco' });
+    if (!fs.existsSync(absolutePath)) {
+      return reply.code(404).send({
+        error: 'Archivo no encontrado en disco. Requiere re-subida.',
+        missing: true,
+        requiresResubmission: true,
+      });
+    }
 
     reply.header('Cache-Control', 'public, max-age=3600');
     reply.header('Content-Type', row.mimeType || 'application/pdf');

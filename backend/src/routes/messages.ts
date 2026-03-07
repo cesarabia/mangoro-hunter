@@ -17,7 +17,11 @@ export async function registerMessageRoutes(app: FastifyInstance) {
     const absolutePath = candidates.find((p) => fs.existsSync(p));
 
     if (!absolutePath) {
-      return reply.code(404).send({ error: 'Archivo no encontrado' });
+      return reply.code(404).send({
+        error: 'Archivo no encontrado en disco. Requiere re-subida.',
+        missing: true,
+        requiresResubmission: true,
+      });
     }
 
     reply.header('Content-Type', message.mediaMime || 'application/octet-stream');

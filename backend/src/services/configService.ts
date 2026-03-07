@@ -718,6 +718,9 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
   }
   if (!existing.defaultJobTitle) {
     updates.defaultJobTitle = DEFAULT_JOB_TITLE;
+  } else if (/ejecutivo\(a\)\s*de\s*venta\s*en\s*terreno/i.test(String(existing.defaultJobTitle || ''))) {
+    // Sanitiza valores legacy heredados de workspaces antiguos para evitar copy contradictorio en fallback.
+    updates.defaultJobTitle = DEFAULT_JOB_TITLE;
   }
   if (!existing.defaultInterviewDay) {
     updates.defaultInterviewDay = DEFAULT_INTERVIEW_DAY;
@@ -771,8 +774,12 @@ async function ensureConfigRecord(): Promise<SystemConfig> {
     updates.recruitJobSheet = DEFAULT_RECRUIT_JOB_SHEET;
   } else if (!existing.recruitJobSheet) {
     updates.recruitJobSheet = DEFAULT_RECRUIT_JOB_SHEET;
+  } else if (/venta\s+en\s+terreno|alarmas?\s+de\s+seguridad/i.test(String(existing.recruitJobSheet || ''))) {
+    updates.recruitJobSheet = DEFAULT_RECRUIT_JOB_SHEET;
   }
   if (typeof (existing as any).recruitFaq === 'undefined') {
+    updates.recruitFaq = DEFAULT_RECRUIT_FAQ;
+  } else if (/venta\s+en\s+terreno|alarmas?\s+de\s+seguridad/i.test(String(existing.recruitFaq || ''))) {
     updates.recruitFaq = DEFAULT_RECRUIT_FAQ;
   }
   if (typeof (existing as any).adminNotificationDetailLevel === 'undefined') {

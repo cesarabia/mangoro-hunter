@@ -79,6 +79,7 @@ export async function listWorkspaceAssets(workspaceId: string, includeArchived =
   return rows.map((asset) => ({
     ...asset,
     publicUrl: String(asset.audience || '').toUpperCase() === 'PUBLIC' ? buildWorkspaceAssetPublicUrl(asset) : null,
+    missing: !fs.existsSync(resolveWorkspaceAssetAbsolutePath(asset as any)),
   }));
 }
 

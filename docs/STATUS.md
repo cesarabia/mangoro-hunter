@@ -2,6 +2,27 @@
 
 ## Qué está listo (hoy)
 
+### ER-P7 (Auditoría + fuente de verdad + integridad de archivos) — implementado
+- Documento de auditoría runtime creado: `docs/ARCHITECTURE_RUNTIME_AUDIT.md`.
+- Fuente de verdad auditada:
+  - runtime actual usa `Program.agentSystemPrompt` del Program resuelto,
+  - se identificó contaminación legacy en histórico (`Message`/`AgentRunLog`) y en `SystemConfig` global.
+- Observabilidad agregada a `AgentRunLog.inputContextJson`:
+  - `runtimeResolution.resolvedWorkspace`
+  - `runtimeResolution.resolvedPhoneLine`
+  - `runtimeResolution.resolvedProgram` (`id/slug/name/promptHash`)
+  - junto a `applicationRole`, `applicationState`, `missingFields`.
+- Integridad de archivos endurecida:
+  - assets API retorna `missing`,
+  - descargas de assets/adjuntos devuelven error claro con `requiresResubmission`,
+  - UI marca archivos faltantes (assets y chat) sin mostrar error crudo.
+- Sanitización defensiva en `SystemConfig`:
+  - valores legacy de “venta en terreno/alarmas” se normalizan a defaults neutros para evitar contradicciones en fallback legacy.
+- Estado de storage en hunter-prod auditado:
+  - `WorkspaceAsset` activos: 6 faltantes en disco,
+  - adjuntos de mensajes con `mediaPath`: 140 faltantes detectados,
+  - `state/uploads` y `state/assets` existen pero vacíos (requiere re-subida/restauración externa).
+
 ### ER-P6 (Pre-GoLive Reclutamiento) — implementado
 - Modo explícito de respuesta por workspace:
   - `candidateReplyMode = AUTO | HYBRID`

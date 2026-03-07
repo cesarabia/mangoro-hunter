@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { prisma } from '../../db/client';
 import { resolveWorkspaceProgramForKind } from '../programRoutingService';
 import { stripAccents } from './tools';
@@ -25,6 +26,8 @@ type BuildLlmContextResult = {
   programPrompt: string;
   resolvedProgramId: string | null;
   resolvedProgramSlug: string | null;
+  resolvedProgramName: string | null;
+  programPromptHash: string;
   latestInboundText: string;
   lastOutboundComparable: string;
   conversationalMessagesCount: number;
@@ -163,7 +166,13 @@ function detectMissingFields(params: {
 async function resolveProgramContext(params: {
   workspaceId: string;
   conversation: any;
-}): Promise<{ promptBase: string; resolvedProgramId: string | null; resolvedProgramSlug: string | null }> {
+}): Promise<{
+  promptBase: string;
+  resolvedProgramId: string | null;
+  resolvedProgramSlug: string | null;
+  resolvedProgramName: string | null;
+  promptHash: string;
+}> {
   const { workspaceId, conversation } = params;
 
   const loadProgram = async (programId: string) =>
@@ -181,6 +190,9 @@ async function resolveProgramContext(params: {
         agentSystemPrompt: true,
       },
     });
+
+  const hashPrompt = (input: string): string =>
+    crypto.createHash('sha256').update(String(input || '').trim()).digest('hex').slice(0, 16);
 
   let program = conversation.programId ? await loadProgram(conversation.programId) : null;
 
@@ -217,11 +229,14 @@ async function resolveProgramContext(params: {
   }
 
   if (!program?.agentSystemPrompt) {
+    const fallbackPrompt =
+      'Programa default: coordina reclutamiento/entrevista/ventas según contexto. Responde corto, humano y accionable.';
     return {
-      promptBase:
-        'Programa default: coordina reclutamiento/entrevista/ventas según contexto. Responde corto, humano y accionable.',
+      promptBase: fallbackPrompt,
       resolvedProgramId: null,
       resolvedProgramSlug: null,
+      resolvedProgramName: null,
+      promptHash: hashPrompt(fallbackPrompt),
     };
   }
 
@@ -314,6 +329,8 @@ async function resolveProgramContext(params: {
     promptBase: blocks.join('\n\n').trim(),
     resolvedProgramId: String(program.id || '').trim() || null,
     resolvedProgramSlug: String(program.slug || '').trim() || null,
+    resolvedProgramName: String(program.name || '').trim() || null,
+    promptHash: hashPrompt(String(program.agentSystemPrompt || '')),
   };
 }
 
@@ -321,6 +338,7 @@ export async function buildLLMContext(params: BuildLlmContextParams): Promise<Bu
   const conversation = await prisma.conversation.findFirst({
     where: { id: params.conversationId, workspaceId: params.workspaceId },
     include: {
+      workspace: { select: { id: true, name: true } } as any,
       contact: true,
       program: { select: { id: true, slug: true, name: true } },
       phoneLine: { select: { id: true, alias: true, waPhoneNumberId: true } },
@@ -392,6 +410,23 @@ export async function buildLLMContext(params: BuildLlmContextParams): Promise<Bu
   });
 
   const contextJson = {
+    runtimeResolution: {
+      resolvedWorkspace: {
+        id: String(conversation.workspaceId || '').trim(),
+        name: String((conversation as any)?.workspace?.name || '').trim() || null,
+      },
+      resolvedPhoneLine: {
+        id: String(conversation.phoneLineId || '').trim() || null,
+        alias: String((conversation as any)?.phoneLine?.alias || '').trim() || null,
+        waPhoneNumberId: String((conversation as any)?.phoneLine?.waPhoneNumberId || '').trim() || null,
+      },
+      resolvedProgram: {
+        id: programContext.resolvedProgramId,
+        slug: programContext.resolvedProgramSlug,
+        name: programContext.resolvedProgramName,
+        promptHash: programContext.promptHash,
+      },
+    },
     workspaceId: params.workspaceId,
     event: {
       type: params.eventType,
@@ -461,6 +496,8 @@ export async function buildLLMContext(params: BuildLlmContextParams): Promise<Bu
     programPrompt: programContext.promptBase,
     resolvedProgramId: programContext.resolvedProgramId,
     resolvedProgramSlug: programContext.resolvedProgramSlug,
+    resolvedProgramName: programContext.resolvedProgramName,
+    programPromptHash: programContext.promptHash,
     latestInboundText,
     lastOutboundComparable,
     conversationalMessagesCount: conversational.length,

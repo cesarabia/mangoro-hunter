@@ -22,7 +22,7 @@ import { isKnownActiveStage, normalizeStageSlug } from '../services/workspaceSta
 import { createInAppNotification } from '../services/notificationService';
 import { listWorkspaceTemplateCatalog } from '../services/whatsappTemplateCatalogService';
 import { repairMojibake } from '../utils/textEncoding';
-import { resolveUploadsBaseDir } from '../utils/statePaths';
+import { resolveMediaPathCandidates, resolveUploadsBaseDir } from '../utils/statePaths';
 
 export async function registerConversationRoutes(app: FastifyInstance) {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -148,6 +148,14 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'text/plain',
     ].includes(mime);
+  };
+
+  const mediaExistsOnDisk = (mediaPath: unknown): boolean => {
+    const raw = String(mediaPath || '').trim();
+    if (!raw) return true;
+    if (raw.startsWith('http://') || raw.startsWith('https://')) return true;
+    const candidates = resolveMediaPathCandidates(raw);
+    return candidates.some((candidate) => fs.existsSync(candidate));
   };
 
   const getAttachmentSizeLimitError = (mimeType: string, sizeBytes: number): string | null => {
@@ -446,9 +454,16 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         (conversation.messages || []).find((m: any) => !isInternalPreviewMessage(m)) ||
         (conversation.messages || [])[0] ||
         null;
+      const previewWithMissing =
+        realPreview && realPreview.mediaPath
+          ? {
+              ...realPreview,
+              mediaMissing: !mediaExistsOnDisk(realPreview.mediaPath),
+            }
+          : realPreview;
       return {
         ...conversation,
-        messages: realPreview ? [realPreview] : [],
+        messages: previewWithMissing ? [previewWithMissing] : [],
         contact: conversation.contact
           ? {
               ...conversation.contact,
@@ -575,8 +590,19 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       : 'RECRUIT';
 
     const sanitizedContact = await sanitizeContact(conversation.contact);
+    const conversationMessages = Array.isArray((conversation as any)?.messages)
+      ? (conversation as any).messages.map((m: any) =>
+          m?.mediaPath
+            ? {
+                ...m,
+                mediaMissing: !mediaExistsOnDisk(m.mediaPath),
+              }
+            : m
+        )
+      : [];
     return {
       ...conversation,
+      messages: conversationMessages,
       contact: sanitizedContact
         ? {
             ...sanitizedContact,
