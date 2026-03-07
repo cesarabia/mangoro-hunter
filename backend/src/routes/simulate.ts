@@ -16,6 +16,7 @@ import { attemptScheduleInterview } from '../services/interviewSchedulerService'
 import { createWorkspaceAsset, resolveWorkspaceAssetAbsolutePath } from '../services/workspaceAssetService';
 import { listWorkspaceTemplateCatalog } from '../services/whatsappTemplateCatalogService';
 import { triggerReadyForOpReview } from '../services/postulacionReviewService';
+import { mapApplicationStateToStage, normalizeApplicationRole, normalizeApplicationState } from '../services/postulacionFlowService';
 import fs from 'fs/promises';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
@@ -7610,8 +7611,22 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
             if (!run?.id) {
               assertions.push({ ok: false, message: 'candidateFlow: no se pudo crear agentRun' });
             } else {
-              const roleToSet = candidatePeonetaBasicFlow ? 'PEONETA' : 'CONDUCTOR';
-              const targetState = candidateConductorCollectCvAndDocs ? 'EN_REVISION_OPERACION' : 'STATE_1_DISCOVERY';
+              const flowCfg =
+                (candidatePeonetaBasicFlow && typeof candidatePeonetaBasicFlow === 'object'
+                  ? candidatePeonetaBasicFlow
+                  : candidateConductorCollectCvAndDocs && typeof candidateConductorCollectCvAndDocs === 'object'
+                    ? candidateConductorCollectCvAndDocs
+                    : {}) as any;
+              const roleToSet =
+                normalizeApplicationRole(
+                  flowCfg.applicationRole || flowCfg.role || (candidatePeonetaBasicFlow ? 'PEONETA' : 'DRIVER_COMPANY'),
+                ) || (candidatePeonetaBasicFlow ? 'PEONETA' : 'DRIVER_COMPANY');
+              const targetState =
+                normalizeApplicationState(
+                  flowCfg.applicationState ||
+                    flowCfg.state ||
+                    (candidateConductorCollectCvAndDocs ? 'READY_FOR_OP_REVIEW' : 'COLLECT_MIN_INFO'),
+                ) || (candidateConductorCollectCvAndDocs ? 'READY_FOR_OP_REVIEW' : 'COLLECT_MIN_INFO');
               const commands: any[] = [
                 {
                   command: 'SET_APPLICATION_FLOW',
@@ -7629,14 +7644,6 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
                   },
                 },
               ];
-              if (candidateConductorCollectCvAndDocs) {
-                commands.push({
-                  command: 'SET_CONVERSATION_STAGE',
-                  conversationId: convo.id,
-                  stage: 'EN_REVISION_OPERACION',
-                  reason: 'docs_recibidos',
-                });
-              }
 
               await executeAgentResponse({
                 app,
@@ -7681,11 +7688,22 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
                   : 'candidateFlow: comuna no capturada',
               });
               if (candidateConductorCollectCvAndDocs) {
-                const stageOk = String((convoUpdated as any)?.conversationStage || '').toUpperCase() === 'EN_REVISION_OPERACION';
+                const expectedStage =
+                  String(
+                    flowCfg.expectedStage ||
+                      mapApplicationStateToStage({
+                        state: normalizeApplicationState(targetState),
+                        role: normalizeApplicationRole(roleToSet),
+                      }) ||
+                      'OP_REVIEW',
+                  )
+                    .trim()
+                    .toUpperCase() || 'OP_REVIEW';
+                const stageOk = String((convoUpdated as any)?.conversationStage || '').toUpperCase() === expectedStage;
                 assertions.push({
                   ok: stageOk,
                   message: stageOk
-                    ? 'candidateConductorCollectCvAndDocs: stage EN_REVISION_OPERACION OK'
+                    ? `candidateConductorCollectCvAndDocs: stage ${expectedStage} OK`
                     : `candidateConductorCollectCvAndDocs: stage inválido (${String((convoUpdated as any)?.conversationStage || '—')})`,
                 });
               }

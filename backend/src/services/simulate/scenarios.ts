@@ -123,9 +123,14 @@ export type ScenarioStep = {
     };
     candidateConductorCollectCvAndDocs?: {
       workspaceId?: string;
+      applicationRole?: string;
+      applicationState?: string;
+      expectedStage?: string;
     };
     candidatePeonetaBasicFlow?: {
       workspaceId?: string;
+      applicationRole?: string;
+      applicationState?: string;
     };
     postulacionDriverToReadyForOpReviewEmail?: {
       workspaceId?: string;
@@ -1393,7 +1398,14 @@ export const SCENARIOS: ScenarioDefinition[] = [
       {
         action: 'WORKSPACE_CHECK',
         inboundText: 'check conductor vehiculo clean flow',
-        expect: { candidateConductorCollectCvAndDocs: { workspaceId: 'scenario-er-p8-clean-conductor-vehiculo' } },
+        expect: {
+          candidateConductorCollectCvAndDocs: {
+            workspaceId: 'scenario-er-p8-clean-conductor-vehiculo',
+            applicationRole: 'DRIVER_OWN_VAN',
+            applicationState: 'READY_FOR_OP_REVIEW',
+            expectedStage: 'OP_REVIEW',
+          },
+        },
       },
     ],
   },
