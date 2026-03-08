@@ -816,6 +816,10 @@ export async function executeAgentResponse(params: {
         .map((v) => String(v || '').trim())
         .filter(Boolean)
     : [];
+  const intakeTransitionCtx =
+    agentRunContext && typeof (agentRunContext as any).intakeTransition === 'object'
+      ? ((agentRunContext as any).intakeTransition as Record<string, any>)
+      : null;
   let roleSelectionDetected: string | null =
     String((previousRunResults as any)?.roleSelectionDetected || '').trim() || null;
   let setApplicationFlowRequested = Boolean((previousRunResults as any)?.setApplicationFlowRequested);
@@ -825,6 +829,24 @@ export async function executeAgentResponse(params: {
   let programSwitchSucceeded = Boolean((previousRunResults as any)?.programSwitchSucceeded);
   let programSwitchReason: string | null =
     String((previousRunResults as any)?.programSwitchReason || '').trim() || null;
+  if (!roleSelectionDetected) {
+    roleSelectionDetected = String(intakeTransitionCtx?.roleSelectionDetected || '').trim() || null;
+  }
+  if (!setApplicationFlowRequested && Boolean(intakeTransitionCtx?.setApplicationFlowRequested)) {
+    setApplicationFlowRequested = true;
+  }
+  if (!setApplicationFlowSucceeded && Boolean(intakeTransitionCtx?.setApplicationFlowSucceeded)) {
+    setApplicationFlowSucceeded = true;
+  }
+  if (!targetProgramSlugDebug) {
+    targetProgramSlugDebug = String(intakeTransitionCtx?.targetProgramSlug || '').trim() || null;
+  }
+  if (!programSwitchSucceeded && Boolean(intakeTransitionCtx?.programSwitchSucceeded)) {
+    programSwitchSucceeded = true;
+  }
+  if (!programSwitchReason) {
+    programSwitchReason = String(intakeTransitionCtx?.programSwitchReason || '').trim() || null;
+  }
   let currentStage = baseConversation ? String((baseConversation as any).conversationStage || '') : '';
 
   const askedFieldCounts = conversationId
