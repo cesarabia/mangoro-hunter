@@ -33,22 +33,19 @@ Notas:
 - Health check backend: [http://localhost:4001/api/health](http://localhost:4001/api/health)
 
 ## 4) Variables/env local
-Base recomendada (`.env` en raíz):
+Base recomendada (`.env` en raíz, aislado desde snapshot):
 
 ```env
-DATABASE_URL="file:../dev.db"
+DATABASE_URL="file:/Users/cesar/Documents/dev/mangoro/app/hunter/tmp/local-state/dev.local.snapshot.db"
 PORT=4001
-JWT_SECRET=super-secret-key
-OPENAI_API_KEY=<tu_key>
-```
-
-Opcional para separar estado local:
-
-```env
-HUNTER_STATE_DIR="/Users/cesar/Documents/dev/mangoro/app/hunter/tmp/local-state"
+JWT_SECRET=dev-secret-key
+OPENAI_API_KEY=
 HUNTER_STATE_DB_PATH="/Users/cesar/Documents/dev/mangoro/app/hunter/tmp/local-state/dev.local.snapshot.db"
 HUNTER_STATE_UPLOADS_PATH="/Users/cesar/Documents/dev/mangoro/app/hunter/tmp/local-state/uploads"
 HUNTER_ASSETS_DIR="/Users/cesar/Documents/dev/mangoro/app/hunter/tmp/local-state/assets"
+HUNTER_WEBHOOK_MODE="DISABLED"
+HUNTER_OUTBOUND_TRANSPORT="NULL"
+APP_ENV="local"
 ```
 
 ## 5) Levantar DB local y assets locales
