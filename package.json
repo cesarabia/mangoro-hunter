@@ -1,0 +1,9 @@
+{
+  "name": "mangoro-hunter-root",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:local": "sh -c '(cd backend && npm run dev) & (cd frontend && npm run dev) & wait'"
+  }
+}

@@ -18,6 +18,9 @@ import { listWorkspaceTemplateCatalog } from '../services/whatsappTemplateCatalo
 import { triggerReadyForOpReview } from '../services/postulacionReviewService';
 import { mapApplicationStateToStage, normalizeApplicationRole, normalizeApplicationState } from '../services/postulacionFlowService';
 import fs from 'fs/promises';
+import path from 'node:path';
+import { resolveUploadsBaseDir } from '../utils/statePaths';
+import { serializeJson } from '../utils/json';
 
 export async function registerSimulationRoutes(app: FastifyInstance) {
   const normalizeForContains = (value: string): string =>
@@ -9675,6 +9678,485 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
         })),
       },
     };
+  });
+
+  const toLocalQaConversationPayload = async (conversationId: string, workspaceId: string) => {
+    const convo = await prisma.conversation.findFirst({
+      where: { id: conversationId, workspaceId, archivedAt: null },
+      include: {
+        contact: true,
+        program: { select: { id: true, name: true, slug: true } },
+        messages: {
+          where: { isInternalEvent: false as any },
+          orderBy: { timestamp: 'asc' },
+          take: 300,
+        },
+      },
+    });
+    if (!convo) return null;
+    const lastRun = await prisma.agentRunLog
+      .findFirst({
+        where: { workspaceId, conversationId: convo.id },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          status: true,
+          eventType: true,
+          programId: true,
+          inputContextJson: true,
+          resultsJson: true,
+          error: true,
+          createdAt: true,
+          program: { select: { id: true, name: true, slug: true } },
+        },
+      })
+      .catch(() => null);
+    const lastAutomation = await prisma.automationRunLog
+      .findFirst({
+        where: { workspaceId, conversationId: convo.id },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, eventType: true, status: true, error: true, createdAt: true },
+      })
+      .catch(() => null);
+
+    const parseJson = (value: string | null | undefined): any => {
+      if (!value) return null;
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    };
+    const inputContext = parseJson(lastRun?.inputContextJson || null);
+    const results = parseJson(lastRun?.resultsJson || null);
+
+    return {
+      id: convo.id,
+      workspaceId: convo.workspaceId,
+      status: convo.status,
+      stage: convo.conversationStage,
+      channel: convo.channel,
+      program: convo.program
+        ? { id: convo.program.id, name: convo.program.name, slug: convo.program.slug }
+        : null,
+      contact: {
+        id: convo.contact.id,
+        waId: convo.contact.waId,
+        phone: convo.contact.phone,
+        displayName: convo.contact.displayName,
+        candidateName: convo.contact.candidateName,
+      },
+      application: {
+        role: (convo as any).applicationRole || null,
+        state: (convo as any).applicationState || null,
+        aiPaused: Boolean((convo as any).aiPaused),
+      },
+      messages: convo.messages.map((m) => ({
+        id: m.id,
+        direction: m.direction,
+        text: m.transcriptText || m.text,
+        mediaType: m.mediaType || null,
+        mediaMime: m.mediaMime || null,
+        mediaPath: m.mediaPath || null,
+        timestamp: m.timestamp.toISOString(),
+      })),
+      runtimeDebug: {
+        lastRunId: lastRun?.id || null,
+        lastRunStatus: lastRun?.status || null,
+        lastRunEvent: lastRun?.eventType || null,
+        lastRunProgram: lastRun?.program
+          ? { id: (lastRun as any).program.id, name: (lastRun as any).program.name, slug: (lastRun as any).program.slug }
+          : null,
+        modelRequested: results?.modelRequested ?? null,
+        modelResolved: results?.modelResolved ?? null,
+        replyDecision: results?.replyDecision ?? null,
+        replyDecisionReason: results?.replyDecisionReason ?? null,
+        roleSelectionDetected: results?.roleSelectionDetected ?? inputContext?.intakeTransition?.roleSelectionDetected ?? null,
+        setApplicationFlowRequested:
+          results?.setApplicationFlowRequested ?? inputContext?.intakeTransition?.setApplicationFlowRequested ?? null,
+        setApplicationFlowSucceeded:
+          results?.setApplicationFlowSucceeded ?? inputContext?.intakeTransition?.setApplicationFlowSucceeded ?? null,
+        targetProgramSlug: results?.targetProgramSlug ?? inputContext?.intakeTransition?.targetProgramSlug ?? null,
+        programSwitchSucceeded: results?.programSwitchSucceeded ?? inputContext?.intakeTransition?.programSwitchSucceeded ?? null,
+        programSwitchReason: results?.programSwitchReason ?? inputContext?.intakeTransition?.programSwitchReason ?? null,
+        applicationRole: results?.applicationRole ?? null,
+        applicationState: results?.applicationState ?? null,
+        missingFields: Array.isArray(results?.missingFields) ? results.missingFields : [],
+        lastUserMessageNormalized: results?.lastUserMessageNormalized ?? null,
+        candidateReplyMode: results?.candidateReplyMode ?? null,
+        adminNotifyMode: results?.adminNotifyMode ?? null,
+        aiPaused: results?.aiPaused ?? null,
+      },
+      automationDebug: lastAutomation
+        ? {
+            id: lastAutomation.id,
+            eventType: lastAutomation.eventType,
+            status: lastAutomation.status,
+            error: lastAutomation.error || null,
+            createdAt: lastAutomation.createdAt.toISOString(),
+          }
+        : null,
+      updatedAt: convo.updatedAt.toISOString(),
+      createdAt: convo.createdAt.toISOString(),
+    };
+  };
+
+  app.get('/local-qa/conversations', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await requireWorkspaceAdmin(request, reply);
+    if (!access) return;
+    const q = String((request.query as any)?.q || '').trim();
+    const limitRaw = Number((request.query as any)?.limit);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 80;
+    const contains = q ? normalizeForContains(q) : '';
+
+    const conversations = await prisma.conversation.findMany({
+      where: {
+        workspaceId: access.workspaceId,
+        archivedAt: null,
+        isAdmin: false,
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: limit,
+      include: {
+        contact: { select: { id: true, waId: true, phone: true, displayName: true, candidateName: true } },
+        program: { select: { id: true, name: true, slug: true } },
+        messages: {
+          where: { isInternalEvent: false as any },
+          orderBy: { timestamp: 'desc' },
+          take: 1,
+          select: { id: true, direction: true, text: true, transcriptText: true, timestamp: true },
+        },
+      },
+    });
+
+    const rows = conversations
+      .filter((c) => {
+        if (!contains) return true;
+        const hay = normalizeForContains(
+          [
+            c.contact.displayName,
+            c.contact.candidateName,
+            c.contact.waId,
+            c.contact.phone,
+            c.program?.name,
+            c.program?.slug,
+            c.id,
+          ]
+            .filter(Boolean)
+            .join(' '),
+        );
+        return hay.includes(contains);
+      })
+      .map((c) => ({
+        id: c.id,
+        status: c.status,
+        stage: c.conversationStage,
+        channel: c.channel,
+        contact: {
+          id: c.contact.id,
+          displayName: c.contact.displayName,
+          candidateName: c.contact.candidateName,
+          waId: c.contact.waId,
+          phone: c.contact.phone,
+        },
+        program: c.program ? { id: c.program.id, name: c.program.name, slug: c.program.slug } : null,
+        applicationRole: (c as any).applicationRole || null,
+        applicationState: (c as any).applicationState || null,
+        aiPaused: Boolean((c as any).aiPaused),
+        lastMessage: c.messages[0]
+          ? {
+              id: c.messages[0].id,
+              direction: c.messages[0].direction,
+              text: c.messages[0].transcriptText || c.messages[0].text,
+              timestamp: c.messages[0].timestamp.toISOString(),
+            }
+          : null,
+        updatedAt: c.updatedAt.toISOString(),
+      }));
+
+    return { workspaceId: access.workspaceId, conversations: rows };
+  });
+
+  app.get('/local-qa/conversations/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await requireWorkspaceAdmin(request, reply);
+    if (!access) return;
+    const { id } = request.params as { id: string };
+    const payload = await toLocalQaConversationPayload(id, access.workspaceId);
+    if (!payload) return reply.code(404).send({ error: 'Conversación QA no encontrada.' });
+    return payload;
+  });
+
+  app.post('/local-qa/conversations', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await requireWorkspaceAdmin(request, reply);
+    if (!access) return;
+    const body = (request.body || {}) as {
+      waId?: string;
+      phoneE164?: string;
+      displayName?: string;
+      programSlug?: string;
+    };
+    const normalizedWa =
+      normalizeWhatsAppId(String(body.waId || '').trim()) ||
+      normalizeWhatsAppId(String(body.phoneE164 || '').trim()) ||
+      normalizeWhatsAppId(`+5699${String(Date.now()).slice(-6)}`);
+    if (!normalizedWa) {
+      return reply.code(400).send({ error: 'No se pudo normalizar el número QA.' });
+    }
+    const displayName = String(body.displayName || '').trim() || 'QA Local';
+
+    const phoneLine = await prisma.phoneLine.findFirst({
+      where: { workspaceId: access.workspaceId, archivedAt: null, isActive: true },
+      orderBy: [{ lastInboundAt: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true, defaultProgramId: true },
+    });
+    if (!phoneLine?.id) {
+      return reply.code(400).send({ error: 'No hay PhoneLine activa en el workspace seleccionado.' });
+    }
+
+    const contact =
+      (await prisma.contact.findFirst({
+        where: {
+          workspaceId: access.workspaceId,
+          OR: [{ waId: normalizedWa }, { phone: `+${normalizedWa}` }, { phone: normalizedWa }],
+        },
+      })) ||
+      (await prisma.contact.create({
+        data: {
+          workspaceId: access.workspaceId,
+          waId: normalizedWa,
+          phone: `+${normalizedWa}`,
+          displayName,
+          candidateName: null,
+          candidateNameManual: null,
+        } as any,
+      }));
+
+    const programId = (() => {
+      const slug = String(body.programSlug || '').trim();
+      if (!slug) return phoneLine.defaultProgramId || null;
+      return null;
+    })();
+    const chosenProgram =
+      programId ||
+      (String(body.programSlug || '').trim()
+        ? null
+        : null);
+    let resolvedProgramId = chosenProgram;
+    const requestedProgramSlug = String(body.programSlug || '').trim();
+    if (!resolvedProgramId && requestedProgramSlug) {
+      const found = await prisma.program.findFirst({
+        where: {
+          workspaceId: access.workspaceId,
+          slug: requestedProgramSlug,
+          archivedAt: null,
+          isActive: true,
+        },
+        select: { id: true },
+      });
+      resolvedProgramId = found?.id || null;
+    }
+    if (!resolvedProgramId) resolvedProgramId = phoneLine.defaultProgramId || null;
+
+    const convo = await prisma.conversation.create({
+      data: {
+        workspaceId: access.workspaceId,
+        phoneLineId: phoneLine.id,
+        contactId: contact.id,
+        programId: resolvedProgramId,
+        status: 'NEW',
+        conversationStage: 'NEW_INTAKE',
+        channel: 'qa-simulator',
+        conversationKind: 'CLIENT',
+        aiPaused: false,
+      } as any,
+      select: { id: true },
+    });
+    const payload = await toLocalQaConversationPayload(convo.id, access.workspaceId);
+    return payload || { id: convo.id };
+  });
+
+  app.post('/local-qa/run', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await requireWorkspaceAdmin(request, reply);
+    if (!access) return;
+    const body = (request.body || {}) as { conversationId?: string; inboundText?: string };
+    const conversationId = String(body.conversationId || '').trim();
+    const inboundText = String(body.inboundText || '').trim();
+    if (!conversationId || !inboundText) {
+      return reply.code(400).send({ error: '"conversationId" e "inboundText" son obligatorios.' });
+    }
+    const convo = await prisma.conversation.findFirst({
+      where: { id: conversationId, workspaceId: access.workspaceId, archivedAt: null },
+      select: { id: true, workspaceId: true },
+    });
+    if (!convo?.id) return reply.code(404).send({ error: 'Conversación QA no encontrada.' });
+
+    const message = await prisma.message.create({
+      data: {
+        conversationId: convo.id,
+        direction: 'INBOUND',
+        text: inboundText,
+        rawPayload: serializeJson({ simulated: true, localQa: true }),
+        timestamp: new Date(),
+        read: false,
+      } as any,
+      select: { id: true },
+    });
+    await prisma.conversation.update({ where: { id: convo.id }, data: { updatedAt: new Date() } as any }).catch(() => {});
+    await runAutomations({
+      app,
+      workspaceId: access.workspaceId,
+      eventType: 'INBOUND_MESSAGE',
+      conversationId: convo.id,
+      inboundMessageId: message.id,
+      inboundText,
+      transportMode: 'NULL',
+    });
+    const payload = await toLocalQaConversationPayload(convo.id, access.workspaceId);
+    return payload || { id: convo.id };
+  });
+
+  app.post('/local-qa/attachment', { preValidation: [app.authenticate], bodyLimit: 150_000_000 } as any, async (request, reply) => {
+    const access = await requireWorkspaceAdmin(request, reply);
+    if (!access) return;
+    const body = (request.body || {}) as {
+      conversationId?: string;
+      fileName?: string;
+      mimeType?: string;
+      dataBase64?: string;
+      note?: string;
+    };
+    const conversationId = String(body.conversationId || '').trim();
+    const fileName = String(body.fileName || '').trim() || 'qa-adjunto.bin';
+    const mimeType = String(body.mimeType || '').trim() || 'application/octet-stream';
+    const rawBase64 = String(body.dataBase64 || '').trim();
+    if (!conversationId || !rawBase64) {
+      return reply.code(400).send({ error: '"conversationId" y "dataBase64" son obligatorios.' });
+    }
+    const convo = await prisma.conversation.findFirst({
+      where: { id: conversationId, workspaceId: access.workspaceId, archivedAt: null },
+      select: { id: true },
+    });
+    if (!convo?.id) return reply.code(404).send({ error: 'Conversación QA no encontrada.' });
+
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = Buffer.from(rawBase64, 'base64');
+    } catch {
+      return reply.code(400).send({ error: 'Base64 inválido para adjunto QA.' });
+    }
+    if (!fileBuffer.length) return reply.code(400).send({ error: 'Adjunto QA vacío.' });
+
+    const safeName = path.basename(fileName).replace(/[^\w.\-() ]+/g, '_');
+    const baseDir = path.resolve(resolveUploadsBaseDir(), 'qa-simulator', convo.id);
+    await fs.mkdir(baseDir, { recursive: true });
+    const absPath = path.join(baseDir, `${Date.now()}-${safeName}`);
+    await fs.writeFile(absPath, fileBuffer);
+    const relativePath = path.relative(process.cwd(), absPath).replace(/\\/g, '/');
+    const note = String(body.note || '').trim();
+    const mediaType = mimeType.startsWith('image/')
+      ? 'image'
+      : mimeType.startsWith('video/')
+        ? 'video'
+        : mimeType.startsWith('audio/')
+          ? 'audio'
+          : 'document';
+    const inboundText = note || `Adjunto QA: ${safeName}`;
+    const message = await prisma.message.create({
+      data: {
+        conversationId: convo.id,
+        direction: 'INBOUND',
+        text: inboundText,
+        mediaType,
+        mediaMime: mimeType,
+        mediaPath: relativePath,
+        rawPayload: serializeJson({
+          simulated: true,
+          localQa: true,
+          attachment: { fileName: safeName, mimeType, sizeBytes: fileBuffer.length },
+        }),
+        timestamp: new Date(),
+        read: false,
+      } as any,
+      select: { id: true },
+    });
+    await prisma.conversation.update({ where: { id: convo.id }, data: { updatedAt: new Date() } as any }).catch(() => {});
+    await runAutomations({
+      app,
+      workspaceId: access.workspaceId,
+      eventType: 'INBOUND_MESSAGE',
+      conversationId: convo.id,
+      inboundMessageId: message.id,
+      inboundText,
+      transportMode: 'NULL',
+    });
+    const payload = await toLocalQaConversationPayload(convo.id, access.workspaceId);
+    return payload || { id: convo.id };
+  });
+
+  app.post('/local-qa/reset-state', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await requireWorkspaceAdmin(request, reply);
+    if (!access) return;
+    const body = (request.body || {}) as { conversationId?: string };
+    const conversationId = String(body.conversationId || '').trim();
+    if (!conversationId) return reply.code(400).send({ error: '"conversationId" es obligatorio.' });
+    const conversation = await prisma.conversation.findFirst({
+      where: { id: conversationId, workspaceId: access.workspaceId, archivedAt: null },
+      select: { id: true },
+    });
+    if (!conversation?.id) return reply.code(404).send({ error: 'Conversación QA no encontrada.' });
+
+    const now = new Date();
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        applicationRole: null,
+        applicationState: null,
+        applicationDataJson: null,
+        aiPaused: false,
+        stageTags: null,
+        pendingInboundAiRunAt: null as any,
+        pendingInboundAiRunReason: null as any,
+        aiRunInFlight: false as any,
+        aiRunLockUntil: null,
+        adminPendingAction: null,
+        updatedAt: now,
+      } as any,
+    });
+
+    await prisma.hybridReplyDraft
+      .updateMany({
+        where: { workspaceId: access.workspaceId, conversationId: conversation.id, status: 'PENDING' },
+        data: {
+          status: 'CANCELLED',
+          cancelledAt: now,
+          cancelledByWaId: 'local_qa_reset',
+          error: 'QA_STATE_RESET',
+        } as any,
+      })
+      .catch(() => {});
+
+    await prisma.message
+      .create({
+        data: {
+          conversationId: conversation.id,
+          direction: 'OUTBOUND',
+          text: '🧪 QA_STATE_RESET: metadata de flujo limpiada (sin borrar mensajes).',
+          rawPayload: serializeJson({
+            system: true,
+            noteType: 'INTERNAL',
+            visibility: 'SYSTEM',
+            event: 'QA_STATE_RESET',
+            source: 'local_qa_simulator',
+          }),
+          isInternalEvent: true as any,
+          timestamp: now,
+          read: true,
+        } as any,
+      })
+      .catch(() => {});
+
+    const payload = await toLocalQaConversationPayload(conversation.id, access.workspaceId);
+    return payload || { id: conversation.id };
   });
 
   app.post('/replay/:conversationId', { preValidation: [app.authenticate] }, async (request, reply) => {
