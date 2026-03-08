@@ -1,6 +1,6 @@
 # LOCAL STATUS — Hunter
 
-Fecha/hora: 2026-03-08 16:44:35 -03
+Fecha/hora: 2026-03-08 16:45:45 -03
 
 ## URLs activas
 - Frontend: [http://localhost:5173](http://localhost:5173)
@@ -8,8 +8,8 @@ Fecha/hora: 2026-03-08 16:44:35 -03
 - Health backend: [http://localhost:4001/api/health](http://localhost:4001/api/health)
 
 ## Procesos activos (Mac local)
-- Backend PID: `27819`
-- Frontend PID: `27840`
+- Backend PID: `29160`
+- Frontend PID: `29183`
 
 ## Comandos usados para levantar
 ```bash
