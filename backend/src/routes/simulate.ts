@@ -9383,24 +9383,42 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
                 select: { applicationState: true as any, applicationRole: true as any },
               })
               .catch(() => null);
-            const outbound = await prisma.message
+            const latestRun = await prisma.agentRunLog
               .findFirst({
-                where: { conversationId: convo.id, direction: 'OUTBOUND', isInternalEvent: false as any },
-                orderBy: { timestamp: 'desc' },
-                select: { text: true },
+                where: { conversationId: convo.id, eventType: 'INBOUND_MESSAGE' },
+                orderBy: { createdAt: 'desc' },
+                select: { commandsJson: true, resultsJson: true, status: true },
               })
               .catch(() => null);
-
-            const text = String(outbound?.text || '');
-            const textOk =
-              text.includes('1) Peoneta') &&
-              text.includes('2) Conductor') &&
-              text.includes('3) Conductor con vehículo propio');
+            const runCommands = safeJsonParse((latestRun as any)?.commandsJson || null);
+            const runResults = safeJsonParse((latestRun as any)?.resultsJson || null);
+            const sentKickoffText = (() => {
+              const commands = Array.isArray((runCommands as any)?.commands) ? (runCommands as any).commands : [];
+              for (const cmd of commands) {
+                if (!cmd || typeof cmd !== 'object') continue;
+                if (String((cmd as any).command || '').toUpperCase() !== 'SEND_MESSAGE') continue;
+                const text = String((cmd as any).text || '');
+                if (
+                  text.includes('1) Peoneta') &&
+                  text.includes('2) Conductor') &&
+                  text.includes('3) Conductor con vehículo propio')
+                ) {
+                  return true;
+                }
+              }
+              return false;
+            })();
+            const replySent = Array.isArray((runResults as any)?.results)
+              ? (runResults as any).results.some((r: any) => {
+                  const sendResult = r?.details?.sendResult || r?.details?.result?.sendResult || null;
+                  return Boolean(sendResult && sendResult.success === true);
+                })
+              : false;
             assertions.push({
-              ok: textOk,
-              message: textOk
+              ok: sentKickoffText && replySent,
+              message: sentKickoffText && replySent
                 ? 'intakeGreetingStartsFlow: saludo dispara menú de cargos'
-                : `intakeGreetingStartsFlow: no se envió menú esperado (${text.slice(0, 140) || 'sin outbound'})`,
+                : `intakeGreetingStartsFlow: no se confirmó envío kickoff (status=${String((latestRun as any)?.status || '—')})`,
             });
             const stateOk = String((after as any)?.applicationState || '').toUpperCase() === 'CHOOSE_ROLE';
             assertions.push({
