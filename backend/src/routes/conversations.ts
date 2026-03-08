@@ -125,6 +125,61 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     }
   };
 
+  const resolveQaTargetConversation = async (params: {
+    workspaceId: string;
+    conversationId?: string | null;
+    waId?: string | null;
+  }) => {
+    const explicitConversationId = String(params.conversationId || '').trim();
+    if (explicitConversationId) {
+      const conversation = await prisma.conversation.findFirst({
+        where: {
+          id: explicitConversationId,
+          workspaceId: params.workspaceId,
+          archivedAt: null,
+          isAdmin: false,
+        },
+        include: { contact: true },
+      });
+      return {
+        conversation,
+        waId: normalizeWhatsAppId(String(conversation?.contact?.waId || conversation?.contact?.phone || '').trim()) || null,
+        source: 'conversationId' as const,
+      };
+    }
+
+    const config = await getSystemConfig();
+    const configuredTestWa = getTestWaIdAllowlist(config)[0] || normalizeWhatsAppId((config as any)?.testPhoneNumber || '');
+    const targetWaId = normalizeWhatsAppId(String(params.waId || '').trim()) || configuredTestWa;
+    if (!targetWaId) {
+      return { conversation: null, waId: null, source: 'config' as const };
+    }
+
+    const contact = await prisma.contact.findFirst({
+      where: {
+        workspaceId: params.workspaceId,
+        OR: [{ waId: targetWaId }, { phone: targetWaId }, { phone: `+${targetWaId}` }],
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, waId: true, phone: true },
+    });
+    if (!contact?.id) {
+      return { conversation: null, waId: targetWaId, source: 'waId' as const };
+    }
+
+    const conversation = await prisma.conversation.findFirst({
+      where: {
+        workspaceId: params.workspaceId,
+        contactId: contact.id,
+        archivedAt: null,
+        isAdmin: false,
+      },
+      orderBy: { updatedAt: 'desc' },
+      include: { contact: true },
+    });
+    return { conversation, waId: targetWaId, source: 'waId' as const };
+  };
+
   const decodeBase64Payload = (value: unknown): Buffer | null => {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -689,6 +744,146 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     };
   });
 
+  app.post('/qa/reset-state', { preValidation: [app.authenticate] }, async (request, reply) => {
+    const access = await resolveWorkspaceAccess(request);
+    if (!isWorkspaceAdmin(request, access)) {
+      return reply.code(403).send({ error: 'Forbidden' });
+    }
+    const body = (request.body || {}) as { conversationId?: string; waId?: string };
+    const resolved = await resolveQaTargetConversation({
+      workspaceId: access.workspaceId,
+      conversationId: body?.conversationId,
+      waId: body?.waId,
+    });
+    const targetConversation = resolved.conversation;
+    if (!targetConversation?.id) {
+      return reply.code(404).send({
+        error: 'No se encontró conversación QA activa para resetear estado.',
+        waId: resolved.waId || null,
+      });
+    }
+
+    const now = new Date();
+    const previous = {
+      applicationRole: String((targetConversation as any).applicationRole || '').trim() || null,
+      applicationState: String((targetConversation as any).applicationState || '').trim() || null,
+      aiPaused: Boolean((targetConversation as any).aiPaused),
+      stageTags: String((targetConversation as any).stageTags || '').trim() || null,
+      pendingInboundAiRunAt: (targetConversation as any).pendingInboundAiRunAt || null,
+      pendingInboundAiRunReason: String((targetConversation as any).pendingInboundAiRunReason || '').trim() || null,
+      adminPendingAction: String((targetConversation as any).adminPendingAction || '').trim() || null,
+    };
+
+    await prisma.conversation
+      .update({
+        where: { id: targetConversation.id },
+        data: {
+          applicationRole: null,
+          applicationState: null,
+          applicationDataJson: null,
+          aiPaused: false,
+          stageTags: null,
+          pendingInboundAiRunAt: null as any,
+          pendingInboundAiRunReason: null as any,
+          aiRunInFlight: false as any,
+          aiRunLockUntil: null,
+          adminPendingAction: null,
+          updatedAt: now,
+        } as any,
+      })
+      .catch(() => {});
+
+    const pendingDrafts = await prisma.hybridReplyDraft.findMany({
+      where: { workspaceId: access.workspaceId, conversationId: targetConversation.id, status: 'PENDING' },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    const pendingDraftIds = pendingDrafts.map((d) => d.id);
+    if (pendingDraftIds.length > 0) {
+      await prisma.hybridReplyDraft
+        .updateMany({
+          where: { id: { in: pendingDraftIds } },
+          data: {
+            status: 'CANCELLED',
+            cancelledAt: now,
+            cancelledByWaId: resolved.waId || 'qa_state_reset',
+            error: 'QA_STATE_RESET',
+          } as any,
+        })
+        .catch(() => {});
+    }
+
+    await prisma.message
+      .create({
+        data: {
+          conversationId: targetConversation.id,
+          direction: 'OUTBOUND',
+          text: '🧪 QA_STATE_RESET: se limpió metadata de flujo (role/state/aiPaused/pending) para validación limpia.',
+          rawPayload: serializeJson({
+            system: true,
+            noteType: 'INTERNAL',
+            visibility: 'SYSTEM',
+            event: 'QA_STATE_RESET',
+            previous,
+            cancelledPendingDrafts: pendingDraftIds.length,
+          }),
+          isInternalEvent: true as any,
+          timestamp: now,
+          read: true,
+        } as any,
+      })
+      .catch(() => {});
+
+    await prisma.automationRunLog
+      .create({
+        data: {
+          workspaceId: access.workspaceId,
+          ruleId: null,
+          conversationId: targetConversation.id,
+          eventType: 'QA_STATE_RESET',
+          status: 'EXECUTED',
+          inputJson: serializeJson({
+            source: resolved.source,
+            waId: resolved.waId || null,
+            conversationId: targetConversation.id,
+          }),
+          outputJson: serializeJson({
+            reset: {
+              applicationRole: null,
+              applicationState: null,
+              aiPaused: false,
+              stageTags: null,
+              pendingInboundAiRunAt: null,
+              pendingInboundAiRunReason: null,
+              adminPendingAction: null,
+            },
+            cancelledPendingDrafts: pendingDraftIds.length,
+          }),
+        } as any,
+      })
+      .catch(() => {});
+
+    return {
+      ok: true,
+      conversationId: targetConversation.id,
+      waId: resolved.waId || null,
+      resetFields: [
+        'applicationRole',
+        'applicationState',
+        'applicationDataJson',
+        'aiPaused',
+        'stageTags',
+        'pendingInboundAiRunAt',
+        'pendingInboundAiRunReason',
+        'aiRunInFlight',
+        'aiRunLockUntil',
+        'adminPendingAction',
+      ],
+      cancelledPendingDrafts: pendingDraftIds.length,
+      previous,
+    };
+  });
+
   app.get('/:id', { preValidation: [app.authenticate] }, async (request, reply) => {
     const access = await resolveWorkspaceAccess(request);
     const { id } = request.params as { id: string };
@@ -758,9 +953,13 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const resultsJson = safeParseJson(lastAgentRun?.resultsJson);
     const runtimeResolution = contextJson?.runtimeResolution || {};
     const appFlow = contextJson?.applicationFlow || {};
-    const missingFields = Array.isArray(appFlow?.missingFields)
+    const flowMissingFields = Array.isArray(appFlow?.missingFields)
       ? appFlow.missingFields.map((v: any) => String(v)).filter(Boolean)
       : [];
+    const resultMissingFields = Array.isArray(resultsJson?.missingFields)
+      ? (resultsJson.missingFields as any[]).map((v: any) => String(v)).filter(Boolean)
+      : [];
+    const missingFields = flowMissingFields.length > 0 ? flowMissingFields : resultMissingFields;
     const runtimeDiagnostics = {
       resolvedWorkspace: runtimeResolution?.resolvedWorkspace || {
         id: access.workspaceId,
@@ -781,10 +980,10 @@ export async function registerConversationRoutes(app: FastifyInstance) {
         runtimeResolution?.resolvedProgram?.promptHash ||
         null,
       applicationRole: String(
-        appFlow?.applicationRole || (conversation as any)?.applicationRole || '',
+        appFlow?.applicationRole || resultsJson?.applicationRole || (conversation as any)?.applicationRole || '',
       ).trim() || null,
       applicationState: String(
-        appFlow?.applicationState || (conversation as any)?.applicationState || '',
+        appFlow?.applicationState || resultsJson?.applicationState || (conversation as any)?.applicationState || '',
       ).trim() || null,
       missingFields,
       modelRequested:
@@ -796,6 +995,9 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       adminNotifyMode:
         String((workspaceSettings as any)?.adminNotifyMode || '').trim().toUpperCase() || 'HITS_ONLY',
       aiPaused: Boolean(conversation.aiPaused),
+      replyDecision: String(resultsJson?.replyDecision || '').trim() || null,
+      replyDecisionReason: String(resultsJson?.replyDecisionReason || '').trim() || null,
+      lastUserMessageNormalized: String(resultsJson?.lastUserMessageNormalized || '').trim() || null,
       lastRunStatus: lastAgentRun
         ? {
             id: lastAgentRun.id,

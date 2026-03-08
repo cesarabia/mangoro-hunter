@@ -7512,6 +7512,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const programPromptIsEffective = (step.expect as any)?.programPromptIsEffective;
       const assetsPublicDownloadOk = (step.expect as any)?.assetsPublicDownloadOk;
       const runtimeDebugPanelVisible = (step.expect as any)?.runtimeDebugPanelVisible;
+      const intakeGreetingStartsFlow = (step.expect as any)?.intakeGreetingStartsFlow;
       if (
         (candidateIntakeChooseRole && typeof candidateIntakeChooseRole === 'object') ||
         (candidateConductorCollectCvAndDocs && typeof candidateConductorCollectCvAndDocs === 'object') ||
@@ -9230,6 +9231,183 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
               message: diagOk
                 ? 'runtimeDebugPanelVisible: runtimeDiagnostics disponible en API de conversación'
                 : `runtimeDebugPanelVisible: runtimeDiagnostics incompleto (status=${detailRes.statusCode})`,
+            });
+          }
+
+          await prisma.conversation.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.contact.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.phoneLine.updateMany({ where: { id: lineId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.program.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+        }
+      }
+
+      if (intakeGreetingStartsFlow && typeof intakeGreetingStartsFlow === 'object') {
+        const wsId =
+          String((intakeGreetingStartsFlow as any)?.workspaceId || 'scenario-er-p12-intake-greeting').trim() ||
+          'scenario-er-p12-intake-greeting';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const now = new Date();
+        if (!userId) {
+          assertions.push({ ok: false, message: 'intakeGreetingStartsFlow: userId missing' });
+        } else {
+          const lineId = `scenario-intake-greeting-line-${Date.now()}`;
+          const waPhoneNumberId = `${Date.now()}${Math.floor(Math.random() * 1000)}`.slice(0, 18);
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: {
+                id: wsId,
+                name: 'Scenario ER-P12 Intake Greeting',
+                isSandbox: true,
+                candidateReplyMode: 'AUTO' as any,
+                adminNotifyMode: 'HITS_ONLY' as any,
+                archivedAt: null,
+              } as any,
+              update: {
+                name: 'Scenario ER-P12 Intake Greeting',
+                isSandbox: true,
+                candidateReplyMode: 'AUTO' as any,
+                adminNotifyMode: 'HITS_ONLY' as any,
+                archivedAt: null,
+              } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+
+          const intakeProgram = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'postulacion-intake-envio-rapido' } },
+              create: {
+                workspaceId: wsId,
+                name: 'Postulación — Intake (scenario)',
+                slug: 'postulacion-intake-envio-rapido',
+                agentSystemPrompt: 'Scenario prompt intake greeting',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: {
+                name: 'Postulación — Intake (scenario)',
+                agentSystemPrompt: 'Scenario prompt intake greeting',
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const line = intakeProgram?.id
+            ? await prisma.phoneLine
+                .create({
+                  data: {
+                    id: lineId,
+                    workspaceId: wsId,
+                    alias: 'Scenario Intake Greeting Line',
+                    waPhoneNumberId,
+                    isActive: true,
+                    defaultProgramId: intakeProgram.id,
+                  } as any,
+                  select: { id: true },
+                })
+                .catch(() => null)
+            : null;
+          const contact = await prisma.contact
+            .create({
+              data: {
+                workspaceId: wsId,
+                displayName: 'Scenario Intake Greeting Contact',
+                waId: `scenario-intake-greeting-${Date.now()}`,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          const convo =
+            line?.id && contact?.id
+              ? await prisma.conversation
+                  .create({
+                    data: {
+                      workspaceId: wsId,
+                      phoneLineId: line.id,
+                      contactId: contact.id,
+                      status: 'OPEN',
+                      channel: 'sandbox',
+                      isAdmin: false,
+                      conversationKind: 'CLIENT',
+                      conversationStage: 'NEW_INTAKE',
+                      programId: intakeProgram?.id || null,
+                      applicationRole: null,
+                      applicationState: null,
+                      aiPaused: false,
+                      archivedAt: null,
+                    } as any,
+                    select: { id: true },
+                  })
+                  .catch(() => null)
+              : null;
+
+          if (!convo?.id) {
+            assertions.push({ ok: false, message: 'intakeGreetingStartsFlow: setup incompleto' });
+          } else {
+            const inboundMsg = await prisma.message
+              .create({
+                data: {
+                  conversationId: convo.id,
+                  direction: 'INBOUND',
+                  text: 'holaaa',
+                  rawPayload: JSON.stringify({ type: 'text', body: 'holaaa', source: 'scenario' }),
+                  timestamp: new Date(),
+                  read: false,
+                } as any,
+                select: { id: true },
+              })
+              .catch(() => null);
+            await runAutomations({
+              app,
+              workspaceId: wsId,
+              eventType: 'INBOUND_MESSAGE',
+              conversationId: convo.id,
+              inboundMessageId: inboundMsg?.id || null,
+              inboundText: 'holaaa',
+              transportMode: 'NULL',
+            }).catch(() => {});
+
+            const after = await prisma.conversation
+              .findUnique({
+                where: { id: convo.id },
+                select: { applicationState: true as any, applicationRole: true as any },
+              })
+              .catch(() => null);
+            const outbound = await prisma.message
+              .findFirst({
+                where: { conversationId: convo.id, direction: 'OUTBOUND', isInternalEvent: false as any },
+                orderBy: { timestamp: 'desc' },
+                select: { text: true },
+              })
+              .catch(() => null);
+
+            const text = String(outbound?.text || '');
+            const textOk =
+              text.includes('1) Peoneta') &&
+              text.includes('2) Conductor') &&
+              text.includes('3) Conductor con vehículo propio');
+            assertions.push({
+              ok: textOk,
+              message: textOk
+                ? 'intakeGreetingStartsFlow: saludo dispara menú de cargos'
+                : `intakeGreetingStartsFlow: no se envió menú esperado (${text.slice(0, 140) || 'sin outbound'})`,
+            });
+            const stateOk = String((after as any)?.applicationState || '').toUpperCase() === 'CHOOSE_ROLE';
+            assertions.push({
+              ok: stateOk,
+              message: stateOk
+                ? 'intakeGreetingStartsFlow: applicationState=CHOOSE_ROLE'
+                : `intakeGreetingStartsFlow: state inesperado (${String((after as any)?.applicationState || '—')})`,
             });
           }
 

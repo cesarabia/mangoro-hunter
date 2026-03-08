@@ -994,6 +994,9 @@ Reglas:
               ...(staffProgram?.id ? { staffDefaultProgramId: staffProgram.id } : {}),
               ...(clientMenuIds.length > 0 ? { clientProgramMenuIdsJson: JSON.stringify(clientMenuIds) } : {}),
               ...(staffProgram?.id ? { staffProgramMenuIdsJson: JSON.stringify([staffProgram.id]) } : {}),
+              candidateReplyMode: 'AUTO',
+              adminNotifyMode: 'HITS_ONLY',
+              hybridApprovalEnabled: false,
             } as any,
           })
           .catch(() => {});

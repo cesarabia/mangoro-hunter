@@ -1294,6 +1294,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   <div>candidateReplyMode: <b>{String(runtimeDiagnostics?.candidateReplyMode || 'AUTO')}</b></div>
                   <div>adminNotifyMode: <b>{String(runtimeDiagnostics?.adminNotifyMode || 'HITS_ONLY')}</b></div>
                   <div>aiPaused: <b>{runtimeDiagnostics?.aiPaused ? 'Sí' : 'No'}</b></div>
+                  <div>replyDecision: <b>{String(runtimeDiagnostics?.replyDecision || '—')}</b></div>
+                  <div>replyDecisionReason: <b>{String(runtimeDiagnostics?.replyDecisionReason || '—')}</b></div>
+                  <div style={{ gridColumn: isNarrow ? '1' : '1 / span 2' }}>
+                    lastUserMessageNormalized: <b>{String(runtimeDiagnostics?.lastUserMessageNormalized || '—')}</b>
+                  </div>
                   <div>Last run: <b>{runtimeLastRun ? `${String(runtimeLastRun.status || '—')} (${String(runtimeLastRun.eventType || '—')})` : '—'}</b></div>
                   <div style={{ gridColumn: isNarrow ? '1' : '1 / span 2' }}>
                     missingFields:{' '}

@@ -133,6 +133,9 @@ export const ReviewPage: React.FC<{
   const [qaCleanLoading, setQaCleanLoading] = useState(false);
   const [qaCleanStatus, setQaCleanStatus] = useState<string | null>(null);
   const [qaCleanError, setQaCleanError] = useState<string | null>(null);
+  const [qaResetLoading, setQaResetLoading] = useState(false);
+  const [qaResetStatus, setQaResetStatus] = useState<string | null>(null);
+  const [qaResetError, setQaResetError] = useState<string | null>(null);
   const [assetsIntegrity, setAssetsIntegrity] = useState<any | null>(null);
   const [assetsIntegrityError, setAssetsIntegrityError] = useState<string | null>(null);
 
@@ -375,6 +378,29 @@ export const ReviewPage: React.FC<{
       setQaCleanError(err.message || 'No se pudo crear hilo QA limpio');
     } finally {
       setQaCleanLoading(false);
+    }
+  };
+
+  const resetQaStateOnly = async () => {
+    setQaResetLoading(true);
+    setQaResetError(null);
+    setQaResetStatus(null);
+    try {
+      const data: any = await apiClient.post('/api/conversations/qa/reset-state', {});
+      const conversationId = String(data?.conversationId || '').trim();
+      const cancelled = Number(data?.cancelledPendingDrafts || 0);
+      setQaResetStatus(
+        `QA state reseteado en ${conversationId || '—'} · drafts pendientes cancelados: ${cancelled}.`,
+      );
+      if (conversationId) {
+        setOutboundConversationId(conversationId);
+        setLogTab('agentRuns');
+      }
+      await refreshLogs(conversationId || undefined);
+    } catch (err: any) {
+      setQaResetError(err.message || 'No se pudo resetear el estado QA');
+    } finally {
+      setQaResetLoading(false);
     }
   };
 
@@ -1643,19 +1669,30 @@ export const ReviewPage: React.FC<{
           <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               <div style={{ fontWeight: 800 }}>Hilo QA limpio (sin borrar historial)</div>
-              <button
-                onClick={() => createQaCleanThread().catch(() => {})}
-                disabled={qaCleanLoading}
-                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
-              >
-                {qaCleanLoading ? 'Creando…' : 'Crear hilo QA limpio'}
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => resetQaStateOnly().catch(() => {})}
+                  disabled={qaResetLoading}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', color: '#111' }}
+                >
+                  {qaResetLoading ? 'Reseteando…' : 'Reset QA state only'}
+                </button>
+                <button
+                  onClick={() => createQaCleanThread().catch(() => {})}
+                  disabled={qaCleanLoading}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
+                >
+                  {qaCleanLoading ? 'Creando…' : 'Crear hilo QA limpio'}
+                </button>
+              </div>
             </div>
             <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
-              Archiva el hilo QA anterior (preservado) y crea uno nuevo para validación limpia de runtime.
+              “Reset QA state only” limpia solo metadata de flujo (sin borrar mensajes). “Crear hilo QA limpio” archiva el hilo QA previo y abre uno nuevo.
             </div>
             {qaCleanStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{qaCleanStatus}</div> : null}
             {qaCleanError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{qaCleanError}</div> : null}
+            {qaResetStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{qaResetStatus}</div> : null}
+            {qaResetError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{qaResetError}</div> : null}
           </div>
 
           <div style={{ marginTop: 16, border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fff' }}>

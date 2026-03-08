@@ -102,6 +102,25 @@ function normalizeForNameChecks(value: string): string {
   return stripAccents(String(value || '')).toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function isSimpleGreeting(value: string): boolean {
+  const normalized = normalizeForNameChecks(value);
+  if (!normalized) return false;
+  return (
+    normalized === 'hola' ||
+    normalized.startsWith('hola ') ||
+    normalized === 'holaa' ||
+    normalized === 'holaaa' ||
+    normalized === 'buenas' ||
+    normalized.startsWith('buenas ') ||
+    normalized === 'buenos dias' ||
+    normalized === 'buenas tardes' ||
+    normalized === 'buenas noches' ||
+    normalized === 'hi' ||
+    normalized === 'hello' ||
+    normalized === 'hey'
+  );
+}
+
 function isMilestoneNotifyEvent(cmd: { eventType?: unknown; text?: unknown }): boolean {
   const eventType = normalizeForNameChecks(String(cmd.eventType || ''));
   const text = normalizeForNameChecks(String(cmd.text || ''));
@@ -725,10 +744,11 @@ export async function executeAgentResponse(params: {
   const agentRun = await prisma.agentRunLog
     .findUnique({
       where: { id: params.agentRunId },
-      select: { conversationId: true, inputContextJson: true, eventType: true },
+      select: { conversationId: true, inputContextJson: true, eventType: true, resultsJson: true },
     })
     .catch(() => null);
   const agentRunContext = safeJsonParse(agentRun?.inputContextJson || null);
+  const previousRunResults = safeJsonParse(agentRun?.resultsJson || null);
   const agentEventType = String(agentRun?.eventType || '')
     .trim()
     .toUpperCase();
@@ -777,6 +797,25 @@ export async function executeAgentResponse(params: {
         include: { contact: true, phoneLine: true, program: { select: { id: true, slug: true } } as any },
       })
     : null;
+  const workspaceRuntime = baseConversation?.workspaceId
+    ? await prisma.workspace
+        .findUnique({
+          where: { id: baseConversation.workspaceId },
+          select: { candidateReplyMode: true as any, adminNotifyMode: true as any },
+        })
+        .catch(() => null)
+    : null;
+  const candidateReplyMode =
+    String((workspaceRuntime as any)?.candidateReplyMode || '').trim().toUpperCase() === 'HYBRID' ? 'HYBRID' : 'AUTO';
+  const adminNotifyMode =
+    String((workspaceRuntime as any)?.adminNotifyMode || '').trim().toUpperCase() === 'EVERY_DRAFT'
+      ? 'EVERY_DRAFT'
+      : 'HITS_ONLY';
+  const contextMissingFields = Array.isArray((agentRunContext as any)?.applicationFlow?.missingFields)
+    ? ((agentRunContext as any).applicationFlow.missingFields as any[])
+        .map((v) => String(v || '').trim())
+        .filter(Boolean)
+    : [];
   let currentStage = baseConversation ? String((baseConversation as any).conversationStage || '') : '';
 
   const askedFieldCounts = conversationId
@@ -2265,9 +2304,80 @@ export async function executeAgentResponse(params: {
     results.push({ ok: false, details: { error: 'unknown_command', command: (cmd as any).command } });
   }
 
+  const hasDeliveredReply = results.some((row) => {
+    if (!row || typeof row !== 'object') return false;
+    const direct = (row as any)?.details?.sendResult;
+    const nested = (row as any)?.details?.result?.sendResult;
+    return Boolean((direct && direct.success === true) || (nested && nested.success === true));
+  });
+  const inboundNormalized = normalizeForNameChecks(inboundTextFromRunContext || '');
+  const applicationState = String((baseConversation as any)?.applicationState || '').trim().toUpperCase() || null;
+  const fallbackReasonRaw =
+    String((previousRunResults as any)?.fallbackReason || (previousRunResults as any)?.reason || '')
+      .trim()
+      .toUpperCase() || null;
+
+  let replyDecision: string | null = null;
+  let replyDecisionReason: string | null = null;
+
+  if (agentEventType === 'INBOUND_MESSAGE') {
+    if (hasDeliveredReply) {
+      replyDecision = 'REPLY_SENT';
+      replyDecisionReason = 'sendResult.success=true';
+    } else if (String((baseConversation as any)?.conversationKind || 'CLIENT').toUpperCase() === 'CLIENT') {
+      if (Boolean((baseConversation as any)?.aiPaused)) {
+        replyDecision = 'NO_REPLY_AIPAUSED';
+        replyDecisionReason = 'conversation.aiPaused=true';
+      } else if (candidateReplyMode === 'HYBRID') {
+        replyDecision = 'NO_REPLY_HYBRID';
+        replyDecisionReason = 'candidateReplyMode=HYBRID';
+      } else if (!String((baseConversation as any)?.programId || '').trim()) {
+        replyDecision = 'NO_REPLY_NO_PROGRAM';
+        replyDecisionReason = 'conversation.programId missing';
+      } else if (
+        fallbackReasonRaw &&
+        (fallbackReasonRaw.includes('INVALID_') ||
+          fallbackReasonRaw.includes('SCHEMA') ||
+          fallbackReasonRaw.includes('SEMANTICS') ||
+          fallbackReasonRaw.includes('VALIDATION'))
+      ) {
+        replyDecision = 'NO_REPLY_VALIDATION';
+        replyDecisionReason = `fallbackReason=${fallbackReasonRaw}`;
+      } else if (
+        isSimpleGreeting(inboundNormalized) &&
+        ['READY_FOR_OP_REVIEW', 'WAITING_OP_RESULT', 'OP_REJECTED', 'OP_ACCEPTED'].includes(
+          String(applicationState || '').toUpperCase(),
+        )
+      ) {
+        replyDecision = 'NO_REPLY_GREETING_RULE';
+        replyDecisionReason = `state=${applicationState || 'UNKNOWN'} (sin auto-reply)`;
+      } else {
+        replyDecision = 'NO_REPLY_ERROR';
+        replyDecisionReason = fallbackReasonRaw ? `fallbackReason=${fallbackReasonRaw}` : 'No SEND_MESSAGE exitoso en ejecución';
+      }
+    } else {
+      replyDecision = hasDeliveredReply ? 'REPLY_SENT' : 'NO_REPLY_ERROR';
+      replyDecisionReason = hasDeliveredReply ? 'sendResult.success=true' : 'Inbound no-client sin envío exitoso';
+    }
+  }
+
+  const mergedResults = {
+    ...(previousRunResults && typeof previousRunResults === 'object' ? previousRunResults : {}),
+    results,
+    replyDecision,
+    replyDecisionReason,
+    candidateReplyMode,
+    adminNotifyMode,
+    aiPaused: Boolean((baseConversation as any)?.aiPaused),
+    applicationRole: String((baseConversation as any)?.applicationRole || '').trim() || null,
+    applicationState: String((baseConversation as any)?.applicationState || '').trim() || null,
+    missingFields: contextMissingFields,
+    lastUserMessageNormalized: inboundNormalized || null,
+  };
+
   await prisma.agentRunLog.update({
     where: { id: params.agentRunId },
-    data: { status: 'EXECUTED', resultsJson: serializeJson({ results }) },
+    data: { status: 'EXECUTED', resultsJson: serializeJson(mergedResults) },
   });
 
   return { results };

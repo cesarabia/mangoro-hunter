@@ -188,6 +188,16 @@ function isMenuCommand(inboundText: string | null | undefined): boolean {
   return false;
 }
 
+function isSimpleGreetingInbound(inboundText: string | null | undefined): boolean {
+  const normalized = normalizeLoose(String(inboundText || ''));
+  if (!normalized) return false;
+  if (normalized === 'hola' || normalized === 'holaa' || normalized === 'holaaa') return true;
+  if (normalized.startsWith('hola ')) return true;
+  if (normalized === 'buenas' || normalized.startsWith('buenas ')) return true;
+  if (normalized === 'buenos dias' || normalized === 'buenas tardes' || normalized === 'buenas noches') return true;
+  return false;
+}
+
 function normalizeInboundMode(value: unknown): 'DEFAULT' | 'MENU' {
   const upper = String(value || '').trim().toUpperCase();
   return upper === 'MENU' ? 'MENU' : 'DEFAULT';
@@ -704,6 +714,91 @@ async function maybeHandleProgramSelection(params: {
     transportMode: params.transportMode,
     reason: 'programId_missing',
   });
+  return { handled: true };
+}
+
+async function maybeHandleIntakeInitialGreeting(params: {
+  app: FastifyInstance;
+  workspaceId: string;
+  conversation: any;
+  inboundText: string | null;
+  inboundMessageId?: string | null;
+  transportMode: ExecutorTransportMode;
+}): Promise<{ handled: boolean }> {
+  const convo = params.conversation;
+  if (!convo) return { handled: false };
+  if (convo.isAdmin) return { handled: false };
+  if (String(convo.conversationKind || 'CLIENT').toUpperCase() !== 'CLIENT') return { handled: false };
+  if (Boolean(convo.aiPaused)) return { handled: false };
+  if (!isSimpleGreetingInbound(params.inboundText)) return { handled: false };
+
+  const programSlug = normalizeLoose(String(convo?.program?.slug || ''));
+  if (programSlug !== 'postulacion-intake-envio-rapido') return { handled: false };
+
+  const role = String(convo.applicationRole || '').trim().toUpperCase();
+  const state = String(convo.applicationState || '').trim().toUpperCase();
+  const isInitialState = !state || state === 'CHOOSE_ROLE' || state === 'COLLECT_MIN_INFO';
+  if (role) return { handled: false };
+  if (!isInitialState) return { handled: false };
+
+  const kickoffText = [
+    'Hola. Soy el asistente de postulación de Envío Rápido.',
+    'Para avanzar, dime qué cargo te interesa:',
+    '1) Peoneta',
+    '2) Conductor (vehículo empresa)',
+    '3) Conductor con vehículo propio (furgón cerrado)',
+    'También puedes escribir el cargo directamente.',
+  ].join('\n');
+  const dedupeSeed = `${convo.id}:${params.inboundMessageId || ''}:intake_greeting_bootstrap`;
+  const dedupeKey = `intake_greeting:${stableHash(dedupeSeed).slice(0, 16)}`;
+
+  const agentRun = await prisma.agentRunLog
+    .create({
+      data: {
+        workspaceId: params.workspaceId,
+        conversationId: convo.id,
+        programId: convo.programId || null,
+        phoneLineId: convo.phoneLineId || null,
+        eventType: 'INBOUND_MESSAGE',
+        status: 'RUNNING',
+        inputContextJson: serializeJson({
+          reason: 'INTAKE_GREETING_BOOTSTRAP',
+          inboundMessageId: params.inboundMessageId || null,
+          inboundText: params.inboundText || null,
+        }),
+      } as any,
+      select: { id: true },
+    })
+    .catch(() => null);
+  if (!agentRun?.id) return { handled: false };
+
+  await executeAgentResponse({
+    app: params.app,
+    workspaceId: params.workspaceId,
+    agentRunId: agentRun.id,
+    response: {
+      agent: 'system_intake_greeting_bootstrap',
+      version: 1,
+      commands: [
+        {
+          command: 'SET_APPLICATION_FLOW',
+          conversationId: convo.id,
+          applicationState: 'CHOOSE_ROLE',
+          reason: 'INTAKE_GREETING_BOOTSTRAP',
+        } as any,
+        {
+          command: 'SEND_MESSAGE',
+          conversationId: convo.id,
+          channel: 'WHATSAPP',
+          type: 'SESSION_TEXT',
+          text: kickoffText,
+          dedupeKey,
+        } as any,
+      ],
+    } as any,
+    transportMode: params.transportMode,
+  }).catch(() => {});
+
   return { handled: true };
 }
 
@@ -3869,28 +3964,77 @@ async function runAutomationsWithInboundDebounce(params: RunAutomationsParams): 
   const debounceMs = clampInboundDebounceMs(DEFAULT_INBOUND_DEBOUNCE_MS);
   const now = Date.now();
   const nextAt = new Date(now + debounceMs);
-  await prisma.conversation
-    .updateMany({
+  let queuedCount = 0;
+  try {
+    const queued = await prisma.conversation.updateMany({
       where: { id: params.conversationId, workspaceId: params.workspaceId, archivedAt: null },
       data: {
         pendingInboundAiRunAt: nextAt,
         pendingInboundAiRunReason: 'INBOUND_DEBOUNCE',
         pendingInboundAiRunVersion: { increment: 1 },
       } as any,
-    })
-    .catch((err) => {
-      params.app.log.warn({ err, workspaceId: params.workspaceId, conversationId: params.conversationId }, 'Failed to queue inbound debounce');
     });
-  params.app.log.info(
+    queuedCount = Number(queued?.count || 0);
+  } catch (err) {
+    params.app.log.warn({ err, workspaceId: params.workspaceId, conversationId: params.conversationId }, 'Failed to queue inbound debounce');
+  }
+
+  if (queuedCount > 0) {
+    params.app.log.info(
+      {
+        workspaceId: params.workspaceId,
+        conversationId: params.conversationId,
+        inboundBatchCount: 1,
+        debounceMs,
+        lastInboundAt: new Date(now).toISOString(),
+      },
+      'Inbound debounce queued (DB scheduler)',
+    );
+    return;
+  }
+
+  params.app.log.warn(
     {
       workspaceId: params.workspaceId,
       conversationId: params.conversationId,
-      inboundBatchCount: 1,
+      eventType: params.eventType,
       debounceMs,
-      lastInboundAt: new Date(now).toISOString(),
+      inboundMessageId: params.inboundMessageId || null,
     },
-    'Inbound debounce queued (DB scheduler)',
+    'Inbound debounce queue fallback: running automations immediately to avoid silent no-reply.',
   );
+  await prisma.automationRunLog
+    .create({
+      data: {
+        workspaceId: params.workspaceId,
+        ruleId: null,
+        conversationId: params.conversationId,
+        eventType: 'INBOUND_DEBOUNCE_QUEUE_FALLBACK',
+        status: 'RECOVERED',
+        inputJson: serializeJson({
+          conversationId: params.conversationId,
+          inboundMessageId: params.inboundMessageId || null,
+          inboundText: params.inboundText || null,
+          debounceMs,
+          reason: 'QUEUE_UPDATE_ZERO_OR_FAILED',
+        }),
+        outputJson: serializeJson({ mode: 'IMMEDIATE' }),
+      } as any,
+    })
+    .catch(() => {});
+
+  await runAutomationsImmediate({
+    ...params,
+    inboundBatchCount:
+      typeof params.inboundBatchCount === 'number' && Number.isFinite(params.inboundBatchCount)
+        ? params.inboundBatchCount
+        : 1,
+    inboundDebounceMs:
+      typeof params.inboundDebounceMs === 'number' && Number.isFinite(params.inboundDebounceMs)
+        ? params.inboundDebounceMs
+        : debounceMs,
+    lastInboundAt: params.lastInboundAt || new Date(now).toISOString(),
+  });
 }
 
 function mergeInboundTexts(rows: Array<{ text?: string | null; transcriptText?: string | null }>): string | null {
@@ -4157,6 +4301,16 @@ async function runAutomationsImmediate(params: RunAutomationsParams): Promise<vo
       transportMode: params.transportMode,
     });
     if (staffRouter.handled) return;
+
+    const intakeGreetingBootstrap = await maybeHandleIntakeInitialGreeting({
+      app: params.app,
+      workspaceId: params.workspaceId,
+      conversation,
+      inboundText: params.inboundText || null,
+      inboundMessageId: params.inboundMessageId || null,
+      transportMode: params.transportMode,
+    });
+    if (intakeGreetingBootstrap.handled) return;
   }
 
   const rules = await prisma.automationRule.findMany({

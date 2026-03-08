@@ -253,6 +253,9 @@ export type ScenarioStep = {
     runtimeDebugPanelVisible?: {
       workspaceId?: string;
     };
+    intakeGreetingStartsFlow?: {
+      workspaceId?: string;
+    };
     inboundUnroutedDoesNotReply?: boolean;
     deployDoesNotTouchDb?: boolean;
     deployCreatesBackupBeforeRestart?: boolean;
@@ -1553,6 +1556,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check runtime debug panel visible',
         expect: { runtimeDebugPanelVisible: { workspaceId: 'scenario-er-p8-runtime-panel' } },
+      },
+    ],
+  },
+  {
+    id: 'intake_greeting_starts_flow',
+    name: 'ER-P12: saludo inicial Intake dispara flujo',
+    description:
+      'Valida que un saludo simple en Program Intake (estado inicial) sí responda con arranque de flujo y setee CHOOSE_ROLE.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check intake greeting starts flow',
+        expect: { intakeGreetingStartsFlow: { workspaceId: 'scenario-er-p12-intake-greeting' } },
       },
     ],
   },
