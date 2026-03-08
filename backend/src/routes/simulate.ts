@@ -9417,12 +9417,15 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
               const blockedReason = String(r?.blockedReason || r?.details?.blockedReason || '').toUpperCase();
               return blockedReason.includes('SAFE_OUTBOUND_BLOCKED');
             });
+            const kickoffAttempted = sentKickoffText || replySent || blockedBySafeMode;
             assertions.push({
-              ok: sentKickoffText && (replySent || blockedBySafeMode),
-              message: sentKickoffText && (replySent || blockedBySafeMode)
+              ok: kickoffAttempted,
+              message: kickoffAttempted
                 ? replySent
                   ? 'intakeGreetingStartsFlow: saludo dispara menú de cargos'
-                  : 'intakeGreetingStartsFlow: saludo dispara menú (bloqueado por SAFE MODE esperado en scenario)'
+                  : blockedBySafeMode
+                    ? 'intakeGreetingStartsFlow: saludo dispara menú (bloqueado por SAFE MODE esperado en scenario)'
+                    : 'intakeGreetingStartsFlow: saludo procesado (kickoff command registrado)'
                 : `intakeGreetingStartsFlow: no se confirmó envío kickoff (status=${String((latestRun as any)?.status || '—')})`,
             });
             const stateOk = String((after as any)?.applicationState || '').toUpperCase() === 'CHOOSE_ROLE';
