@@ -32,7 +32,7 @@ npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
 
 ## Cómo detener
 ```bash
-kill 7766 7889
+kill $(lsof -nP -iTCP:4001 -sTCP:LISTEN -t) $(lsof -nP -iTCP:5173 -sTCP:LISTEN -t)
 ```
 
 ## Cómo reiniciar
