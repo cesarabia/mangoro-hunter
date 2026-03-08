@@ -169,6 +169,14 @@ export async function ensurePostulacionStages(workspaceId: string): Promise<void
 
 function detectRoleIntentHeuristic(text: string): ApplicationRole | null {
   const low = String(text || '').toLowerCase();
+  const normalized = low
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/^3(?:\D|$)/.test(normalized)) return 'DRIVER_OWN_VAN';
+  if (/^1(?:\D|$)/.test(normalized)) return 'PEONETA';
+  if (/^2(?:\D|$)/.test(normalized)) return 'DRIVER_COMPANY';
   if (/\bpeoneta\b/.test(low)) return 'PEONETA';
   if (/\b(furgon|furgón|vehiculo propio|vehículo propio|van propia|flota)\b/.test(low)) {
     return 'DRIVER_OWN_VAN';
@@ -277,7 +285,12 @@ export async function extractPostulacionDataFromInbound(params: {
       const heuristic = heuristicExtraction(inboundText);
       return { data: heuristic, modelRequested, modelResolved };
     }
-    return { data: validated.data, modelRequested, modelResolved };
+    const data = validated.data;
+    if (!data.roleIntent) {
+      const fallbackRole = detectRoleIntentHeuristic(inboundText);
+      if (fallbackRole) data.roleIntent = fallbackRole;
+    }
+    return { data, modelRequested, modelResolved };
   } catch {
     const heuristic = heuristicExtraction(inboundText);
     return {

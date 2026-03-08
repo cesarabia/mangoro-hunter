@@ -953,6 +953,7 @@ export async function registerConversationRoutes(app: FastifyInstance) {
     const resultsJson = safeParseJson(lastAgentRun?.resultsJson);
     const runtimeResolution = contextJson?.runtimeResolution || {};
     const appFlow = contextJson?.applicationFlow || {};
+    const intakeTransition = contextJson?.intakeTransition || {};
     const flowMissingFields = Array.isArray(appFlow?.missingFields)
       ? appFlow.missingFields.map((v: any) => String(v)).filter(Boolean)
       : [];
@@ -998,6 +999,30 @@ export async function registerConversationRoutes(app: FastifyInstance) {
       replyDecision: String(resultsJson?.replyDecision || '').trim() || null,
       replyDecisionReason: String(resultsJson?.replyDecisionReason || '').trim() || null,
       lastUserMessageNormalized: String(resultsJson?.lastUserMessageNormalized || '').trim() || null,
+      roleSelectionDetected:
+        String(resultsJson?.roleSelectionDetected || intakeTransition?.roleSelectionDetected || '').trim() || null,
+      setApplicationFlowRequested:
+        typeof resultsJson?.setApplicationFlowRequested === 'boolean'
+          ? Boolean(resultsJson?.setApplicationFlowRequested)
+          : typeof intakeTransition?.setApplicationFlowRequested === 'boolean'
+            ? Boolean(intakeTransition?.setApplicationFlowRequested)
+            : null,
+      setApplicationFlowSucceeded:
+        typeof resultsJson?.setApplicationFlowSucceeded === 'boolean'
+          ? Boolean(resultsJson?.setApplicationFlowSucceeded)
+          : typeof intakeTransition?.setApplicationFlowSucceeded === 'boolean'
+            ? Boolean(intakeTransition?.setApplicationFlowSucceeded)
+            : null,
+      targetProgramSlug:
+        String(resultsJson?.targetProgramSlug || intakeTransition?.targetProgramSlug || '').trim() || null,
+      programSwitchSucceeded:
+        typeof resultsJson?.programSwitchSucceeded === 'boolean'
+          ? Boolean(resultsJson?.programSwitchSucceeded)
+          : typeof intakeTransition?.programSwitchSucceeded === 'boolean'
+            ? Boolean(intakeTransition?.programSwitchSucceeded)
+            : null,
+      programSwitchReason:
+        String(resultsJson?.programSwitchReason || intakeTransition?.programSwitchReason || '').trim() || null,
       lastRunStatus: lastAgentRun
         ? {
             id: lastAgentRun.id,

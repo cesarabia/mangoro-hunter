@@ -207,6 +207,55 @@ function toolDefinitions(params?: { conversationKind?: string | null; inboundTex
   return base;
 }
 
+function normalizeForRoleSelection(value: string): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function detectIntakeRoleSelection(value: string): 'PEONETA' | 'DRIVER_COMPANY' | 'DRIVER_OWN_VAN' | null {
+  const normalized = normalizeForRoleSelection(value);
+  if (!normalized) return null;
+
+  if (
+    /^3(?:\D|$)/.test(normalized) ||
+    /\b(furgon|vehiculo propio|conductor con vehiculo|conductor flota|flota|van propia)\b/.test(normalized)
+  ) {
+    return 'DRIVER_OWN_VAN';
+  }
+  if (/^1(?:\D|$)/.test(normalized) || /\bpeoneta\b/.test(normalized)) {
+    return 'PEONETA';
+  }
+  if (/^2(?:\D|$)/.test(normalized) || /\b(conductor|driver|chofer)\b/.test(normalized)) {
+    return 'DRIVER_COMPANY';
+  }
+  return null;
+}
+
+function roleToProgramSlug(role: 'PEONETA' | 'DRIVER_COMPANY' | 'DRIVER_OWN_VAN'): string {
+  if (role === 'PEONETA') return 'reclutamiento-peonetas-envio-rapido';
+  if (role === 'DRIVER_OWN_VAN') return 'reclutamiento-conductores-flota-envio-rapido';
+  return 'reclutamiento-conductores-envio-rapido';
+}
+
+async function resolveProgramIdBySlug(workspaceId: string, slug: string): Promise<string | null> {
+  const row = await prisma.program
+    .findFirst({
+      where: {
+        workspaceId,
+        slug,
+        archivedAt: null,
+        isActive: true,
+      },
+      select: { id: true },
+    })
+    .catch(() => null);
+  return row?.id || null;
+}
+
 async function runTool(toolName: string, args: any): Promise<ToolResult> {
   try {
     if (toolName === 'normalize_text') {
@@ -587,7 +636,7 @@ export async function runAgent(event: AgentEvent): Promise<{
 
   const conversation = await prisma.conversation.findUnique({
     where: { id: event.conversationId },
-    include: { contact: true },
+    include: { contact: true, program: { select: { id: true, slug: true, name: true } } as any },
   });
   if (!conversation) {
     throw new Error('Conversation no encontrada');
@@ -612,6 +661,78 @@ export async function runAgent(event: AgentEvent): Promise<{
       if (updated) {
         (conversation as any).applicationRole = (updated as any).applicationRole;
         (conversation as any).applicationState = (updated as any).applicationState;
+      }
+    }
+  }
+
+  const intakeTransitionTrace: {
+    roleSelectionDetected: string | null;
+    setApplicationFlowRequested: boolean;
+    setApplicationFlowSucceeded: boolean;
+    targetProgramSlug: string | null;
+    programSwitchSucceeded: boolean;
+    programSwitchReason: string | null;
+  } = {
+    roleSelectionDetected: null,
+    setApplicationFlowRequested: false,
+    setApplicationFlowSucceeded: false,
+    targetProgramSlug: null,
+    programSwitchSucceeded: false,
+    programSwitchReason: null,
+  };
+
+  if (String(event.eventType || '').toUpperCase() === 'INBOUND_MESSAGE' &&
+      String((conversation as any).conversationKind || 'CLIENT').toUpperCase() === 'CLIENT') {
+    const currentProgramSlug = String((conversation as any)?.program?.slug || '').trim().toLowerCase();
+    const isIntakeProgram = currentProgramSlug === 'postulacion-intake-envio-rapido';
+    if (isIntakeProgram) {
+      const inboundMessage = event.inboundMessageId
+        ? await prisma.message
+            .findUnique({
+              where: { id: String(event.inboundMessageId) },
+              select: { text: true },
+            })
+            .catch(() => null)
+        : null;
+      const inboundText = String(inboundMessage?.text || '').trim();
+      const selectedRole = detectIntakeRoleSelection(inboundText);
+      if (selectedRole) {
+        intakeTransitionTrace.roleSelectionDetected = selectedRole;
+        intakeTransitionTrace.setApplicationFlowRequested = true;
+        intakeTransitionTrace.targetProgramSlug = roleToProgramSlug(selectedRole);
+        const targetProgramId = await resolveProgramIdBySlug(
+          conversation.workspaceId,
+          intakeTransitionTrace.targetProgramSlug,
+        );
+        if (targetProgramId) {
+          const nextState = 'COLLECT_MIN_INFO';
+          await prisma.conversation
+            .update({
+              where: { id: conversation.id },
+              data: {
+                applicationRole: selectedRole as any,
+                applicationState: nextState as any,
+                programId: targetProgramId,
+                updatedAt: new Date(),
+              } as any,
+            })
+            .catch(() => null);
+          (conversation as any).applicationRole = selectedRole;
+          (conversation as any).applicationState = nextState;
+          (conversation as any).programId = targetProgramId;
+          (conversation as any).program = {
+            id: targetProgramId,
+            slug: intakeTransitionTrace.targetProgramSlug,
+            name: null,
+          } as any;
+          intakeTransitionTrace.setApplicationFlowSucceeded = true;
+          intakeTransitionTrace.programSwitchSucceeded = true;
+          intakeTransitionTrace.programSwitchReason = 'role_detected_in_intake_input';
+        } else {
+          intakeTransitionTrace.setApplicationFlowSucceeded = false;
+          intakeTransitionTrace.programSwitchSucceeded = false;
+          intakeTransitionTrace.programSwitchReason = `target_program_not_found:${intakeTransitionTrace.targetProgramSlug}`;
+        }
       }
     }
   }
@@ -728,7 +849,10 @@ export async function runAgent(event: AgentEvent): Promise<{
     staffContext,
     botAutoReply: Boolean(config.botAutoReply),
   });
-  const contextJson = llmContext.contextJson;
+  const contextJson = {
+    ...(llmContext.contextJson && typeof llmContext.contextJson === 'object' ? llmContext.contextJson : {}),
+    intakeTransition: intakeTransitionTrace,
+  };
 
   if (String((conversation as any).conversationKind || 'CLIENT').toUpperCase() === 'CLIENT') {
     const latestInboundText = String(llmContext.latestInboundText || '').trim();

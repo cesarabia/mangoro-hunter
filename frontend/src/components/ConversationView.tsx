@@ -1296,6 +1296,41 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   <div>aiPaused: <b>{runtimeDiagnostics?.aiPaused ? 'Sí' : 'No'}</b></div>
                   <div>replyDecision: <b>{String(runtimeDiagnostics?.replyDecision || '—')}</b></div>
                   <div>replyDecisionReason: <b>{String(runtimeDiagnostics?.replyDecisionReason || '—')}</b></div>
+                  <div>roleSelectionDetected: <b>{String(runtimeDiagnostics?.roleSelectionDetected || '—')}</b></div>
+                  <div>
+                    setApplicationFlowRequested:{' '}
+                    <b>
+                      {typeof runtimeDiagnostics?.setApplicationFlowRequested === 'boolean'
+                        ? runtimeDiagnostics.setApplicationFlowRequested
+                          ? 'Sí'
+                          : 'No'
+                        : '—'}
+                    </b>
+                  </div>
+                  <div>
+                    setApplicationFlowSucceeded:{' '}
+                    <b>
+                      {typeof runtimeDiagnostics?.setApplicationFlowSucceeded === 'boolean'
+                        ? runtimeDiagnostics.setApplicationFlowSucceeded
+                          ? 'Sí'
+                          : 'No'
+                        : '—'}
+                    </b>
+                  </div>
+                  <div>targetProgramSlug: <b>{String(runtimeDiagnostics?.targetProgramSlug || '—')}</b></div>
+                  <div>
+                    programSwitchSucceeded:{' '}
+                    <b>
+                      {typeof runtimeDiagnostics?.programSwitchSucceeded === 'boolean'
+                        ? runtimeDiagnostics.programSwitchSucceeded
+                          ? 'Sí'
+                          : 'No'
+                        : '—'}
+                    </b>
+                  </div>
+                  <div style={{ gridColumn: isNarrow ? '1' : '1 / span 2' }}>
+                    programSwitchReason: <b>{String(runtimeDiagnostics?.programSwitchReason || '—')}</b>
+                  </div>
                   <div style={{ gridColumn: isNarrow ? '1' : '1 / span 2' }}>
                     lastUserMessageNormalized: <b>{String(runtimeDiagnostics?.lastUserMessageNormalized || '—')}</b>
                   </div>

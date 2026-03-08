@@ -816,6 +816,15 @@ export async function executeAgentResponse(params: {
         .map((v) => String(v || '').trim())
         .filter(Boolean)
     : [];
+  let roleSelectionDetected: string | null =
+    String((previousRunResults as any)?.roleSelectionDetected || '').trim() || null;
+  let setApplicationFlowRequested = Boolean((previousRunResults as any)?.setApplicationFlowRequested);
+  let setApplicationFlowSucceeded = Boolean((previousRunResults as any)?.setApplicationFlowSucceeded);
+  let targetProgramSlugDebug: string | null =
+    String((previousRunResults as any)?.targetProgramSlug || '').trim() || null;
+  let programSwitchSucceeded = Boolean((previousRunResults as any)?.programSwitchSucceeded);
+  let programSwitchReason: string | null =
+    String((previousRunResults as any)?.programSwitchReason || '').trim() || null;
   let currentStage = baseConversation ? String((baseConversation as any).conversationStage || '') : '';
 
   const askedFieldCounts = conversationId
@@ -930,10 +939,13 @@ export async function executeAgentResponse(params: {
     if (cmd.command === 'SET_CONVERSATION_PROGRAM') {
       let targetProgramId = String((cmd as any).programId || '').trim() || null;
       const targetProgramSlug = String((cmd as any).programSlug || '').trim() || null;
+      targetProgramSlugDebug = targetProgramSlug || targetProgramSlugDebug;
       if (!targetProgramId && targetProgramSlug) {
         targetProgramId = await resolveProgramIdBySlug(baseConversation?.workspaceId || params.workspaceId, targetProgramSlug);
       }
       if (!targetProgramId) {
+        programSwitchSucceeded = false;
+        programSwitchReason = `set_conversation_program_not_found:${targetProgramSlug || 'unknown'}`;
         results.push({
           ok: false,
           details: {
@@ -948,6 +960,8 @@ export async function executeAgentResponse(params: {
         where: { id: cmd.conversationId },
         data: { programId: targetProgramId, updatedAt: new Date() },
       });
+      programSwitchSucceeded = true;
+      programSwitchReason = 'set_conversation_program_success';
       if (baseConversation) {
         (baseConversation as any).programId = targetProgramId;
         (baseConversation as any).program = targetProgramSlug
@@ -959,9 +973,13 @@ export async function executeAgentResponse(params: {
     }
 
     if (cmd.command === 'SET_APPLICATION_FLOW') {
+      setApplicationFlowRequested = true;
       const role = normalizeApplicationRole((cmd as any).applicationRole);
       const state = normalizeApplicationState((cmd as any).applicationState);
+      if (role) roleSelectionDetected = role;
       if (!role && !state) {
+        setApplicationFlowSucceeded = false;
+        if (!programSwitchReason) programSwitchReason = 'set_application_flow_missing_role_or_state';
         results.push({ ok: false, details: { error: 'missing_application_role_or_state' } });
         continue;
       }
@@ -990,7 +1008,9 @@ export async function executeAgentResponse(params: {
         where: { id: cmd.conversationId },
         data: updateData as any,
       });
+      setApplicationFlowSucceeded = true;
       const roleProgramSlug = roleToRecruitmentProgramSlug(role);
+      targetProgramSlugDebug = roleProgramSlug || targetProgramSlugDebug;
       const currentProgramSlug = String((baseConversation as any)?.program?.slug || '')
         .trim()
         .toLowerCase();
@@ -1011,6 +1031,19 @@ export async function executeAgentResponse(params: {
             (baseConversation as any).programId = roleProgramId;
             (baseConversation as any).program = { id: roleProgramId, slug: roleProgramSlug } as any;
           }
+          programSwitchSucceeded = true;
+          programSwitchReason = 'set_application_flow_role_switch_success';
+        } else {
+          programSwitchSucceeded = false;
+          programSwitchReason = `set_application_flow_role_switch_target_not_found:${roleProgramSlug}`;
+        }
+      } else if (roleProgramSlug) {
+        if (currentProgramSlug === roleProgramSlug) {
+          programSwitchSucceeded = true;
+          programSwitchReason = 'set_application_flow_program_already_target';
+        } else {
+          programSwitchSucceeded = false;
+          programSwitchReason = `set_application_flow_role_switch_not_required:${currentProgramSlug || 'unknown'}`;
         }
       }
       if (role && baseConversation?.contactId) {
@@ -2366,6 +2399,12 @@ export async function executeAgentResponse(params: {
     results,
     replyDecision,
     replyDecisionReason,
+    roleSelectionDetected,
+    setApplicationFlowRequested,
+    setApplicationFlowSucceeded,
+    targetProgramSlug: targetProgramSlugDebug,
+    programSwitchSucceeded,
+    programSwitchReason,
     candidateReplyMode,
     adminNotifyMode,
     aiPaused: Boolean((baseConversation as any)?.aiPaused),
