@@ -1088,6 +1088,8 @@ Reglas:
             data: {
               enabled: hasKey,
               priority: 100,
+              scopePhoneLineId: null,
+              scopeProgramId: null,
               name: 'Envio Rápido: inbound -> RUN_AGENT (única)',
               description:
                 'Única automation inbound que responde al candidato en Envío Rápido. El resto de automatizaciones no deben auto-responder.',
@@ -1106,6 +1108,8 @@ Reglas:
             data: {
               enabled: hasKey,
               priority: 100,
+              scopePhoneLineId: null,
+              scopeProgramId: null,
               name: 'Envio Rápido: inbound -> RUN_AGENT (única)',
               description:
                 'Única automation inbound que responde al candidato en Envío Rápido. El resto de automatizaciones no deben auto-responder.',
