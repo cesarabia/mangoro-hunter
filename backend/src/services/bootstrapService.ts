@@ -974,32 +974,13 @@ Reglas:
         prompt: conductoresFlotaPrompt,
       });
 
-      const staffProgram = await prisma.program
-        .upsert({
-          where: { workspaceId_slug: { workspaceId: wsId, slug: 'staff-reclutamiento-envio-rapido' } } as any,
-          create: {
-            workspaceId: wsId,
-            name: 'Staff — Reclutamiento (Envio Rápido)',
-            slug: 'staff-reclutamiento-envio-rapido',
-            description: 'Programa staff para operar casos de reclutamiento de conductores.',
-            isActive: true,
-            agentSystemPrompt: staffConductoresPrompt,
-            promptSource: 'MANUAL' as any,
-            promptLocked: false as any,
-            archivedAt: null,
-          } as any,
-          update: {
-            name: 'Staff — Reclutamiento (Envio Rápido)',
-            description: 'Programa staff para operar casos de reclutamiento de conductores.',
-            isActive: true,
-            archivedAt: null,
-            updatedAt: new Date(),
-            promptSource: 'MANUAL' as any,
-            ...(forceSeedPrompts ? { agentSystemPrompt: staffConductoresPrompt } : {}),
-          } as any,
-          select: { id: true },
-        })
-        .catch(() => null);
+      const staffProgram = await upsertEnvioProgram({
+        name: 'Staff — Reclutamiento (Envio Rápido)',
+        slug: 'staff-reclutamiento-envio-rapido',
+        description: 'Programa staff para operar casos de reclutamiento de conductores.',
+        prompt: staffConductoresPrompt,
+        promptLocked: true,
+      });
 
       const clientMenuIds = [intakeProgram?.id, peonetaProgram?.id, conductorProgram?.id, conductorFlotaProgram?.id]
         .map((v) => String(v || '').trim())
@@ -1076,8 +1057,73 @@ Reglas:
         }
       }
 
-      // Ensure baseline automations.
+      // Ensure baseline automations: a single inbound reply automation for Envío Rápido.
       await ensureDefaultAutomationRule({ workspaceId: wsId, enabled: hasKey }).catch(() => {});
+      const inboundRules = await prisma.automationRule
+        .findMany({
+          where: { workspaceId: wsId, trigger: 'INBOUND_MESSAGE', archivedAt: null } as any,
+          select: { id: true, name: true, actionsJson: true, enabled: true, priority: true },
+          orderBy: [{ priority: 'asc' as any }, { createdAt: 'asc' as any }],
+        })
+        .catch(() => []);
+      const looksLikeRunAgent = (actionsJson: string | null | undefined): boolean => {
+        if (!actionsJson) return false;
+        try {
+          const parsed = JSON.parse(actionsJson);
+          if (!Array.isArray(parsed)) return false;
+          return parsed.some((a: any) => String(a?.type || '').trim().toUpperCase() === 'RUN_AGENT');
+        } catch {
+          return false;
+        }
+      };
+      let canonicalInbound = inboundRules.find((rule) => looksLikeRunAgent(rule.actionsJson));
+      if (!canonicalInbound?.id && inboundRules.length > 0) {
+        const fallbackInbound = inboundRules[0];
+        await prisma.automationRule
+          .update({
+            where: { id: fallbackInbound.id },
+            data: {
+              enabled: hasKey,
+              priority: 100,
+              name: 'Envio Rápido: inbound -> RUN_AGENT (única)',
+              description:
+                'Única automation inbound que responde al candidato en Envío Rápido. El resto de automatizaciones no deben auto-responder.',
+              conditionsJson: JSON.stringify([]),
+              actionsJson: JSON.stringify([{ type: 'RUN_AGENT' }]),
+              updatedAt: new Date(),
+            } as any,
+          })
+          .catch(() => {});
+        canonicalInbound = { ...fallbackInbound, actionsJson: JSON.stringify([{ type: 'RUN_AGENT' }]) } as any;
+      }
+      if (canonicalInbound?.id) {
+        await prisma.automationRule
+          .update({
+            where: { id: canonicalInbound.id },
+            data: {
+              enabled: hasKey,
+              priority: 100,
+              name: 'Envio Rápido: inbound -> RUN_AGENT (única)',
+              description:
+                'Única automation inbound que responde al candidato en Envío Rápido. El resto de automatizaciones no deben auto-responder.',
+              updatedAt: new Date(),
+            } as any,
+          })
+          .catch(() => {});
+
+        const duplicateInboundIds = inboundRules
+          .filter((rule) => rule.id !== canonicalInbound.id && Boolean(rule.enabled))
+          .map((rule) => rule.id);
+        if (duplicateInboundIds.length > 0) {
+          await prisma.automationRule
+            .updateMany({
+              where: { id: { in: duplicateInboundIds } },
+              data: { enabled: false, updatedAt: new Date() } as any,
+            })
+            .catch(() => {});
+        }
+      }
+
       const handoffRule = await prisma.automationRule.findFirst({
         where: {
           workspaceId: wsId,
@@ -1111,45 +1157,6 @@ Reglas:
                   requireAvailability: true,
                   templateText:
                     '🚚 Caso {{stage}} · {{clientName}} · {{service}} · {{location}} · {{availability}} · ID {{conversationIdShort}}. Responde a este mensaje para operar el caso.',
-                },
-              ]),
-              archivedAt: null,
-            } as any,
-          })
-          .catch(() => {});
-      }
-
-      const newLeadRule = await prisma.automationRule.findFirst({
-        where: {
-          workspaceId: wsId,
-          trigger: 'INBOUND_MESSAGE',
-          archivedAt: null,
-          name: 'Envio Rápido: NEW_INTAKE -> notify staff',
-        } as any,
-        select: { id: true },
-      });
-      if (!newLeadRule?.id) {
-        await prisma.automationRule
-          .create({
-            data: {
-              workspaceId: wsId,
-              name: 'Envio Rápido: NEW_INTAKE -> notify staff',
-              description:
-                'Notifica al staff cuando entra un postulante nuevo (dedupe diario por conversación) y deja fallback in-app si WhatsApp se bloquea.',
-              enabled: true,
-              priority: 120,
-              trigger: 'INBOUND_MESSAGE',
-              scopePhoneLineId: null,
-              scopeProgramId: null,
-              conditionsJson: JSON.stringify([{ field: 'conversation.stage', op: 'equals', value: 'NEW_INTAKE' }]),
-              actionsJson: JSON.stringify([
-                {
-                  type: 'NOTIFY_STAFF_WHATSAPP',
-                  recipients: 'ROLE:ADMIN',
-                  dedupePolicy: 'DAILY',
-                  requireAvailability: false,
-                  templateText:
-                    '🚚 Nuevo postulante: {{clientName}} · {{service}} · {{location}} · {{availability}} · ID {{conversationIdShort}}. Responde a este mensaje para operar el caso.',
                 },
               ]),
               archivedAt: null,

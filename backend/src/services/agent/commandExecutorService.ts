@@ -729,6 +729,9 @@ export async function executeAgentResponse(params: {
     })
     .catch(() => null);
   const agentRunContext = safeJsonParse(agentRun?.inputContextJson || null);
+  const agentEventType = String(agentRun?.eventType || '')
+    .trim()
+    .toUpperCase();
   const inboundTextFromRunContext = extractInboundTextFromRunContext(agentRunContext);
   const relatedConversationIdFromRun = (() => {
     if (!agentRunContext || typeof agentRunContext !== 'object') return null;
@@ -1074,6 +1077,35 @@ export async function executeAgentResponse(params: {
 
       const contact = baseConversation.contact;
       const baseKind = String((baseConversation as any).conversationKind || 'CLIENT').toUpperCase();
+      const proactiveCandidateBlocked =
+        baseKind === 'CLIENT' &&
+        agentEventType !== 'INBOUND_MESSAGE' &&
+        !Boolean((cmd as any).allowProactive);
+      if (proactiveCandidateBlocked) {
+        const textHash = stableHash(
+          cmd.type === 'TEMPLATE'
+            ? `PROACTIVE_BLOCK:TEMPLATE:${cmd.templateName || ''}:${serializeJson(cmd.templateVars || {})}`
+            : `PROACTIVE_BLOCK:TEXT:${cmd.text || ''}`,
+        );
+        await logOutbound({
+          workspaceId: params.workspaceId,
+          conversationId: baseConversation.id,
+          agentRunId: params.agentRunId,
+          type: cmd.type,
+          templateName: cmd.type === 'TEMPLATE' ? cmd.templateName || null : null,
+          dedupeKey: cmd.dedupeKey,
+          textHash,
+          blockedReason: 'PROACTIVE_CANDIDATE_REPLY_DISABLED',
+          relatedConversationId: ['STAFF', 'PARTNER'].includes(baseKind) ? relatedConversationIdFromRun : null,
+        });
+        results.push({
+          ok: true,
+          blocked: true,
+          blockedReason: 'PROACTIVE_CANDIDATE_REPLY_DISABLED',
+          details: { eventType: agentEventType || null },
+        });
+        continue;
+      }
       if (contact.noContact) {
         const textHash = stableHash(`NO_CONTACT:${cmd.type}:${cmd.text || ''}:${cmd.templateName || ''}`);
         await logOutbound({
