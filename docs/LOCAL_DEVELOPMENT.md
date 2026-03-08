@@ -63,17 +63,23 @@ mkdir -p /Users/cesar/Documents/dev/mangoro/app/hunter/tmp/local-state/{uploads,
 4. Iniciar frontend y validar login en `http://localhost:5173`.
 
 ## 6) Cargar dataset de prueba sin tocar producción
-Usa plan-only script (no ejecuta cambios por sí mismo):
+Usa script de sync con 2 modos:
 
 ```bash
 ./ops/sync_prod_state_to_local.sh
 ```
 
-Este script imprime comandos recomendados para:
-- copiar snapshot de DB de prod a local,
-- copiar uploads/assets de prod a local,
-- anonimizar en local opcionalmente,
-- y mantener aislamiento estricto (local nunca escribe a prod).
+```bash
+./ops/sync_prod_state_to_local.sh --execute
+```
+
+Comportamiento:
+- modo por defecto (`--plan`): imprime plan y rutas.
+- modo `--execute`: copia snapshot de DB + uploads/assets desde prod (solo lectura remota), y aplica hardening local:
+  - `outboundPolicy=BLOCK_ALL`
+  - limpia credenciales WhatsApp en `SystemConfig`
+  - limpia `reviewEmailTo/reviewEmailFrom` para evitar correos reales.
+- genera reporte en `tmp/local-state/last-sync-report.txt`.
 
 ## 7) Simulador QA local (tipo WhatsApp)
 Ruta en app local:

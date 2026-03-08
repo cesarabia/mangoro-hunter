@@ -12,6 +12,47 @@ interface ConversationViewProps {
   onDraftChange: (value: string) => void;
 }
 
+type QuickReplyRole = 'INTAKE' | 'PEONETA' | 'DRIVER_COMPANY' | 'DRIVER_OWN_VAN';
+type QuickReplyStage =
+  | 'START'
+  | 'MIN_INFO'
+  | 'CONDITIONS'
+  | 'REQUEST_CV'
+  | 'REQUEST_DOCS'
+  | 'DOCS_MISSING'
+  | 'OP_REVIEW'
+  | 'ACCEPTED'
+  | 'REJECTED';
+
+type QuickReplyRow = {
+  id: string;
+  title: string;
+  jobRole: QuickReplyRole;
+  stageKey: QuickReplyStage;
+  text: string;
+  sortOrder: number;
+  isActive: boolean;
+};
+
+const QUICK_REPLY_ROLE_LABELS: Record<QuickReplyRole, string> = {
+  INTAKE: 'Intake',
+  PEONETA: 'Peoneta',
+  DRIVER_COMPANY: 'Conductor empresa',
+  DRIVER_OWN_VAN: 'Conductor con vehículo',
+};
+
+const QUICK_REPLY_STAGE_LABELS: Record<QuickReplyStage, string> = {
+  START: 'Inicio',
+  MIN_INFO: 'Pedir info mínima',
+  CONDITIONS: 'Explicar condiciones',
+  REQUEST_CV: 'Pedir CV',
+  REQUEST_DOCS: 'Pedir documentos',
+  DOCS_MISSING: 'Documentos faltantes',
+  OP_REVIEW: 'OP review / espera',
+  ACCEPTED: 'Aceptado',
+  REJECTED: 'Rechazado',
+};
+
 const fileToBase64 = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -136,6 +177,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [templateCatalogLoading, setTemplateCatalogLoading] = useState(false);
   const [templateCatalogError, setTemplateCatalogError] = useState<string | null>(null);
   const [selectedTemplateName, setSelectedTemplateName] = useState('');
+  const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
+  const [quickReplies, setQuickReplies] = useState<QuickReplyRow[]>([]);
+  const [quickRepliesLoading, setQuickRepliesLoading] = useState(false);
+  const [quickRepliesError, setQuickRepliesError] = useState<string | null>(null);
+  const [quickReplyRoleFilter, setQuickReplyRoleFilter] = useState<'ALL' | QuickReplyRole>('ALL');
+  const [quickReplyStageFilter, setQuickReplyStageFilter] = useState<'ALL' | QuickReplyStage>('ALL');
   const [pendingAttachment, setPendingAttachment] = useState<File | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
@@ -202,6 +249,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       setTemplateCatalogError(null);
       setSelectedTemplateName('');
       setTemplatePanelOpen(false);
+      setQuickRepliesOpen(false);
+      setQuickReplies([]);
+      setQuickRepliesLoading(false);
+      setQuickRepliesError(null);
+      setQuickReplyRoleFilter('ALL');
+      setQuickReplyStageFilter('ALL');
       setDownloadError(null);
       setDetailsOpen(false);
       setInterviewDay('');
@@ -242,6 +295,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     }
     setDetailsOpen(false);
     setTemplatePanelOpen(false);
+    setQuickRepliesOpen(false);
     setAutoScrollEnabled(true);
     scrollToBottom();
     previousCountRef.current = conversation.messages?.length ?? 0;
@@ -787,6 +841,30 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     ? runtimeDiagnostics.missingFields.map((v: any) => String(v)).filter(Boolean)
     : [];
   const runtimeLastRun = runtimeDiagnostics?.lastRunStatus || null;
+  const inferredQuickReplyRole = useMemo<'ALL' | QuickReplyRole>(() => {
+    const roleRaw =
+      String(runtimeDiagnostics?.applicationRole || conversation?.applicationRole || '')
+        .trim()
+        .toUpperCase();
+    if (roleRaw === 'PEONETA') return 'PEONETA';
+    if (roleRaw === 'CONDUCTOR_FLOTA' || roleRaw === 'DRIVER_OWN_VAN') return 'DRIVER_OWN_VAN';
+    if (roleRaw === 'CONDUCTOR' || roleRaw === 'DRIVER_COMPANY') return 'DRIVER_COMPANY';
+    const slug = String(conversation?.program?.slug || '').toLowerCase();
+    if (slug.includes('peoneta')) return 'PEONETA';
+    if (slug.includes('flota') || slug.includes('vehiculo') || slug.includes('furgon')) return 'DRIVER_OWN_VAN';
+    if (slug.includes('conductor')) return 'DRIVER_COMPANY';
+    if (slug.includes('intake')) return 'INTAKE';
+    return 'ALL';
+  }, [runtimeDiagnostics?.applicationRole, conversation?.applicationRole, conversation?.program?.slug]);
+
+  const quickReplyRowsFiltered = useMemo(() => {
+    const base = Array.isArray(quickReplies) ? quickReplies : [];
+    return base
+      .filter((row) => row.isActive)
+      .filter((row) => (quickReplyRoleFilter === 'ALL' ? true : row.jobRole === quickReplyRoleFilter))
+      .filter((row) => (quickReplyStageFilter === 'ALL' ? true : row.stageKey === quickReplyStageFilter))
+      .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+  }, [quickReplies, quickReplyRoleFilter, quickReplyStageFilter]);
 
   useEffect(() => {
     if (!conversation || isAdmin) {
@@ -834,6 +912,53 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       cancelled = true;
     };
   }, [conversation?.id, isAdmin, isInterviewContext, requiredTemplate]);
+
+  useEffect(() => {
+    if (!conversation) {
+      setQuickReplies([]);
+      setQuickRepliesError(null);
+      setQuickRepliesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      setQuickRepliesLoading(true);
+      setQuickRepliesError(null);
+      try {
+        const data: any = await apiClient.get('/api/quick-replies?includeInactive=true');
+        if (cancelled) return;
+        const rows = Array.isArray(data?.quickReplies) ? data.quickReplies : [];
+        const normalized: QuickReplyRow[] = rows
+          .map((row: any) => ({
+            id: String(row?.id || ''),
+            title: String(row?.title || '').trim(),
+            jobRole: String(row?.jobRole || '').toUpperCase() as QuickReplyRole,
+            stageKey: String(row?.stageKey || '').toUpperCase() as QuickReplyStage,
+            text: String(row?.text || ''),
+            sortOrder: Number(row?.sortOrder || 0),
+            isActive: Boolean(row?.isActive),
+          }))
+          .filter((row) => row.id && row.title && row.text);
+        setQuickReplies(normalized);
+      } catch (err: any) {
+        if (cancelled) return;
+        setQuickReplies([]);
+        setQuickRepliesError(err?.message || 'No se pudieron cargar los mensajes listos.');
+      } finally {
+        if (!cancelled) setQuickRepliesLoading(false);
+      }
+    };
+    load().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [conversation?.id]);
+
+  useEffect(() => {
+    if (!conversation) return;
+    setQuickReplyRoleFilter(inferredQuickReplyRole);
+    setQuickReplyStageFilter('ALL');
+  }, [conversation?.id, inferredQuickReplyRole]);
 
   useEffect(() => {
     if (!conversation) {
@@ -1612,6 +1737,95 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
             </button>
           </div>
         )}
+        {hasConversation && !isAdmin ? (
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 10, background: '#fafafa', display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 800, fontSize: 13 }}>Mensajes listos</div>
+              <button
+                type="button"
+                onClick={() => setQuickRepliesOpen((prev) => !prev)}
+                style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 700 }}
+              >
+                {quickRepliesOpen ? 'Ocultar' : 'Mostrar'}
+              </button>
+            </div>
+            {quickRepliesOpen ? (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: isNarrow ? '1fr' : '1fr 1fr', gap: 8 }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#555' }}>
+                    Cargo / Puesto
+                    <select
+                      value={quickReplyRoleFilter}
+                      onChange={(e) => setQuickReplyRoleFilter(String(e.target.value || 'ALL') as 'ALL' | QuickReplyRole)}
+                      style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #ccc' }}
+                    >
+                      <option value="ALL">Todos</option>
+                      {Object.entries(QUICK_REPLY_ROLE_LABELS).map(([key, label]) => (
+                        <option key={key} value={key}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#555' }}>
+                    Etapa
+                    <select
+                      value={quickReplyStageFilter}
+                      onChange={(e) => setQuickReplyStageFilter(String(e.target.value || 'ALL') as 'ALL' | QuickReplyStage)}
+                      style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #ccc' }}
+                    >
+                      <option value="ALL">Todas</option>
+                      {Object.entries(QUICK_REPLY_STAGE_LABELS).map(([key, label]) => (
+                        <option key={key} value={key}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {quickRepliesLoading ? (
+                  <div style={{ fontSize: 12, color: '#666' }}>Cargando mensajes listos…</div>
+                ) : quickRepliesError ? (
+                  <div style={{ fontSize: 12, color: '#b93800' }}>{quickRepliesError}</div>
+                ) : quickReplyRowsFiltered.length === 0 ? (
+                  <div style={{ fontSize: 12, color: '#666' }}>
+                    No hay mensajes listos para este filtro. Puedes editar el catálogo en Configuración → Programs.
+                  </div>
+                ) : (
+                  <div style={{ maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
+                    {quickReplyRowsFiltered.map((row) => (
+                      <div key={row.id} style={{ border: '1px solid #e8e8e8', borderRadius: 8, padding: 8, background: '#fff', display: 'grid', gap: 6 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <div style={{ fontWeight: 700, fontSize: 12 }}>{row.title}</div>
+                          <div style={{ fontSize: 11, color: '#666' }}>
+                            {QUICK_REPLY_ROLE_LABELS[row.jobRole]} · {QUICK_REPLY_STAGE_LABELS[row.stageKey]}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 12, color: '#444', whiteSpace: 'pre-wrap', lineHeight: 1.35 }}>{row.text}</div>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onDraftChange(row.text);
+                              composerRef.current?.focus();
+                            }}
+                            style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 700 }}
+                          >
+                            Insertar en respuesta
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: '#666' }}>
+                Respuestas rápidas para uso manual. Se insertan en el textarea y tú decides si enviarlas.
+              </div>
+            )}
+          </div>
+        ) : null}
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             ref={attachmentInputRef}

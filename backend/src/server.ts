@@ -33,6 +33,7 @@ import { runPhoneLinePhoneE164Hygiene } from './services/phoneLineHygieneService
 import { startInboundDebounceWorker } from './services/automationRunnerService';
 import { registerAssetRoutes, registerPublicAssetRoutes } from './routes/assets';
 import { registerOpReviewRoutes } from './routes/opReview';
+import { registerQuickReplyRoutes } from './routes/quickReplies';
 
 export async function buildServer() {
   const app = Fastify({
@@ -141,6 +142,7 @@ export async function buildServer() {
   app.register(registerMessageRoutes, { prefix: '/api/messages' });
   app.register(registerNotificationRoutes, { prefix: '/api/notifications' });
   app.register(registerCandidateRoutes, { prefix: '/api/candidates' });
+  app.register(registerQuickReplyRoutes, { prefix: '/api/quick-replies' });
   app.register(registerAssetRoutes, { prefix: '/api/assets' });
   app.register(registerOpReviewRoutes, { prefix: '/api/op-review' });
   app.register(registerPlatformRoutes, { prefix: '/api/platform' });

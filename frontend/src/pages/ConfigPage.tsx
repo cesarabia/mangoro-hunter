@@ -69,6 +69,25 @@ const stageGlossary: Array<{ slug: string; label: string; description: string }>
   { slug: 'REJECTED', label: 'Rechazado', description: 'No cumple criterios o fue descartado.' },
 ];
 
+const QUICK_REPLY_ROLE_OPTIONS = [
+  { value: 'INTAKE', label: 'Intake' },
+  { value: 'PEONETA', label: 'Peoneta' },
+  { value: 'DRIVER_COMPANY', label: 'Conductor empresa' },
+  { value: 'DRIVER_OWN_VAN', label: 'Conductor con vehículo' },
+];
+
+const QUICK_REPLY_STAGE_OPTIONS = [
+  { value: 'START', label: 'Inicio' },
+  { value: 'MIN_INFO', label: 'Pedir info mínima' },
+  { value: 'CONDITIONS', label: 'Explicar condiciones' },
+  { value: 'REQUEST_CV', label: 'Pedir CV' },
+  { value: 'REQUEST_DOCS', label: 'Pedir documentos' },
+  { value: 'DOCS_MISSING', label: 'Documentos faltantes' },
+  { value: 'OP_REVIEW', label: 'OP review / espera' },
+  { value: 'ACCEPTED', label: 'Aceptado' },
+  { value: 'REJECTED', label: 'Rechazado' },
+];
+
 const downloadJson = (filename: string, data: any) => {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -374,6 +393,11 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
   const [promptGenerating, setPromptGenerating] = useState(false);
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
   const [promptGenError, setPromptGenError] = useState<string | null>(null);
+  const [quickRepliesRows, setQuickRepliesRows] = useState<any[]>([]);
+  const [quickRepliesLoading, setQuickRepliesLoading] = useState(false);
+  const [quickRepliesSaving, setQuickRepliesSaving] = useState(false);
+  const [quickRepliesStatus, setQuickRepliesStatus] = useState<string | null>(null);
+  const [quickRepliesError, setQuickRepliesError] = useState<string | null>(null);
 
   const [automations, setAutomations] = useState<any[]>([]);
   const [automationEditor, setAutomationEditor] = useState<any | null>(null);
@@ -1188,6 +1212,65 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setPrograms(Array.isArray(data) ? data : []);
   };
 
+  const buildQuickReplyDraft = (index: number) => ({
+    id: '',
+    title: '',
+    jobRole: 'INTAKE',
+    stageKey: 'START',
+    text: '',
+    sortOrder: (index + 1) * 10,
+    isActive: true,
+  });
+
+  const loadQuickReplies = async () => {
+    setQuickRepliesLoading(true);
+    setQuickRepliesError(null);
+    try {
+      const data: any = await apiClient.get('/api/quick-replies?includeInactive=true');
+      const rows = Array.isArray(data?.quickReplies) ? data.quickReplies : [];
+      const normalized = rows.map((row: any, idx: number) => ({
+        id: String(row?.id || ''),
+        title: String(row?.title || ''),
+        jobRole: String(row?.jobRole || 'INTAKE').toUpperCase(),
+        stageKey: String(row?.stageKey || 'START').toUpperCase(),
+        text: String(row?.text || ''),
+        sortOrder: Number.isFinite(Number(row?.sortOrder)) ? Number(row.sortOrder) : (idx + 1) * 10,
+        isActive: row?.isActive !== false,
+      }));
+      setQuickRepliesRows(normalized);
+    } catch (err: any) {
+      setQuickRepliesRows([]);
+      setQuickRepliesError(err?.message || 'No se pudieron cargar los mensajes listos.');
+    } finally {
+      setQuickRepliesLoading(false);
+    }
+  };
+
+  const saveQuickReplies = async () => {
+    if (quickRepliesSaving) return;
+    setQuickRepliesSaving(true);
+    setQuickRepliesStatus(null);
+    setQuickRepliesError(null);
+    try {
+      const normalized = quickRepliesRows.map((row: any, idx: number) => ({
+        id: row?.id ? String(row.id) : undefined,
+        title: String(row?.title || '').trim(),
+        jobRole: String(row?.jobRole || 'INTAKE').trim().toUpperCase(),
+        stageKey: String(row?.stageKey || 'START').trim().toUpperCase(),
+        text: String(row?.text || '').trim(),
+        sortOrder: Number.isFinite(Number(row?.sortOrder)) ? Number(row.sortOrder) : (idx + 1) * 10,
+        isActive: row?.isActive !== false,
+      }));
+      await apiClient.put('/api/quick-replies', { items: normalized });
+      setQuickRepliesStatus('Mensajes listos guardados.');
+      await loadQuickReplies();
+    } catch (err: any) {
+      setQuickRepliesError(err?.message || 'No se pudieron guardar los mensajes listos.');
+    } finally {
+      setQuickRepliesSaving(false);
+    }
+  };
+
   const loadProgramKnowledge = async (programId: string) => {
     setKnowledgeLoading(true);
     setKnowledgeError(null);
@@ -1741,6 +1824,9 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setLastImportSummary(null);
     setBulkTemplatePreview(null);
     setBulkTemplateConfirmText('');
+    setQuickRepliesRows([]);
+    setQuickRepliesStatus(null);
+    setQuickRepliesError(null);
     loadWorkspaceDetails().catch(() => {});
     loadWorkspaceTemplateCatalog().catch(() => {});
     loadWorkspaceStages().catch(() => {});
@@ -1783,7 +1869,10 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       loadAutomationRuns().catch(() => {});
     }
     if (tab === 'automations') loadAutomations().catch(() => {});
-    if (tab === 'programs') loadPrograms().catch(() => {});
+    if (tab === 'programs') {
+      loadPrograms().catch(() => {});
+      loadQuickReplies().catch(() => {});
+    }
     if (tab === 'phoneLines') loadPhoneLines().catch(() => {});
     if (tab === 'integrations') loadIntegrations().catch(() => {});
     if (tab === 'usage') loadUsage().catch(() => {});
@@ -5770,6 +5859,180 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
             >
               + Crear Program
             </button>
+          </div>
+
+          <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ fontWeight: 900 }}>Mensajes listos (Quick Replies)</div>
+                <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                  Catálogo manual para responder rápido desde Inbox. Insertan texto en el textarea, nunca envían automáticamente.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuickRepliesRows((prev) => [...prev, buildQuickReplyDraft(prev.length)]);
+                    setQuickRepliesStatus(null);
+                  }}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+                >
+                  + Agregar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => loadQuickReplies().catch(() => {})}
+                  disabled={quickRepliesLoading}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12, fontWeight: 800 }}
+                >
+                  {quickRepliesLoading ? 'Cargando…' : 'Recargar'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => saveQuickReplies().catch(() => {})}
+                  disabled={quickRepliesSaving || quickRepliesRows.length === 0}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff', fontSize: 12, fontWeight: 800 }}
+                >
+                  {quickRepliesSaving ? 'Guardando…' : 'Guardar mensajes listos'}
+                </button>
+              </div>
+            </div>
+
+            {quickRepliesError ? <div style={{ marginTop: 8, fontSize: 12, color: '#b93800' }}>{quickRepliesError}</div> : null}
+            {quickRepliesStatus ? <div style={{ marginTop: 8, fontSize: 12, color: '#1a7f37' }}>{quickRepliesStatus}</div> : null}
+
+            <div style={{ marginTop: 10, border: '1px solid #eee', borderRadius: 8, overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}>
+                <thead>
+                  <tr style={{ background: '#fafafa' }}>
+                    <th style={{ textAlign: 'left', padding: 8, fontSize: 12, color: '#666' }}>Título</th>
+                    <th style={{ textAlign: 'left', padding: 8, fontSize: 12, color: '#666' }}>Cargo</th>
+                    <th style={{ textAlign: 'left', padding: 8, fontSize: 12, color: '#666' }}>Etapa</th>
+                    <th style={{ textAlign: 'left', padding: 8, fontSize: 12, color: '#666' }}>Texto</th>
+                    <th style={{ textAlign: 'left', padding: 8, fontSize: 12, color: '#666' }}>Orden</th>
+                    <th style={{ textAlign: 'left', padding: 8, fontSize: 12, color: '#666' }}>Activo</th>
+                    <th style={{ textAlign: 'left', padding: 8, fontSize: 12, color: '#666' }}>Acción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {quickRepliesRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} style={{ padding: 10, fontSize: 12, color: '#666' }}>
+                        No hay mensajes listos. Carga el catálogo o crea uno nuevo.
+                      </td>
+                    </tr>
+                  ) : (
+                    quickRepliesRows.map((row, idx) => (
+                      <tr key={String(row.id || `draft-${idx}`)} style={{ borderTop: '1px solid #f0f0f0' }}>
+                        <td style={{ padding: 8, verticalAlign: 'top' }}>
+                          <input
+                            value={String(row.title || '')}
+                            onChange={(e) =>
+                              setQuickRepliesRows((prev) =>
+                                prev.map((item, itemIdx) => (itemIdx === idx ? { ...item, title: e.target.value } : item)),
+                              )
+                            }
+                            placeholder="Título visible"
+                            style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 12 }}
+                          />
+                        </td>
+                        <td style={{ padding: 8, verticalAlign: 'top' }}>
+                          <select
+                            value={String(row.jobRole || 'INTAKE')}
+                            onChange={(e) =>
+                              setQuickRepliesRows((prev) =>
+                                prev.map((item, itemIdx) =>
+                                  itemIdx === idx ? { ...item, jobRole: String(e.target.value || 'INTAKE').toUpperCase() } : item,
+                                ),
+                              )
+                            }
+                            style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 12 }}
+                          >
+                            {QUICK_REPLY_ROLE_OPTIONS.map((opt) => (
+                              <option key={`${idx}-role-${opt.value}`} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td style={{ padding: 8, verticalAlign: 'top' }}>
+                          <select
+                            value={String(row.stageKey || 'START')}
+                            onChange={(e) =>
+                              setQuickRepliesRows((prev) =>
+                                prev.map((item, itemIdx) =>
+                                  itemIdx === idx ? { ...item, stageKey: String(e.target.value || 'START').toUpperCase() } : item,
+                                ),
+                              )
+                            }
+                            style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 12 }}
+                          >
+                            {QUICK_REPLY_STAGE_OPTIONS.map((opt) => (
+                              <option key={`${idx}-stage-${opt.value}`} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td style={{ padding: 8, verticalAlign: 'top' }}>
+                          <textarea
+                            value={String(row.text || '')}
+                            onChange={(e) =>
+                              setQuickRepliesRows((prev) =>
+                                prev.map((item, itemIdx) => (itemIdx === idx ? { ...item, text: e.target.value } : item)),
+                              )
+                            }
+                            rows={3}
+                            placeholder="Texto listo para insertar en Inbox"
+                            style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 12, resize: 'vertical' }}
+                          />
+                        </td>
+                        <td style={{ padding: 8, verticalAlign: 'top' }}>
+                          <input
+                            type="number"
+                            value={Number.isFinite(Number(row.sortOrder)) ? Number(row.sortOrder) : (idx + 1) * 10}
+                            onChange={(e) =>
+                              setQuickRepliesRows((prev) =>
+                                prev.map((item, itemIdx) =>
+                                  itemIdx === idx
+                                    ? { ...item, sortOrder: Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : (idx + 1) * 10 }
+                                    : item,
+                                ),
+                              )
+                            }
+                            style={{ width: 90, padding: 8, borderRadius: 8, border: '1px solid #ddd', fontSize: 12 }}
+                          />
+                        </td>
+                        <td style={{ padding: 8, verticalAlign: 'top' }}>
+                          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={row.isActive !== false}
+                              onChange={(e) =>
+                                setQuickRepliesRows((prev) =>
+                                  prev.map((item, itemIdx) => (itemIdx === idx ? { ...item, isActive: e.target.checked } : item)),
+                                )
+                              }
+                            />
+                            Activo
+                          </label>
+                        </td>
+                        <td style={{ padding: 8, verticalAlign: 'top' }}>
+                          <button
+                            type="button"
+                            onClick={() => setQuickRepliesRows((prev) => prev.filter((_, itemIdx) => itemIdx !== idx))}
+                            style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', fontSize: 12 }}
+                          >
+                            Quitar
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div style={{ border: '1px solid #eee', borderRadius: 10, overflowX: 'auto', overflowY: 'hidden' }}>
