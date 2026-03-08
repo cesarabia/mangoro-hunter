@@ -2,6 +2,36 @@
 
 ## Qué está listo (hoy)
 
+### ER-P10 SAFE (Intake-first + Prompt lock + separación staging) — implementado
+- Intake-first para Envío Rápido en bootstrap:
+  - Programs asegurados y activos:
+    - `postulacion-intake-envio-rapido`
+    - `reclutamiento-peonetas-envio-rapido`
+    - `reclutamiento-conductores-envio-rapido`
+    - `reclutamiento-conductores-flota-envio-rapido`
+  - `PhoneLine.defaultProgramId` de líneas activas se corrige a **Intake** cuando faltaba o apuntaba a programas de cargo/legacy.
+- Prompt lock en Programs:
+  - nuevos campos `Program.promptSource` y `Program.promptLocked`,
+  - API `/api/programs` con enforcement:
+    - cambios de prompt bloqueados si `promptLocked=true`,
+    - solo permitido con `FORCE_UPDATE_PROMPT` explícito (auditado).
+  - UI Config → Programs:
+    - muestra `promptSource` + `LOCKED/UNLOCKED`,
+    - permite bloquear/desbloquear y guardar con override explícito.
+- Derivación por rol desde Intake:
+  - `SET_APPLICATION_FLOW` puede resolver Program por `programSlug`,
+  - derivación automática a program de cargo cuando la conversación está en Intake.
+- Smoke/QA:
+  - nuevos aliases ER‑P10:
+    - `test_intake_menu_flow`
+    - `test_select_conductor_company`
+    - `test_select_driver_own_van`
+    - `test_select_peoneta`
+    - `prompt_lock_prevents_seed_overwrite`
+- Documentación nueva:
+  - `docs/STAGING_SEPARATION_PLAN.md`
+  - `docs/MEDIA_RECOVERY_PLAN.md` (plan-only con estado y pasos seguros).
+
 ### ER-P7 (Auditoría + fuente de verdad + integridad de archivos) — implementado
 - Documento de auditoría runtime creado: `docs/ARCHITECTURE_RUNTIME_AUDIT.md`.
 - Fuente de verdad auditada:
