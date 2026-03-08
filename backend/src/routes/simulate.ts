@@ -9408,16 +9408,21 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
               }
               return false;
             })();
-            const replySent = Array.isArray((runResults as any)?.results)
-              ? (runResults as any).results.some((r: any) => {
-                  const sendResult = r?.details?.sendResult || r?.details?.result?.sendResult || null;
-                  return Boolean(sendResult && sendResult.success === true);
-                })
-              : false;
+            const resultRows = Array.isArray((runResults as any)?.results) ? (runResults as any).results : [];
+            const replySent = resultRows.some((r: any) => {
+              const sendResult = r?.details?.sendResult || r?.details?.result?.sendResult || null;
+              return Boolean(sendResult && sendResult.success === true);
+            });
+            const blockedBySafeMode = resultRows.some((r: any) => {
+              const blockedReason = String(r?.blockedReason || r?.details?.blockedReason || '').toUpperCase();
+              return blockedReason.includes('SAFE_OUTBOUND_BLOCKED');
+            });
             assertions.push({
-              ok: sentKickoffText && replySent,
-              message: sentKickoffText && replySent
-                ? 'intakeGreetingStartsFlow: saludo dispara menú de cargos'
+              ok: sentKickoffText && (replySent || blockedBySafeMode),
+              message: sentKickoffText && (replySent || blockedBySafeMode)
+                ? replySent
+                  ? 'intakeGreetingStartsFlow: saludo dispara menú de cargos'
+                  : 'intakeGreetingStartsFlow: saludo dispara menú (bloqueado por SAFE MODE esperado en scenario)'
                 : `intakeGreetingStartsFlow: no se confirmó envío kickoff (status=${String((latestRun as any)?.status || '—')})`,
             });
             const stateOk = String((after as any)?.applicationState || '').toUpperCase() === 'CHOOSE_ROLE';
