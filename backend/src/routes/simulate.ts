@@ -7508,6 +7508,7 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
       const opReviewDownloadPackageOk = (step.expect as any)?.opReviewDownloadPackageOk;
       const opReviewPauseAiAfterReady = (step.expect as any)?.opReviewPauseAiAfterReady;
       const noLegacyCopyLeaks = (step.expect as any)?.noLegacyCopyLeaks;
+      const promptLockPreventsSeedOverwrite = (step.expect as any)?.promptLockPreventsSeedOverwrite;
       const programPromptIsEffective = (step.expect as any)?.programPromptIsEffective;
       const assetsPublicDownloadOk = (step.expect as any)?.assetsPublicDownloadOk;
       const runtimeDebugPanelVisible = (step.expect as any)?.runtimeDebugPanelVisible;
@@ -8826,6 +8827,91 @@ export async function registerSimulationRoutes(app: FastifyInstance) {
               ? 'noLegacyCopyLeaks: fallback legacy bloqueado para envio-rapido'
               : 'noLegacyCopyLeaks: fallback legacy no está explícitamente bloqueado para envio-rapido',
           });
+        }
+      }
+
+      if (promptLockPreventsSeedOverwrite && typeof promptLockPreventsSeedOverwrite === 'object') {
+        const wsId =
+          String((promptLockPreventsSeedOverwrite as any)?.workspaceId || 'scenario-er-p10-prompt-lock').trim() ||
+          'scenario-er-p10-prompt-lock';
+        const userId = request.user?.userId ? String(request.user.userId) : '';
+        const authHeader = String((request.headers as any)?.authorization || '');
+        const now = new Date();
+        if (!userId || !authHeader) {
+          assertions.push({ ok: false, message: 'promptLockPreventsSeedOverwrite: auth/user missing' });
+        } else {
+          await prisma.workspace
+            .upsert({
+              where: { id: wsId },
+              create: { id: wsId, name: 'Scenario Prompt Lock', isSandbox: true, archivedAt: null } as any,
+              update: { name: 'Scenario Prompt Lock', isSandbox: true, archivedAt: null } as any,
+            })
+            .catch(() => {});
+          await prisma.membership
+            .upsert({
+              where: { userId_workspaceId: { userId, workspaceId: wsId } },
+              create: { userId, workspaceId: wsId, role: 'OWNER', archivedAt: null } as any,
+              update: { role: 'OWNER', archivedAt: null } as any,
+            })
+            .catch(() => {});
+          const program = await prisma.program
+            .upsert({
+              where: { workspaceId_slug: { workspaceId: wsId, slug: 'scenario-prompt-lock' } },
+              create: {
+                workspaceId: wsId,
+                name: 'Scenario Prompt Lock',
+                slug: 'scenario-prompt-lock',
+                agentSystemPrompt: 'PROMPT_LOCKED_A',
+                promptSource: 'MANUAL' as any,
+                promptLocked: true as any,
+                isActive: true,
+                archivedAt: null,
+              } as any,
+              update: {
+                name: 'Scenario Prompt Lock',
+                isActive: true,
+                archivedAt: null,
+                agentSystemPrompt: 'PROMPT_LOCKED_A',
+                promptSource: 'MANUAL' as any,
+                promptLocked: true as any,
+              } as any,
+              select: { id: true },
+            })
+            .catch(() => null);
+          if (!program?.id) {
+            assertions.push({ ok: false, message: 'promptLockPreventsSeedOverwrite: no se pudo crear program' });
+          } else {
+            const patchNoForce = await app.inject({
+              method: 'PATCH',
+              url: `/api/programs/${encodeURIComponent(program.id)}`,
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+              payload: { agentSystemPrompt: 'PROMPT_LOCKED_B' },
+            });
+            assertions.push({
+              ok: patchNoForce.statusCode === 409,
+              message:
+                patchNoForce.statusCode === 409
+                  ? 'promptLockPreventsSeedOverwrite: cambio sin force bloqueado (409)'
+                  : `promptLockPreventsSeedOverwrite: esperado 409 sin force (status=${patchNoForce.statusCode})`,
+            });
+            const patchForced = await app.inject({
+              method: 'PATCH',
+              url: `/api/programs/${encodeURIComponent(program.id)}`,
+              headers: { authorization: authHeader, 'x-workspace-id': wsId },
+              payload: { agentSystemPrompt: 'PROMPT_LOCKED_B', forceUpdatePrompt: true, promptUpdateMode: 'FORCE_UPDATE_PROMPT' },
+            });
+            assertions.push({
+              ok: patchForced.statusCode === 200,
+              message:
+                patchForced.statusCode === 200
+                  ? 'promptLockPreventsSeedOverwrite: FORCE_UPDATE_PROMPT permitido'
+                  : `promptLockPreventsSeedOverwrite: force update falló (status=${patchForced.statusCode})`,
+            });
+          }
+
+          await prisma.program.updateMany({ where: { workspaceId: wsId }, data: { archivedAt: now, isActive: false } as any }).catch(() => {});
+          await prisma.membership.updateMany({ where: { userId, workspaceId: wsId }, data: { archivedAt: now } as any }).catch(() => {});
+          await prisma.workspace.updateMany({ where: { id: wsId }, data: { archivedAt: now } as any }).catch(() => {});
         }
       }
 

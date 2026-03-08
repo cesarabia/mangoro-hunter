@@ -458,7 +458,7 @@ Reglas:
       try {
         const program = await prisma.program.findFirst({
           where: { workspaceId: 'ssclinical', slug: 'coordinadora-ssclinical-suero-hidratante-y-terapia', archivedAt: null },
-          select: { id: true, name: true, agentSystemPrompt: true, updatedAt: true },
+          select: { id: true, name: true, agentSystemPrompt: true, promptLocked: true as any, updatedAt: true },
         });
         if (program?.id) {
           const oldNames = new Set([
@@ -506,12 +506,13 @@ Reglas:
           const shouldUpdateName = oldNames.has(String(program.name || '').trim());
           const shouldUpdatePrompt = oldPrompts.includes(String(program.agentSystemPrompt || '').trim());
 
-          if (shouldUpdateName || shouldUpdatePrompt) {
+          const canUpdatePrompt = shouldUpdatePrompt && !Boolean((program as any).promptLocked);
+          if (shouldUpdateName || canUpdatePrompt) {
             await prisma.program.update({
               where: { id: program.id },
               data: {
                 ...(shouldUpdateName ? { name: 'Asistente Virtual SSClinical — Domicilio (Suero Hidratante y Terapia)' } : {}),
-                ...(shouldUpdatePrompt ? { agentSystemPrompt: `
+                ...(canUpdatePrompt ? { agentSystemPrompt: `
 Eres el Asistente Virtual de SSClinical (salud) para atención a domicilio.
 
 Identidad (importante):
@@ -709,12 +710,15 @@ Reglas:
       const stageSeeds = [
         { slug: 'NEW_INTAKE', labelEs: 'Nuevo ingreso', order: 10, isDefault: true, isTerminal: false },
         { slug: 'SCREENING', labelEs: 'Screening', order: 20, isDefault: false, isTerminal: false },
-        { slug: 'QUALIFIED', labelEs: 'Calificado', order: 30, isDefault: false, isTerminal: false },
-        { slug: 'INTERVIEW_PENDING', labelEs: 'Entrevista pendiente', order: 40, isDefault: false, isTerminal: false },
-        { slug: 'INTERVIEW_SCHEDULED', labelEs: 'Entrevista agendada', order: 50, isDefault: false, isTerminal: false },
-        { slug: 'INTERVIEWED', labelEs: 'Entrevistado', order: 60, isDefault: false, isTerminal: false },
-        { slug: 'HIRED', labelEs: 'Contratado', order: 70, isDefault: false, isTerminal: true },
-        { slug: 'REJECTED', labelEs: 'Rechazado', order: 80, isDefault: false, isTerminal: true },
+        { slug: 'DOCS_PENDING', labelEs: 'Documentos pendientes', order: 30, isDefault: false, isTerminal: false },
+        { slug: 'OP_REVIEW', labelEs: 'Revisión operación', order: 40, isDefault: false, isTerminal: false },
+        { slug: 'QUALIFIED', labelEs: 'Calificado', order: 45, isDefault: false, isTerminal: false },
+        { slug: 'INTERVIEW_PENDING', labelEs: 'Entrevista pendiente', order: 50, isDefault: false, isTerminal: false },
+        { slug: 'INTERVIEW_SCHEDULED', labelEs: 'Entrevista agendada', order: 60, isDefault: false, isTerminal: false },
+        { slug: 'INTERVIEWED', labelEs: 'Entrevistado', order: 70, isDefault: false, isTerminal: false },
+        { slug: 'HIRED_DRIVER', labelEs: 'Contratado', order: 80, isDefault: false, isTerminal: true },
+        { slug: 'HIRED', labelEs: 'Contratado (legacy)', order: 81, isDefault: false, isTerminal: true },
+        { slug: 'REJECTED', labelEs: 'Rechazado', order: 90, isDefault: false, isTerminal: true },
         { slug: 'NO_CONTACTAR', labelEs: 'No contactar', order: 95, isDefault: false, isTerminal: true },
         { slug: 'ARCHIVED', labelEs: 'Archivado', order: 99, isDefault: false, isTerminal: true },
       ];
@@ -757,20 +761,33 @@ Reglas:
         })
         .catch(() => {});
 
-      const conductoresPrompt = `
-Eres el Asistente Virtual de postulación de ${wsName} para cargos de reparto.
+      const intakePrompt = `
+Eres el Asistente Virtual de Postulación de ${wsName}. Este Program es SOLO de intake.
 
 Objetivo:
-- Informar el proceso con claridad.
-- Calificar rápido sin fricción.
-- Recolectar datos mínimos y dejar el caso listo para staff.
+- Detectar cargo y encaminar al flujo correcto sin fricción.
+- Si el cargo no está claro, usar menú 1/2/3:
+  1) Peoneta
+  2) Conductor (vehículo empresa)
+  3) Conductor con vehículo propio (furgón cerrado)
 
-Estilo:
-- Español claro, profesional y amable.
-- Mensajes cortos (máx 6 líneas).
-- No uses menús numerados salvo que el usuario pida menú.
-- Si falta información, pide solo lo faltante en un mensaje.
-- Si el candidato pregunta pagos o ubicación, responde eso primero y luego retoma lo pendiente.
+Reglas:
+- Si el usuario elige un cargo, usa SET_APPLICATION_FLOW con applicationRole correcto.
+- Luego deriva Program con SET_CONVERSATION_PROGRAM usando programSlug:
+  - PEONETA -> reclutamiento-peonetas-envio-rapido
+  - DRIVER_COMPANY -> reclutamiento-conductores-envio-rapido
+  - DRIVER_OWN_VAN -> reclutamiento-conductores-flota-envio-rapido
+- No pidas CV ni documentos en intake.
+- Si applicationRole ya existe, no reinicies menú salvo que usuario diga "menu" o "cambiar cargo".
+- Responde breve (máx 6 líneas), tono profesional y amable.
+`.trim();
+
+      const peonetasPrompt = `
+Eres el Asistente Virtual de postulación de ${wsName} para PEONETAS.
+
+Objetivo:
+- Recolectar datos mínimos para evaluación inicial.
+- Dejar caso listo para revisión de staff sin inventar condiciones.
 
 Datos mínimos:
 - nombre y apellido
@@ -779,20 +796,71 @@ Datos mínimos:
 - disponibilidad (día + rango horario)
 - email (opcional)
 
-Reglas de negocio (NO inventar):
-- Peoneta: $15.000 por día.
-- Conductor empresa: CHEX $400 por bulto, Volumétrica $1.000 por bulto, Mercado Libre $25.000 por día, Falabella por definir.
-- Conductor con vehículo propio (furgón cerrado): CHEX $800 por bulto y Volumétrica $2.000 por bulto.
-- Requisito conductor empresa: licencia clase B + estacionamiento para guardar vehículo.
-- Requisito conductor con vehículo: furgón cerrado + documentos del vehículo al día + licencia clase B.
+Condiciones:
+- Pago peoneta: $15.000 por día.
+- No pedir CV por defecto en este cargo.
+
+Reglas:
+- Si preguntan condiciones, responde primero y luego retoma lo faltante.
+- Mensajes cortos, profesionales y claros (sin modismos).
+`.trim();
+
+      const conductoresPrompt = `
+Eres el Asistente Virtual de postulación de ${wsName} para CONDUCTORES (vehículo empresa).
+
+Objetivo:
+- Recolectar datos mínimos, validar requisitos y dejar caso listo para operación.
+
+Datos mínimos:
+- nombre y apellido
+- comuna/ciudad
+- experiencia breve
+- disponibilidad (día + rango horario)
+- email (opcional)
+
+Condiciones y requisitos:
+- CHEX: $400 por bulto.
+- Volumétrica: $1.000 por bulto.
+- Mercado Libre: $25.000 por día.
+- Falabella: por definir.
+- Requisito: licencia clase B + estacionamiento para guardar vehículo.
 
 Documentos:
-- Para conductores, pedir CV antes de avanzar.
-- Etapa de operación: carnet (ambos lados) y licencia clase B.
+- CV obligatorio para avanzar.
+- Etapa operación: carnet (ambos lados) + licencia clase B.
 
-Entrevista:
-- Presencial en Providencia.
-- Entrega la dirección exacta solo al confirmar: Av. Salvador 1574, Providencia.
+Reglas:
+- Si preguntan pago/ubicación, responde primero y retoma lo pendiente.
+- No inventar sueldos fijos ni condiciones fuera de esta guía.
+- Tono profesional y amable.
+`.trim();
+
+      const conductoresFlotaPrompt = `
+Eres el Asistente Virtual de postulación de ${wsName} para CONDUCTORES CON VEHÍCULO PROPIO (furgón cerrado).
+
+Objetivo:
+- Validar requisitos y recolectar datos/documentos para operación.
+
+Datos mínimos:
+- nombre y apellido
+- comuna/ciudad
+- experiencia breve
+- disponibilidad (día + rango horario)
+- email (opcional)
+
+Condiciones y requisitos:
+- CHEX: $800 por bulto.
+- Volumétrica: $2.000 por bulto.
+- Requisito: furgón cerrado + documentos del vehículo al día + licencia clase B.
+
+Documentos:
+- CV obligatorio para avanzar.
+- Etapa operación: carnet (ambos lados), licencia clase B y documentos del vehículo.
+
+Reglas:
+- Si preguntan pago/ubicación, responde primero y retoma lo pendiente.
+- No inventar valores ni condiciones no confirmadas.
+- Tono profesional y amable.
 `.trim();
 
       const staffConductoresPrompt = `
@@ -822,29 +890,89 @@ Reglas:
         .trim()
         .toLowerCase() === 'true';
 
-      const clientProgram = await prisma.program
-        .upsert({
-          where: { workspaceId_slug: { workspaceId: wsId, slug: 'reclutamiento-conductores-envio-rapido' } } as any,
-          create: {
-            workspaceId: wsId,
-            name: 'Reclutamiento — Conductores (Envio Rápido)',
-            slug: 'reclutamiento-conductores-envio-rapido',
-            description: 'Programa cliente para reclutamiento de conductores.',
-            isActive: true,
-            agentSystemPrompt: conductoresPrompt,
-            archivedAt: null,
-          } as any,
-          update: {
-            name: 'Reclutamiento — Conductores (Envio Rápido)',
-            description: 'Programa cliente para reclutamiento de conductores.',
-            isActive: true,
-            archivedAt: null,
-            updatedAt: new Date(),
-            ...(forceSeedPrompts ? { agentSystemPrompt: conductoresPrompt } : {}),
-          } as any,
-          select: { id: true },
-        })
-        .catch(() => null);
+      const upsertEnvioProgram = async (seed: {
+        name: string;
+        slug: string;
+        description: string;
+        prompt: string;
+        promptLocked?: boolean;
+        promptSource?: 'MANUAL' | 'GENERATED' | 'SEEDED';
+      }) => {
+        const existing = await prisma.program
+          .findFirst({
+            where: { workspaceId: wsId, slug: seed.slug },
+            select: {
+              id: true,
+              promptLocked: true as any,
+            },
+          })
+          .catch(() => null);
+        const desiredPromptLocked = typeof seed.promptLocked === 'boolean' ? seed.promptLocked : true;
+        const desiredPromptSource = seed.promptSource || 'MANUAL';
+        if (!existing?.id) {
+          return prisma.program
+            .create({
+              data: {
+                workspaceId: wsId,
+                name: seed.name,
+                slug: seed.slug,
+                description: seed.description,
+                isActive: true,
+                agentSystemPrompt: seed.prompt,
+                promptSource: desiredPromptSource as any,
+                promptLocked: desiredPromptLocked as any,
+                archivedAt: null,
+              } as any,
+              select: { id: true, slug: true },
+            })
+            .catch(() => null);
+        }
+        const updateData: Record<string, unknown> = {
+          name: seed.name,
+          description: seed.description,
+          isActive: true,
+          archivedAt: null,
+          updatedAt: new Date(),
+          promptSource: desiredPromptSource,
+          promptLocked: desiredPromptLocked,
+        };
+        const isPromptLocked = Boolean((existing as any).promptLocked);
+        if (forceSeedPrompts || !isPromptLocked) {
+          updateData.agentSystemPrompt = seed.prompt;
+        }
+        return prisma.program
+          .update({
+            where: { id: existing.id },
+            data: updateData as any,
+            select: { id: true, slug: true },
+          })
+          .catch(() => null);
+      };
+
+      const intakeProgram = await upsertEnvioProgram({
+        name: 'Postulación — Intake (Envio Rápido)',
+        slug: 'postulacion-intake-envio-rapido',
+        description: 'Programa de entrada para detectar cargo y derivar al flujo correcto.',
+        prompt: intakePrompt,
+      });
+      const peonetaProgram = await upsertEnvioProgram({
+        name: 'Reclutamiento — Peonetas (Envio Rápido)',
+        slug: 'reclutamiento-peonetas-envio-rapido',
+        description: 'Programa cliente para reclutamiento de peonetas.',
+        prompt: peonetasPrompt,
+      });
+      const conductorProgram = await upsertEnvioProgram({
+        name: 'Reclutamiento — Conductores (Envio Rápido)',
+        slug: 'reclutamiento-conductores-envio-rapido',
+        description: 'Programa cliente para reclutamiento de conductores (vehículo empresa).',
+        prompt: conductoresPrompt,
+      });
+      const conductorFlotaProgram = await upsertEnvioProgram({
+        name: 'Reclutamiento — Conductores con vehículo (Envio Rápido)',
+        slug: 'reclutamiento-conductores-flota-envio-rapido',
+        description: 'Programa cliente para reclutamiento de conductores con vehículo propio.',
+        prompt: conductoresFlotaPrompt,
+      });
 
       const staffProgram = await prisma.program
         .upsert({
@@ -856,6 +984,8 @@ Reglas:
             description: 'Programa staff para operar casos de reclutamiento de conductores.',
             isActive: true,
             agentSystemPrompt: staffConductoresPrompt,
+            promptSource: 'MANUAL' as any,
+            promptLocked: false as any,
             archivedAt: null,
           } as any,
           update: {
@@ -864,20 +994,24 @@ Reglas:
             isActive: true,
             archivedAt: null,
             updatedAt: new Date(),
+            promptSource: 'MANUAL' as any,
             ...(forceSeedPrompts ? { agentSystemPrompt: staffConductoresPrompt } : {}),
           } as any,
           select: { id: true },
         })
         .catch(() => null);
 
-      if (clientProgram?.id || staffProgram?.id) {
+      const clientMenuIds = [intakeProgram?.id, peonetaProgram?.id, conductorProgram?.id, conductorFlotaProgram?.id]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean);
+      if (intakeProgram?.id || staffProgram?.id) {
         await prisma.workspace
           .update({
             where: { id: wsId },
             data: {
-              ...(clientProgram?.id ? { clientDefaultProgramId: clientProgram.id } : {}),
+              ...(intakeProgram?.id ? { clientDefaultProgramId: intakeProgram.id } : {}),
               ...(staffProgram?.id ? { staffDefaultProgramId: staffProgram.id } : {}),
-              ...(clientProgram?.id ? { clientProgramMenuIdsJson: JSON.stringify([clientProgram.id]) } : {}),
+              ...(clientMenuIds.length > 0 ? { clientProgramMenuIdsJson: JSON.stringify(clientMenuIds) } : {}),
               ...(staffProgram?.id ? { staffProgramMenuIdsJson: JSON.stringify([staffProgram.id]) } : {}),
             } as any,
           })
@@ -907,21 +1041,27 @@ Reglas:
           .catch(() => {});
       }
 
-      // Ensure active lines use the conductores client program by default when missing or pointing to archived program.
-      if (clientProgram?.id) {
+      // Ensure active lines use intake program as default entrypoint for NEW conversations.
+      if (intakeProgram?.id) {
         const lines = await prisma.phoneLine.findMany({
           where: { workspaceId: wsId, archivedAt: null, isActive: true },
           select: { id: true, defaultProgramId: true },
         });
         for (const line of lines) {
           if (!line.defaultProgramId) {
-            await prisma.phoneLine.update({ where: { id: line.id }, data: { defaultProgramId: clientProgram.id } as any }).catch(() => {});
+            await prisma.phoneLine.update({ where: { id: line.id }, data: { defaultProgramId: intakeProgram.id } as any }).catch(() => {});
             continue;
           }
           const current = await prisma.program.findUnique({
             where: { id: line.defaultProgramId },
-            select: { id: true, archivedAt: true, isActive: true, agentSystemPrompt: true, name: true },
+            select: { id: true, archivedAt: true, isActive: true, agentSystemPrompt: true, name: true, slug: true },
           });
+          const normalizedSlug = String((current as any)?.slug || '').trim().toLowerCase();
+          const shouldReplaceBySlug = [
+            'reclutamiento-conductores-envio-rapido',
+            'reclutamiento-peonetas-envio-rapido',
+            'reclutamiento-conductores-flota-envio-rapido',
+          ].includes(normalizedSlug);
           const looksLegacy = Boolean(
             current &&
               ((current as any).archivedAt ||
@@ -930,8 +1070,8 @@ Reglas:
                   `${String((current as any).name || '')}\n${String((current as any).agentSystemPrompt || '')}`,
                 )),
           );
-          if (looksLegacy) {
-            await prisma.phoneLine.update({ where: { id: line.id }, data: { defaultProgramId: clientProgram.id } as any }).catch(() => {});
+          if (looksLegacy || shouldReplaceBySlug) {
+            await prisma.phoneLine.update({ where: { id: line.id }, data: { defaultProgramId: intakeProgram.id } as any }).catch(() => {});
           }
         }
       }

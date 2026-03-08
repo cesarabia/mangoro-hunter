@@ -46,6 +46,13 @@ function normalizeLanguage(value: any): string | null {
   return null;
 }
 
+function normalizePromptSource(value: any): 'MANUAL' | 'GENERATED' | 'SEEDED' | null {
+  const raw = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (!raw) return null;
+  if (raw === 'MANUAL' || raw === 'GENERATED' || raw === 'SEEDED') return raw;
+  return null;
+}
+
 export async function registerProgramRoutes(app: FastifyInstance) {
   app.get('/', { preValidation: [app.authenticate] }, async (request) => {
     const access = await resolveWorkspaceAccess(request);
@@ -61,6 +68,8 @@ export async function registerProgramRoutes(app: FastifyInstance) {
         audience: true as any,
         tone: true as any,
         language: true as any,
+        promptSource: true as any,
+        promptLocked: true as any,
         isActive: true,
         agentSystemPrompt: true,
         createdAt: true,
@@ -90,6 +99,8 @@ export async function registerProgramRoutes(app: FastifyInstance) {
       language?: string | null;
       isActive?: boolean;
       agentSystemPrompt?: string;
+      promptSource?: string | null;
+      promptLocked?: boolean;
     };
 
     const name = String(body.name || '').trim();
@@ -102,6 +113,7 @@ export async function registerProgramRoutes(app: FastifyInstance) {
     if (!agentSystemPrompt) return reply.code(400).send({ error: '"agentSystemPrompt" es requerido.' });
 
     const language = normalizeLanguage(body.language);
+    const promptSource = normalizePromptSource(body.promptSource) || 'MANUAL';
 
     const created = await prisma.program.create({
       data: {
@@ -113,6 +125,8 @@ export async function registerProgramRoutes(app: FastifyInstance) {
         audience: body.audience ? String(body.audience).trim() : null,
         tone: body.tone ? String(body.tone).trim() : null,
         language,
+        promptSource,
+        promptLocked: typeof body.promptLocked === 'boolean' ? body.promptLocked : false,
         isActive: typeof body.isActive === 'boolean' ? body.isActive : true,
         agentSystemPrompt,
       },
@@ -154,13 +168,44 @@ export async function registerProgramRoutes(app: FastifyInstance) {
       tone?: string | null;
       language?: string | null;
       archivedAt?: string | null;
+      promptSource?: string | null;
+      promptLocked?: boolean;
+      forceUpdatePrompt?: boolean;
+      promptUpdateMode?: string | null;
     };
 
     const existing = await prisma.program.findFirst({
       where: { id, workspaceId: access.workspaceId },
-      select: { id: true, name: true, slug: true, description: true, agentSystemPrompt: true, goal: true as any, audience: true as any, tone: true as any, language: true as any, isActive: true, archivedAt: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        description: true,
+        agentSystemPrompt: true,
+        goal: true as any,
+        audience: true as any,
+        tone: true as any,
+        language: true as any,
+        promptSource: true as any,
+        promptLocked: true as any,
+        isActive: true,
+        archivedAt: true,
+      },
     });
     if (!existing) return reply.code(404).send({ error: 'No encontrado' });
+
+    const wantsPromptChange =
+      typeof body.agentSystemPrompt === 'string' &&
+      body.agentSystemPrompt.trim() !== String(existing.agentSystemPrompt || '').trim();
+    const forcePromptUpdate =
+      body.forceUpdatePrompt === true ||
+      String(body.promptUpdateMode || '').trim().toUpperCase() === 'FORCE_UPDATE_PROMPT';
+    if (existing.promptLocked && wantsPromptChange && !forcePromptUpdate) {
+      return reply.code(409).send({
+        error: 'PROMPT_LOCKED',
+        message: 'Este prompt está bloqueado (promptLocked=true). Usa FORCE_UPDATE_PROMPT para modificarlo explícitamente.',
+      });
+    }
 
     const data: Record<string, any> = {};
     if (typeof body.name === 'string') data.name = body.name.trim();
@@ -172,20 +217,26 @@ export async function registerProgramRoutes(app: FastifyInstance) {
     if (typeof body.audience !== 'undefined') data.audience = body.audience ? String(body.audience).trim() : null;
     if (typeof body.tone !== 'undefined') data.tone = body.tone ? String(body.tone).trim() : null;
     if (typeof body.language !== 'undefined') data.language = normalizeLanguage(body.language);
+    if (typeof body.promptSource !== 'undefined') data.promptSource = normalizePromptSource(body.promptSource) || 'MANUAL';
+    if (typeof body.promptLocked === 'boolean') data.promptLocked = body.promptLocked;
     if (typeof body.archivedAt !== 'undefined') {
       data.archivedAt = body.archivedAt ? new Date(body.archivedAt) : null;
     }
 
     const updated = await prisma.program.update({ where: { id }, data });
 
-    if (typeof body.agentSystemPrompt === 'string' && body.agentSystemPrompt.trim() && body.agentSystemPrompt.trim() !== String(existing.agentSystemPrompt || '').trim()) {
+    if (
+      typeof body.agentSystemPrompt === 'string' &&
+      body.agentSystemPrompt.trim() &&
+      body.agentSystemPrompt.trim() !== String(existing.agentSystemPrompt || '').trim()
+    ) {
       const truncate = (t: string) => (t.length > 6000 ? `${t.slice(0, 5997)}...` : t);
       await prisma.configChangeLog
         .create({
           data: {
             workspaceId: access.workspaceId,
             userId: request.user?.userId || null,
-            type: 'PROGRAM_PROMPT_APPLIED',
+            type: forcePromptUpdate ? 'PROGRAM_PROMPT_FORCE_UPDATED' : 'PROGRAM_PROMPT_APPLIED',
             beforeJson: serializeJson({ programId: existing.id, prompt: truncate(String(existing.agentSystemPrompt || '')) }),
             afterJson: serializeJson({ programId: updated.id, prompt: truncate(String(updated.agentSystemPrompt || '')) }),
           },
@@ -208,6 +259,8 @@ export async function registerProgramRoutes(app: FastifyInstance) {
             audience: (existing as any).audience || null,
             tone: (existing as any).tone || null,
             language: (existing as any).language || null,
+            promptSource: (existing as any).promptSource || null,
+            promptLocked: Boolean((existing as any).promptLocked),
           }),
           afterJson: serializeJson({
             id: updated.id,
@@ -218,6 +271,8 @@ export async function registerProgramRoutes(app: FastifyInstance) {
             audience: (updated as any).audience || null,
             tone: (updated as any).tone || null,
             language: (updated as any).language || null,
+            promptSource: (updated as any).promptSource || null,
+            promptLocked: Boolean((updated as any).promptLocked),
           }),
         },
       })

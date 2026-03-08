@@ -71,6 +71,33 @@ function roleRank(roleRaw: string): number {
   return 0;
 }
 
+function roleToRecruitmentProgramSlug(role: string | null): string | null {
+  const normalized = String(role || '').trim().toUpperCase();
+  if (!normalized) return null;
+  if (normalized === 'PEONETA') return 'reclutamiento-peonetas-envio-rapido';
+  if (normalized === 'DRIVER_COMPANY' || normalized === 'CONDUCTOR') return 'reclutamiento-conductores-envio-rapido';
+  if (normalized === 'DRIVER_OWN_VAN' || normalized === 'CONDUCTOR_FLOTA') return 'reclutamiento-conductores-flota-envio-rapido';
+  return null;
+}
+
+async function resolveProgramIdBySlug(workspaceId: string, slug: string): Promise<string | null> {
+  const normalizedWorkspace = String(workspaceId || '').trim();
+  const normalizedSlug = String(slug || '').trim();
+  if (!normalizedWorkspace || !normalizedSlug) return null;
+  const row = await prisma.program
+    .findFirst({
+      where: {
+        workspaceId: normalizedWorkspace,
+        slug: normalizedSlug,
+        archivedAt: null,
+        isActive: true,
+      },
+      select: { id: true },
+    })
+    .catch(() => null);
+  return row?.id || null;
+}
+
 function normalizeForNameChecks(value: string): string {
   return stripAccents(String(value || '')).toLowerCase().replace(/\s+/g, ' ').trim();
 }
@@ -744,7 +771,7 @@ export async function executeAgentResponse(params: {
   const baseConversation = conversationId
     ? await prisma.conversation.findUnique({
         where: { id: conversationId },
-        include: { contact: true, phoneLine: true },
+        include: { contact: true, phoneLine: true, program: { select: { id: true, slug: true } } as any },
       })
     : null;
   let currentStage = baseConversation ? String((baseConversation as any).conversationStage || '') : '';
@@ -859,11 +886,33 @@ export async function executeAgentResponse(params: {
     }
 
     if (cmd.command === 'SET_CONVERSATION_PROGRAM') {
+      let targetProgramId = String((cmd as any).programId || '').trim() || null;
+      const targetProgramSlug = String((cmd as any).programSlug || '').trim() || null;
+      if (!targetProgramId && targetProgramSlug) {
+        targetProgramId = await resolveProgramIdBySlug(baseConversation?.workspaceId || params.workspaceId, targetProgramSlug);
+      }
+      if (!targetProgramId) {
+        results.push({
+          ok: false,
+          details: {
+            error: 'program_not_found',
+            programId: (cmd as any).programId || null,
+            programSlug: targetProgramSlug,
+          },
+        });
+        continue;
+      }
       await prisma.conversation.update({
         where: { id: cmd.conversationId },
-        data: { programId: cmd.programId, updatedAt: new Date() },
+        data: { programId: targetProgramId, updatedAt: new Date() },
       });
-      results.push({ ok: true });
+      if (baseConversation) {
+        (baseConversation as any).programId = targetProgramId;
+        (baseConversation as any).program = targetProgramSlug
+          ? ({ id: targetProgramId, slug: targetProgramSlug } as any)
+          : (baseConversation as any).program;
+      }
+      results.push({ ok: true, details: { programId: targetProgramId, programSlug: targetProgramSlug } });
       continue;
     }
 
@@ -899,6 +948,29 @@ export async function executeAgentResponse(params: {
         where: { id: cmd.conversationId },
         data: updateData as any,
       });
+      const roleProgramSlug = roleToRecruitmentProgramSlug(role);
+      const currentProgramSlug = String((baseConversation as any)?.program?.slug || '')
+        .trim()
+        .toLowerCase();
+      const currentProgramId = String((baseConversation as any)?.programId || '').trim();
+      const shouldSwitchByRole =
+        Boolean(roleProgramSlug) &&
+        (currentProgramSlug === 'postulacion-intake-envio-rapido' || !currentProgramId);
+      if (shouldSwitchByRole && roleProgramSlug) {
+        const roleProgramId = await resolveProgramIdBySlug(baseConversation?.workspaceId || params.workspaceId, roleProgramSlug);
+        if (roleProgramId) {
+          await prisma.conversation
+            .update({
+              where: { id: cmd.conversationId },
+              data: { programId: roleProgramId, updatedAt: new Date() } as any,
+            })
+            .catch(() => {});
+          if (baseConversation) {
+            (baseConversation as any).programId = roleProgramId;
+            (baseConversation as any).program = { id: roleProgramId, slug: roleProgramSlug } as any;
+          }
+        }
+      }
       if (role && baseConversation?.contactId) {
         const contactJobRole = mapRoleToContactJobRole(role);
         await prisma.contact

@@ -48,7 +48,8 @@ export const AgentCommandSetConversationStageSchema = z.object({
 export const AgentCommandSetConversationProgramSchema = z.object({
   command: z.literal('SET_CONVERSATION_PROGRAM'),
   conversationId: z.string().min(1),
-  programId: z.string().min(1),
+  programId: z.string().min(1).optional(),
+  programSlug: z.string().min(1).optional(),
   reason: z.string().min(1).optional(),
 });
 

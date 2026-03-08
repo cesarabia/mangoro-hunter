@@ -245,6 +245,8 @@ model Program {
   audience        String?
   tone            String?
   language        String?
+  promptSource    String    @default("SEEDED")
+  promptLocked    Boolean   @default(false)
   isActive        Boolean   @default(true)
   agentSystemPrompt String
   archivedAt      DateTime?
@@ -263,6 +265,7 @@ model Program {
 
   @@unique([workspaceId, slug])
   @@index([workspaceId])
+  @@index([workspaceId, promptLocked])
 }
 
 model ProgramKnowledgeAsset {

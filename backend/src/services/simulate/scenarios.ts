@@ -241,6 +241,9 @@ export type ScenarioStep = {
     noLegacyCopyLeaks?: {
       workspaceId?: string;
     };
+    promptLockPreventsSeedOverwrite?: {
+      workspaceId?: string;
+    };
     programPromptIsEffective?: {
       workspaceId?: string;
     };
@@ -1423,6 +1426,72 @@ export const SCENARIOS: ScenarioDefinition[] = [
     ],
   },
   {
+    id: 'test_intake_menu_flow',
+    name: 'ER-P10: Intake menú de entrada',
+    description:
+      'Valida que conversaciones nuevas pasen por Program Intake y que el flujo consulte cargo/menú antes de derivar.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check intake menu flow',
+        expect: { candidateIntakeChooseRole: { workspaceId: 'scenario-er-p10-intake' } },
+      },
+    ],
+  },
+  {
+    id: 'test_select_conductor_company',
+    name: 'ER-P10: selección Conductor empresa',
+    description:
+      'Valida derivación de Intake a Program de conductores empresa y avance de flujo mínimo (incluye solicitud de CV).',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check select conductor company',
+        expect: {
+          candidateConductorCollectCvAndDocs: {
+            workspaceId: 'scenario-er-p10-conductor-company',
+            applicationRole: 'DRIVER_COMPANY',
+            applicationState: 'READY_FOR_OP_REVIEW',
+            expectedStage: 'OP_REVIEW',
+          },
+        },
+      },
+    ],
+  },
+  {
+    id: 'test_select_driver_own_van',
+    name: 'ER-P10: selección Conductor vehículo',
+    description:
+      'Valida derivación de Intake a Program de conductores con vehículo y reglas de pago/documentos correspondientes.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check select driver own van',
+        expect: {
+          candidateConductorCollectCvAndDocs: {
+            workspaceId: 'scenario-er-p10-driver-own-van',
+            applicationRole: 'DRIVER_OWN_VAN',
+            applicationState: 'READY_FOR_OP_REVIEW',
+            expectedStage: 'OP_REVIEW',
+          },
+        },
+      },
+    ],
+  },
+  {
+    id: 'test_select_peoneta',
+    name: 'ER-P10: selección Peoneta',
+    description:
+      'Valida derivación de Intake a Program peoneta, sin pedir CV y con condiciones correctas del cargo.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check select peoneta',
+        expect: { candidatePeonetaBasicFlow: { workspaceId: 'scenario-er-p10-peoneta' } },
+      },
+    ],
+  },
+  {
     id: 'no_legacy_copy_leaks',
     name: 'ER-P8: no fuga de copy legacy',
     description:
@@ -1432,6 +1501,19 @@ export const SCENARIOS: ScenarioDefinition[] = [
         action: 'WORKSPACE_CHECK',
         inboundText: 'check no legacy copy leaks',
         expect: { noLegacyCopyLeaks: { workspaceId: 'envio-rapido' } },
+      },
+    ],
+  },
+  {
+    id: 'prompt_lock_prevents_seed_overwrite',
+    name: 'ER-P10: prompt lock bloquea overwrite no forzado',
+    description:
+      'Valida que Program con promptLocked=true rechace cambios de prompt sin FORCE_UPDATE_PROMPT y solo acepte override explícito.',
+    steps: [
+      {
+        action: 'WORKSPACE_CHECK',
+        inboundText: 'check prompt lock prevents seed overwrite',
+        expect: { promptLockPreventsSeedOverwrite: { workspaceId: 'scenario-er-p10-prompt-lock' } },
       },
     ],
   },

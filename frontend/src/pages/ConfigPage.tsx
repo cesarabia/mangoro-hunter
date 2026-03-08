@@ -2370,6 +2370,8 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
         audience: programEditor.audience || null,
         tone: programEditor.tone || null,
         language: programEditor.language || null,
+        promptSource: programEditor.promptSource || 'MANUAL',
+        promptLocked: Boolean(programEditor.promptLocked),
         isActive: Boolean(programEditor.isActive),
         agentSystemPrompt: programEditor.agentSystemPrompt
       };
@@ -2382,6 +2384,40 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
       setProgramEditor(null);
       await loadPrograms();
     } catch (err: any) {
+      const isPromptLockedError = String(err?.message || '')
+        .toUpperCase()
+        .includes('PROMPT_LOCKED');
+      if (programEditor?.id && isPromptLockedError) {
+        const force = window.confirm(
+          'Este Program tiene prompt bloqueado. ¿Quieres forzar el cambio de prompt explícitamente?',
+        );
+        if (force) {
+          try {
+            await apiClient.patch(`/api/programs/${programEditor.id}`, {
+              name: programEditor.name,
+              slug: programEditor.slug,
+              description: programEditor.description || null,
+              goal: programEditor.goal || null,
+              audience: programEditor.audience || null,
+              tone: programEditor.tone || null,
+              language: programEditor.language || null,
+              promptSource: programEditor.promptSource || 'MANUAL',
+              promptLocked: Boolean(programEditor.promptLocked),
+              isActive: Boolean(programEditor.isActive),
+              agentSystemPrompt: programEditor.agentSystemPrompt,
+              forceUpdatePrompt: true,
+              promptUpdateMode: 'FORCE_UPDATE_PROMPT',
+            });
+            setProgramStatus('Guardado (FORCE_UPDATE_PROMPT).');
+            setProgramEditor(null);
+            await loadPrograms();
+            return;
+          } catch (forceErr: any) {
+            setProgramError(forceErr.message || 'No se pudo guardar con override forzado');
+            return;
+          }
+        }
+      }
       setProgramError(err.message || 'No se pudo guardar');
     }
   };
@@ -2500,7 +2536,12 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
     setProgramStatus(null);
     setProgramError(null);
     try {
-      await apiClient.patch(`/api/programs/${programEditor.id}`, { agentSystemPrompt: promptSuggestion });
+      await apiClient.patch(`/api/programs/${programEditor.id}`, {
+        agentSystemPrompt: promptSuggestion,
+        ...(programEditor.promptLocked
+          ? { forceUpdatePrompt: true, promptUpdateMode: 'FORCE_UPDATE_PROMPT' }
+          : {}),
+      });
       setProgramEditor({ ...programEditor, agentSystemPrompt: promptSuggestion });
       setPromptSuggestion(null);
       setProgramStatus('Prompt aplicado.');
@@ -5710,7 +5751,21 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ fontSize: 18, fontWeight: 700 }}>Programs</div>
             <button
-              onClick={() => setProgramEditor({ name: '', slug: '', description: '', goal: '', audience: '', tone: '', language: 'ES', isActive: true, agentSystemPrompt: '' })}
+              onClick={() =>
+                setProgramEditor({
+                  name: '',
+                  slug: '',
+                  description: '',
+                  goal: '',
+                  audience: '',
+                  tone: '',
+                  language: 'ES',
+                  promptSource: 'MANUAL',
+                  promptLocked: false,
+                  isActive: true,
+                  agentSystemPrompt: '',
+                })
+              }
               style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}
             >
               + Crear Program
@@ -5723,6 +5778,7 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 <tr style={{ background: '#fafafa', textAlign: 'left' }}>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Nombre</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Slug</th>
+                  <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Prompt</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Activo</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Default en # líneas</th>
                   <th style={{ padding: 10, fontSize: 12, color: '#555' }}>Actualizado</th>
@@ -5742,6 +5798,13 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                   >
                     <td style={{ padding: 10, fontSize: 13 }}>{p.name}</td>
                     <td style={{ padding: 10, fontSize: 13, fontFamily: 'monospace' }}>{p.slug}</td>
+                    <td style={{ padding: 10, fontSize: 12 }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #eee', borderRadius: 999, padding: '2px 8px' }}>
+                        <span>{String(p.promptSource || 'MANUAL')}</span>
+                        <span style={{ color: '#999' }}>·</span>
+                        <span style={{ color: p.promptLocked ? '#1a7f37' : '#666' }}>{p.promptLocked ? 'LOCKED' : 'UNLOCKED'}</span>
+                      </div>
+                    </td>
                     <td style={{ padding: 10, fontSize: 13 }}>
                       <input
                         type="checkbox"
@@ -5783,6 +5846,24 @@ export const ConfigPage: React.FC<{ workspaceRole: string | null; isOwner: boole
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={Boolean(programEditor.isActive)} onChange={(e) => setProgramEditor({ ...programEditor, isActive: e.target.checked })} />
                   Activo
+                </label>
+                <select
+                  value={programEditor.promptSource || 'MANUAL'}
+                  onChange={(e) => setProgramEditor({ ...programEditor, promptSource: e.target.value })}
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid #ddd' }}
+                  aria-label="Prompt source"
+                >
+                  <option value="MANUAL">Prompt source: MANUAL</option>
+                  <option value="GENERATED">Prompt source: GENERATED</option>
+                  <option value="SEEDED">Prompt source: SEEDED</option>
+                </select>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(programEditor.promptLocked)}
+                    onChange={(e) => setProgramEditor({ ...programEditor, promptLocked: e.target.checked })}
+                  />
+                  Prompt locked (evita cambios por bootstrap/deploy)
                 </label>
               </div>
 
