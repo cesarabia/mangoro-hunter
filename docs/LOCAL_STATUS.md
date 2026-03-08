@@ -1,6 +1,6 @@
 # LOCAL STATUS — Hunter
 
-Fecha/hora: 2026-03-08 15:16:40 -03
+Fecha/hora: 2026-03-08 16:44:35 -03
 
 ## URLs activas
 - Frontend: [http://localhost:5173](http://localhost:5173)
@@ -8,14 +8,27 @@ Fecha/hora: 2026-03-08 15:16:40 -03
 - Health backend: [http://localhost:4001/api/health](http://localhost:4001/api/health)
 
 ## Procesos activos (Mac local)
-- Backend PID: `12968`
-- Frontend PID: `13180`
+- Backend PID: `27819`
+- Frontend PID: `27840`
 
 ## Comandos usados para levantar
 ```bash
-npm run dev:backend
-npm run dev:frontend
+npm run local:start
 ```
+
+## Verificación real (última corrida)
+```bash
+curl -I http://localhost:5173
+curl http://localhost:4001/api/health
+npm run local:status
+```
+
+Resultado actual:
+- `localhost:5173` responde `HTTP/1.1 200 OK`
+- `localhost:4001/api/health` responde `ok:true`
+- sesiones persistentes activas:
+  - `hunter-local-backend`
+  - `hunter-local-frontend`
 
 ## Snapshot PROD -> LOCAL aplicado
 - Script ejecutado: `./ops/sync_prod_state_to_local.sh --execute`
@@ -26,13 +39,12 @@ npm run dev:frontend
 
 ## Cómo detener
 ```bash
-kill $(lsof -nP -iTCP:4001 -sTCP:LISTEN -t) $(lsof -nP -iTCP:5173 -sTCP:LISTEN -t)
+npm run local:stop
 ```
 
 ## Cómo reiniciar
-1. Ejecutar de nuevo los comandos de “levantar” (o `npm run dev:local`).
+1. Ejecutar: `npm run local:start`.
 2. Verificar:
 ```bash
-curl http://localhost:4001/api/health
-curl -I http://localhost:5173
+npm run local:status
 ```

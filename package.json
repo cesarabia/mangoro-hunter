@@ -4,6 +4,10 @@
   "scripts": {
     "dev:backend": "npm --prefix backend run dev",
     "dev:frontend": "npm --prefix frontend run dev",
-    "dev:local": "sh -c '(cd backend && npm run dev) & (cd frontend && npm run dev) & wait'"
+    "dev:local": "sh -c '(cd backend && npm run dev) & (cd frontend && npm run dev) & wait'",
+    "local:start": "bash ./ops/local_services.sh start",
+    "local:stop": "bash ./ops/local_services.sh stop",
+    "local:status": "bash ./ops/local_services.sh status",
+    "local:restart": "bash ./ops/local_services.sh restart"
   }
 }

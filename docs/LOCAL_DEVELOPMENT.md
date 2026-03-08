@@ -12,20 +12,26 @@
 Desde la raíz del repo:
 
 ```bash
-npm run dev:backend
+npm run local:start
 ```
 
 ```bash
-npm run dev:frontend
+npm run local:status
 ```
 
 ```bash
-npm run dev:local
+npm run local:stop
 ```
 
 Notas:
-- `dev:local` levanta backend y frontend en paralelo.
-- Para detener `dev:local`, usa `Ctrl+C` en la terminal donde corre.
+- `local:start` levanta backend + frontend en segundo plano (persistente por PID/logs).
+- `local:stop` detiene ambos servicios.
+- `local:status` muestra PIDs, puertos, health y rutas de logs.
+- Persistencia en macOS: usa sesiones `screen` desacopladas (`hunter-local-backend` / `hunter-local-frontend`).
+- También siguen disponibles scripts de desarrollo interactivo:
+  - `npm run dev:backend`
+  - `npm run dev:frontend`
+  - `npm run dev:local`
 
 ## 3) URLs locales
 - Frontend local: [http://localhost:5173](http://localhost:5173)
@@ -95,3 +101,17 @@ Capacidades:
 - Toda lógica nueva se valida primero en local.
 - No deploy a `hunter-prod` hasta QA manual limpia aprobada.
 - Producción queda en modo conservador (manual/híbrido) mientras se estabiliza local.
+
+## 9) Reinicio en un click (día a día)
+Para volver a levantar todo mañana:
+
+```bash
+cd /Users/cesar/Documents/dev/mangoro/app/hunter
+npm run local:start
+```
+
+Validar:
+
+```bash
+npm run local:status
+```
