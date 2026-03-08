@@ -1106,6 +1106,8 @@ Reglas:
               name: 'Envio Rápido: inbound -> RUN_AGENT (única)',
               description:
                 'Única automation inbound que responde al candidato en Envío Rápido. El resto de automatizaciones no deben auto-responder.',
+              conditionsJson: JSON.stringify([]),
+              actionsJson: JSON.stringify([{ type: 'RUN_AGENT' }]),
               updatedAt: new Date(),
             } as any,
           })
