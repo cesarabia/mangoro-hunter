@@ -702,7 +702,14 @@ export async function runAgent(event: AgentEvent): Promise<{
           select: { text: true },
         })
         .catch(() => null);
-      const inboundText = String(latestInbound?.text || inboundMessage?.text || '').trim();
+      const inboundFromEvent = String(inboundMessage?.text || '').trim();
+      const inboundLatest = String(latestInbound?.text || '').trim();
+      const inboundText = [inboundFromEvent, inboundLatest]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean)
+        .filter((v, idx, arr) => arr.indexOf(v) === idx)
+        .join(' ')
+        .trim();
       const selectedRole = detectIntakeRoleSelection(inboundText);
       if (selectedRole) {
         intakeTransitionTrace.roleSelectionDetected = selectedRole;
