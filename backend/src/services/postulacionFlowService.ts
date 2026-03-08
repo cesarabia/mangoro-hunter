@@ -174,9 +174,9 @@ function detectRoleIntentHeuristic(text: string): ApplicationRole | null {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (/^3(?:\D|$)/.test(normalized)) return 'DRIVER_OWN_VAN';
-  if (/^1(?:\D|$)/.test(normalized)) return 'PEONETA';
-  if (/^2(?:\D|$)/.test(normalized)) return 'DRIVER_COMPANY';
+  if (/^3(?:\D|$)/.test(normalized) || /(?:^|\D)3(?:\D|$)/.test(normalized)) return 'DRIVER_OWN_VAN';
+  if (/^1(?:\D|$)/.test(normalized) || /(?:^|\D)1(?:\D|$)/.test(normalized)) return 'PEONETA';
+  if (/^2(?:\D|$)/.test(normalized) || /(?:^|\D)2(?:\D|$)/.test(normalized)) return 'DRIVER_COMPANY';
   if (/\bpeoneta\b/.test(low)) return 'PEONETA';
   if (/\b(furgon|furgón|vehiculo propio|vehículo propio|van propia|flota)\b/.test(low)) {
     return 'DRIVER_OWN_VAN';

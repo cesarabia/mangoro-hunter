@@ -222,14 +222,15 @@ function detectIntakeRoleSelection(value: string): 'PEONETA' | 'DRIVER_COMPANY' 
 
   if (
     /^3(?:\D|$)/.test(normalized) ||
+    /(?:^|\D)3(?:\D|$)/.test(normalized) ||
     /\b(furgon|vehiculo propio|conductor con vehiculo|conductor flota|flota|van propia)\b/.test(normalized)
   ) {
     return 'DRIVER_OWN_VAN';
   }
-  if (/^1(?:\D|$)/.test(normalized) || /\bpeoneta\b/.test(normalized)) {
+  if (/^1(?:\D|$)/.test(normalized) || /(?:^|\D)1(?:\D|$)/.test(normalized) || /\bpeoneta\b/.test(normalized)) {
     return 'PEONETA';
   }
-  if (/^2(?:\D|$)/.test(normalized) || /\b(conductor|driver|chofer)\b/.test(normalized)) {
+  if (/^2(?:\D|$)/.test(normalized) || /(?:^|\D)2(?:\D|$)/.test(normalized) || /\b(conductor|driver|chofer)\b/.test(normalized)) {
     return 'DRIVER_COMPANY';
   }
   return null;
@@ -694,7 +695,14 @@ export async function runAgent(event: AgentEvent): Promise<{
             })
             .catch(() => null)
         : null;
-      const inboundText = String(inboundMessage?.text || '').trim();
+      const latestInbound = await prisma.message
+        .findFirst({
+          where: { conversationId: conversation.id, direction: 'INBOUND' },
+          orderBy: { timestamp: 'desc' },
+          select: { text: true },
+        })
+        .catch(() => null);
+      const inboundText = String(latestInbound?.text || inboundMessage?.text || '').trim();
       const selectedRole = detectIntakeRoleSelection(inboundText);
       if (selectedRole) {
         intakeTransitionTrace.roleSelectionDetected = selectedRole;
